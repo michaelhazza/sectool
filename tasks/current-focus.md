@@ -1,10 +1,10 @@
 # Current Focus
 
-**Status:** PLANNING
+**Status:** BUILDING
 
 **Slug:** audit-tool-v1
 **Branch:** claude/lucid-albattani-kczh64
-**Spec:** —
+**Spec:** docs/superpowers/specs/2026-06-12-audit-tool-v1-spec.md
 
 > Update this file when starting a new sprint, spec, or active feature branch. Status field is read by `context-pack-loader` to auto-pick a context pack.
 >
@@ -18,8 +18,10 @@
 
 ## Notes
 
-Repo bootstrapped 2026-06-12 (framework v2.19.0, TS scaffold, gates green).
-Next: spec pipeline for audit-tool v1 (Major build) — brief provided via
-launch prompt; operator pre-approved the plan gate (`operator pre-approval via
-launch prompt, 2026-06-12`). Adversarial-reviewer tier mandatory (live-scan
-safety surface).
+**Status: BUILDING** — Phase 1 (SPEC) complete 2026-06-12; spec reviewed
+(claude-spec-review, 3 findings applied) and handoff written to
+`tasks/builds/audit-tool-v1/handoff.md`. Next: `launch feature coordinator`
+in a fresh session. Plan gate pre-approved (`operator pre-approval via launch
+prompt, 2026-06-12`). Adversarial-reviewer tier mandatory at review phase
+(live-scan safety surface). Active plan (Phase 2 output):
+`tasks/builds/audit-tool-v1/plan.md`. Last updated: 2026-06-12.

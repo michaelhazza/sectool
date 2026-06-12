@@ -1,0 +1,77 @@
+{
+  "contract_version": "review-result.v2",
+  "reviewer_version": "claude-spec-review.v1",
+  "project_context_version": "pc-audit-tool-2026-06-12-r1",
+  "source_artifact_sha": "8e9401069d7f2491e9cae7e38419767827d0e6b0f317a004c3bcc2524679ea61",
+  "verdict": "CHANGES_REQUESTED",
+  "integrity_check": "Round 1 of 3, no PRIOR_ROUNDS. PROJECT_CONTEXT present (Stage + Framing assumptions); Architecture/Guidelines N/A per no-DB repo (confirmed by docs/spec-context.md and spec §11) — fail-closed rule not triggered. architecture.md does not exist (fresh repo) — noted in Files NOT read; not verdict-changing. Framing assumptions honored: runtime_primary/e2e benchmark gate, missing monitoring/flags, and tech-stack choices were NOT flagged. Counts reconciled against §11/§15 (11 rules = 7 ts-morph + 4 semgrep; 3 wrapped scanners; 4 CLI cmds; 6 phases; 2 workflows). Phase graph has no backward refs; state machine (§14) closed; idempotency/retry/terminal/concurrency declared; Deferred Items, frontmatter, Lifecycle Declaration, and ABCd all present. All findings have auto_apply_eligible=false per this agent's launch default (CLAUDE_REVIEWER_FIX_MODE_SPEC not set).",
+  "findings": [
+    {
+      "id": "CR-001",
+      "title": "Dangling cross-reference to §8.1; the severity-recompute order subsection is never numbered",
+      "severity": "medium",
+      "category": "bug",
+      "finding_type": "other",
+      "risk_domain": "none",
+      "scope_signal": "local",
+      "triage_hint": "technical",
+      "source_refs": [
+        { "type": "quote", "value": "severity recomputed (§8.1)" },
+        { "type": "section_name", "value": "8. Severity model (exploitability-aware)" },
+        { "type": "section_name", "value": "9. Static↔live correlation" }
+      ],
+      "rationale": "§9 references '(§8.1)' twice (the merge paragraph and §8 modifier #1), but §8 contains no subsection numbered 8.1 — the four ordered modifiers are unnumbered prose. An executor implementing correlation/severity in P5 cannot resolve the anchor to a concrete rule set; the content exists, only the label is missing. This is a forward/internal-reference defect, not a behavioral gap.",
+      "recommendation": "Number the ordered-modifier list in §8 as §8.1 (e.g. '§8.1 Modifier order'), or change the two '(§8.1)' references in §9 and §8 to '(§8)'. Make all three occurrences resolve to the same anchor.",
+      "acceptance_check": "Grep the spec for the string '8.1'; every occurrence resolves to an existing same-named heading, and no reference points to an absent subsection.",
+      "verification": "Text/anchor check on the spec markdown after edit.",
+      "fix_sketch": "Add heading '### 8.1 Modifier order (applied to baseSeverity)' above the four-item list in §8, or rewrite the two cross-refs to '(§8)'.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "Auto-apply disabled by default for claude-spec-review at launch (CLAUDE_REVIEWER_FIX_MODE_SPEC not set to auto_fix); coordinator applies."
+    },
+    {
+      "id": "CR-002",
+      "title": "Safety contract: the allowlist passed to assertAllowlisted is an unpinned parameter; no module is named as the sole authority for the production allowlist path",
+      "severity": "medium",
+      "category": "architecture",
+      "finding_type": "security",
+      "risk_domain": "security",
+      "scope_signal": "architectural",
+      "triage_hint": "technical-escalated",
+      "source_refs": [
+        { "type": "quote", "value": "All live-scan target acquisition flows through `src/live/gate.ts → assertAllowlisted(url, allowlist)`" },
+        { "type": "quote", "value": "its hostname is injected into a benchmark-scoped allowlist file — the shipped `config/allowed-staging-hosts.json` is untouched" },
+        { "type": "section_name", "value": "4. Staging-only safety contract (NON-NEGOTIABLE)" }
+      ],
+      "rationale": "The branded-type chokepoint (§4.1) makes the URL argument airtight, but the second argument — `allowlist` — is a free parameter. §10 deliberately exploits this by handing the gate a benchmark-scoped allowlist. The spec never names the single module/function that is the SOLE authority for loading the production allowlist, nor states the invariant that every non-benchmark entrypoint must source the allowlist exclusively from config/allowed-staging-hosts.json. As written, the 'structurally impossible to scan a non-allowlisted host' guarantee covers the host-membership check but not allowlist provenance: a future CLI flag (e.g. --allowlist <file>) or caller could pass a substitute allowlist array that type-checks while defeating the contract. This is the highest-value hole class per the injected framing (a path by which a non-allowlisted host becomes scannable). It is a missing pin, not a weakening of the existing contract.",
+      "recommendation": "Add a §4 clause pinning allowlist provenance: name the single production load path (e.g. 'src/config/load.ts is the only non-benchmark source of the allowlist, always reading config/allowed-staging-hosts.json; benchmark injection is permitted ONLY from benchmark/run.ts'), and state explicitly that no CLI flag or env var may substitute an allowlist source — matching the existing 'No override' clause (§4.3) for the gate itself.",
+      "acceptance_check": "The spec §4 names exactly one production allowlist-load site and states that the live CLI path has no flag/env to substitute the allowlist source; the benchmark exception is scoped to benchmark/run.ts. Confirm by locating the new clause and verifying it forbids any non-benchmark alternate allowlist source.",
+      "verification": "Re-read §4 after edit; confirm a provenance clause exists parallel to §4.3 No-override.",
+      "fix_sketch": "Insert §4.9 'Allowlist provenance': production allowlist is loaded only by src/config/load.ts from config/allowed-staging-hosts.json; no flag/env substitutes it; benchmark allowlist injection is confined to benchmark/run.ts.",
+      "operator_decision_required_reason": "Constrains the CLI surface (forbids an --allowlist-style override) and touches the non-negotiable safety contract, so the resolution is an operator/architecture call, not a mechanical edit.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "Auto-apply disabled by default for claude-spec-review at launch; finding is architectural and touches the immutable safety contract, so the coordinator/operator must apply."
+    },
+    {
+      "id": "CR-003",
+      "title": "stagingTargets[].auth.kind has no closed enum despite gating the active-scan login path",
+      "severity": "low",
+      "category": "improvement",
+      "finding_type": "input_validation",
+      "risk_domain": "none",
+      "scope_signal": "local",
+      "triage_hint": "technical",
+      "source_refs": [
+        { "type": "quote", "value": "\"auth\": { \"kind\": \"form\", \"loginPath\": \"/api/auth/login\"," },
+        { "type": "section_name", "value": "6.2 `TargetRegistry` (`config/targets.json`)" },
+        { "type": "quote", "value": "using the target's `auth` config (§6.2)" }
+      ],
+      "rationale": "§6.2 shows auth.kind with a single value 'form' but no enumeration or closure rule, whereas §6.7 vulnClass is an explicitly closed set requiring a spec amendment to extend. The auth config drives the authenticated crawl that powers IDOR/session checks (§7.3 active family), so the accepted values are load-bearing for the Zod schema. A defensible v1 default ('form' only) exists, so this is low rather than blocking, but leaving the set open invites schema drift.",
+      "recommendation": "State the closed set for auth.kind in §6.2 (e.g. 'form' is the only kind in v1; adding another requires a spec amendment, per the closed-set rule applied to vulnClass in §6.7), so the Zod schema author has an unambiguous enum.",
+      "acceptance_check": "§6.2 enumerates the permitted auth.kind values and declares whether the set is closed; confirm the enum is present and a closure statement accompanies it.",
+      "verification": "Re-read §6.2 after edit for an explicit auth.kind enum + closure note.",
+      "fix_sketch": "Add a sentence under the §6.2 TargetRegistry block: 'auth.kind ∈ { \"form\" } in v1 (closed set; extension requires a spec amendment).'",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "Auto-apply disabled by default for claude-spec-review at launch; coordinator applies."
+    }
+  ]
+}
