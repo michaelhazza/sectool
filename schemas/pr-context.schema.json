@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "pr-context.schema.json",
+  "title": "PrContext",
+  "description": "PR_CONTEXT input shape passed to PR-mode review (§3a).",
+  "type": "object",
+  "required": ["pr_title", "build_slug", "task_class", "phase_2_review_outcomes"],
+  "additionalProperties": false,
+  "properties": {
+    "pr_title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "build_slug": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_class": {
+      "type": "string",
+      "enum": ["Trivial", "Standard", "Significant", "Major"]
+    },
+    "phase_2_review_outcomes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spec_conformance": {
+          "type": "string",
+          "enum": ["CONFORMANT", "CONFORMANT_AFTER_FIXES", "NON_CONFORMANT", "skipped"]
+        },
+        "reality_checker": {
+          "type": "string",
+          "enum": ["APPROVED", "CHANGES_REQUESTED", "NEEDS_DISCUSSION", "skipped"]
+        },
+        "adversarial_reviewer": {
+          "type": "string",
+          "enum": ["APPROVED", "CHANGES_REQUESTED", "NEEDS_DISCUSSION", "skipped"]
+        },
+        "dual_reviewer": {
+          "type": "string",
+          "enum": ["APPROVED", "CHANGES_REQUESTED", "NEEDS_DISCUSSION", "skipped", "REVIEW_GAP"]
+        }
+      }
+    },
+    "accepted_deviations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "spec_path": {
+      "type": "string"
+    },
+    "plan_path": {
+      "type": "string"
+    },
+    "claude_pr_review_log_path": {
+      "type": "string"
+    },
+    "verification_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lint": {
+          "type": "string"
+        },
+        "typecheck": {
+          "type": "string"
+        },
+        "targeted_tests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

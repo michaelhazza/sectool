@@ -1,0 +1,217 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "review-finding.schema.json",
+  "title": "ReviewFinding",
+  "description": "A single finding in a review-result.v2 envelope.",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "severity",
+    "category",
+    "finding_type",
+    "risk_domain",
+    "scope_signal",
+    "triage_hint",
+    "source_refs",
+    "rationale",
+    "recommendation",
+    "acceptance_check",
+    "auto_apply_eligible",
+    "auto_apply_reason"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low"]
+    },
+    "category": {
+      "type": "string",
+      "enum": ["bug", "improvement", "style", "architecture"]
+    },
+    "finding_type": {
+      "type": "string",
+      "enum": [
+        "null_check",
+        "idempotency",
+        "naming",
+        "architecture",
+        "error_handling",
+        "test_coverage",
+        "security",
+        "performance",
+        "scope",
+        "transaction_scope",
+        "rls_policy",
+        "input_validation",
+        "observability",
+        "spec_delta",
+        "other"
+      ]
+    },
+    "risk_domain": {
+      "type": "string",
+      "enum": [
+        "none",
+        "tenant_isolation",
+        "security",
+        "auth_authorisation",
+        "idempotency",
+        "data_integrity",
+        "user_visible",
+        "compliance"
+      ]
+    },
+    "scope_signal": {
+      "type": "string",
+      "enum": ["local", "architectural"]
+    },
+    "triage_hint": {
+      "type": "string",
+      "enum": ["technical", "user-facing", "technical-escalated"]
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["type", "value"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["spec_section", "diff_hunk", "file_line", "quote", "section_name"]
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recommendation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acceptance_check": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "pattern": "([Cc][Oo][Vv][Ee][Rr][Ee][Dd] [Bb][Yy] [Tt][Ee][Ss][Tt][Ss]|[Vv][Ee][Rr][Ii][Ff][Yy] [Mm][Aa][Nn][Uu][Aa][Ll][Ll][Yy]|[Rr][Ee][Vv][Ii][Ee][Ww] [Tt][Hh][Ee] [Ss][Ee][Cc][Tt][Ii][Oo][Nn]|[Ss][Ee][Ee] [Cc][Oo][Dd][Ee]|[Ss][Pp][Oo][Tt] [Cc][Hh][Ee][Cc][Kk])"
+      }
+    },
+    "auto_apply_eligible": {
+      "type": "boolean"
+    },
+    "auto_apply_reason": {
+      "type": "string"
+    },
+    "proposed_edits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["file_path", "anchor", "replacement"],
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "anchor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "replacement": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "applied_inline_by_reviewer": {
+      "type": "boolean"
+    },
+    "operator_decision_required_reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deferred_until": {
+      "type": "string",
+      "minLength": 1
+    },
+    "backlog_target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "affected_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "string"
+    },
+    "fix_sketch": {
+      "type": "string"
+    }
+  },
+  "if": {
+    "properties": {
+      "auto_apply_eligible": { "const": true }
+    },
+    "required": ["auto_apply_eligible"]
+  },
+  "then": {
+    "required": ["proposed_edits"],
+    "properties": {
+      "auto_apply_reason": {
+        "const": "local_one_obvious_fix"
+      },
+      "proposed_edits": {
+        "type": "array",
+        "minItems": 1
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "recommendation": { "const": "defer" }
+        },
+        "required": ["recommendation"]
+      },
+      "then": {
+        "required": ["deferred_until", "backlog_target"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "auto_apply_eligible": { "const": false },
+          "triage_hint": {
+            "enum": ["user-facing", "technical-escalated"]
+          }
+        },
+        "required": ["auto_apply_eligible", "triage_hint"]
+      },
+      "then": {
+        "required": ["operator_decision_required_reason"]
+      }
+    }
+  ]
+}

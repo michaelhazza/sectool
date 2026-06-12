@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$comment": "Template for .claude/project-registries.json — copy to your consuming repo's .claude/ directory and fill in the null placeholders with paths that exist in your project. The chatgpt-review coordinator reads this file at dispatch time and injects each section as a `## <section-name>` heading into PROJECT_CONTEXT, where the chatgpt-{spec,plan,pr}-review Hunt Targets reference them via 'named in PROJECT_CONTEXT'. Missing or null sections degrade gracefully (the relevant Hunt Targets fall silent on that run) and the coordinator logs a console.warn per missing section. See `tasks/builds/chatgpt-prompt-tuning-notifications-system-2026-05-29/brief.md` §6.2 for the full contract.",
+  "frameworkVersion": "2.8.0",
+
+  "registry_manifest_surfaces": {
+    "$comment": "The canonical file paths your project uses for each registry the new Hunt Targets reference. Set any entry to null if your project does not have a corresponding registry; the Hunt Target that references it will fall silent. Fill what applies.",
+    "rls_protected_tables_registry": null,
+    "rls_not_applicable_allowlist": null,
+    "canonical_error_code_registry": null,
+    "job_payload_fixtures_registry": null,
+    "job_config_registry": null,
+    "scoped_db_helpers": null,
+    "guard_baselines_file": null
+  },
+
+  "ci_only_gates": {
+    "$comment": "The list of gate scripts your project marks as CI-only (i.e. forbidden from local execution as acceptance evidence). Use glob patterns or an explicit array of paths.",
+    "scripts": null,
+    "policy_ref": null
+  },
+
+  "gate_ids_and_suppression_scopes": {
+    "$comment": "A digest table mapping each gate script to its canonical GUARD_ID literal and the suppression scopes it supports. The reviewer uses this for the PR-NEW-4 guard-ignore comment correctness check. Either provide an explicit array of {script, guard_id, supported_scopes[]} objects, or set to null to skip.",
+    "gates": null
+  },
+
+  "ci_workflow_files": {
+    "$comment": "The paths to the CI workflow files your project uses for PR-check and merge-ready CI runs. The reviewer references these for the PR-NEW-6 large-diff CI infrastructure adequacy heads-up.",
+    "pr_check_workflow": null,
+    "ci_workflow": null
+  },
+
+  "local_vs_ci_verification_policy": {
+    "$comment": "A one-paragraph summary of your project's local-vs-CI split. The reviewer uses this for the PLAN-NEW-1 local-vs-CI verification language consistency check.",
+    "summary": null,
+    "policy_doc_ref": null
+  },
+
+  "sibling_repos_$comment": "Convention: array fields use a `<fieldname>_$comment` sibling key for inline documentation, since the existing `{ \"$comment\": \"...\", ... }` object-level convention cannot attach to array values. Optional. The `sibling_repos` array holds objects of shape { name, github, local_path, is_framework_aligned } describing sibling repositories the cross-repo-scout agent (v2.13.0+) searches. Example file: .claude/project-registries.json.template.example.md. Empty array is the valid default — cross-repo-scout returns empty results without warning.",
+  "sibling_repos": []
+}

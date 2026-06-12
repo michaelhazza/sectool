@@ -1,0 +1,3 @@
+[submodule ".claude-framework"]
+	path = .claude-framework
+	url = https://github.com/michaelhazza/claude-code-framework

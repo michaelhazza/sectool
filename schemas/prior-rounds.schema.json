@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "prior-rounds.schema.json",
+  "title": "PriorRounds",
+  "description": "Prior review rounds passed as context to the next round (§3a PRIOR_ROUNDS input shape).",
+  "type": "object",
+  "required": ["current_round", "findings_settled", "coordinator_notes"],
+  "additionalProperties": false,
+  "properties": {
+    "current_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "findings_settled": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "prior_decision"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "prior_severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"]
+          },
+          "prior_decision": {
+            "type": "string",
+            "enum": ["applied", "rejected", "deferred"]
+          },
+          "applied_at_round": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "applied_via": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "coordinator_notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

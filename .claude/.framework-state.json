@@ -1,0 +1,716 @@
+{
+  "frameworkVersion": "2.19.0",
+  "adoptedAt": "2026-06-12T10:22:18.688Z",
+  "adoptedFromCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+  "profile": "STANDARD",
+  "substitutions": {
+    "PROJECT_NAME": "audit-tool",
+    "PROJECT_DESCRIPTION": "Internal security audit tool: static (SAST) scanning of our source repos plus live (DAST) scanning of allowlisted staging URLs, merged into one prioritized remediation report.",
+    "STACK_DESCRIPTION": "Node 20+ / TypeScript (ESM, npm); ts-morph AST rule engine; Semgrep, gitleaks, osv-scanner, OWASP ZAP, Nuclei shelled out and version-pinned; Zod schemas; Vitest; eslint + typescript-eslint",
+    "COMPANY_NAME": "Breakout Solutions"
+  },
+  "files": {
+    ".claude/agents/adversarial-reviewer.md": {
+      "lastAppliedHash": "ec6bbef6ae5dd0580c2fcaf8cff5ad4c61584155e07ab6dbdda7eccc0949c6cf",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/architect.md": {
+      "lastAppliedHash": "e3e855208b6ab58f16fe42752b117f5e5fc0ac5d4241a8ba6fc539349722e84b",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/audit-runner.md": {
+      "lastAppliedHash": "563a31a5044f232b68ecf7458f8103118780a78c889736d1074927b2a14fa311",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/bug-fixer.md": {
+      "lastAppliedHash": "4668e1e5584b0061acc9c3842b0bcc30d5bc14bfd0e0b60026b73a45163a42c9",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/builder.md": {
+      "lastAppliedHash": "b458072376bca4845720cb8c3458c7c33e57979bfca0b6de54e6e9b757db3996",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/chatgpt-plan-review.md": {
+      "lastAppliedHash": "caff7803d8a9ea3e94460826aa4c80d43e2f2bfbca26e7948d0cb12291a9dfc8",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/chatgpt-pr-review.md": {
+      "lastAppliedHash": "4edf6027a3cf11f066e3b00fbabd5c9205b4e2e3647f8e00e08775b10c3d4939",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/chatgpt-spec-review.md": {
+      "lastAppliedHash": "ca844cb851d5d48f381704d339896ea1a997bc64d8b54994af135c9486e3c536",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/claude-plan-review.md": {
+      "lastAppliedHash": "caed82490f3f39f5591734664ffac7ed4ec03fce29d9edf6248457a44bad933d",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/claude-spec-review.md": {
+      "lastAppliedHash": "8ad25f53161ed09ef0925cad97853dee3987627e4077db23a2b1152f1f21818a",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/codebase-explainer.md": {
+      "lastAppliedHash": "5b13ea6129bae542b62ea883a9252fa22a466732ef5449064c415106f1951ea1",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/context-pack-loader.md": {
+      "lastAppliedHash": "b201101abd809212a48159bfe19d5479b97ee75949eba02c91f917852f680dd4",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/cross-repo-scout.md": {
+      "lastAppliedHash": "2a936914cfe25b67e483fcb2a8be4c9afce7d94bfcf69ad63dce0ef6b16a2c6f",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/dual-reviewer.md": {
+      "lastAppliedHash": "9703d6a15aecc3289458ac5479801448ad08bfbd0e5b75de4e0a95d0eeea398b",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/experiment-runner.md": {
+      "lastAppliedHash": "09047bb72ee56d0e6e0aa745ef385333d1280c98e7951802e05527b9c10599ee",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/feature-coordinator.md": {
+      "lastAppliedHash": "a1700faece94e3438201e464b1525647c14104ff5c53d39ae5609462e6fa0c30",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/finalisation-coordinator.md": {
+      "lastAppliedHash": "ba31b8aef25a53d517f7193bf2e63c20116dd0398ca26775f79b4b3dd15f52dc",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/hotfix.md": {
+      "lastAppliedHash": "370e253f2a0f536c8f80a64d1f460fa423c5be142b51c9cd31d389ddcade82be",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/incident-commander.md": {
+      "lastAppliedHash": "afca2604db91e002820354b9af211d85da63b43b0a572f35f8524d7a84b006c3",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/mockup-coordinator.md": {
+      "lastAppliedHash": "539b44867630aaed1015265b6518f610863d7d36c87a041814ba363d009d69f4",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/mockup-designer.md": {
+      "lastAppliedHash": "a61ffcd84fc6a9083fd410a249f741bca3e66b148740dfac72d3bcd7512c7cc6",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/mockup-reviewer.md": {
+      "lastAppliedHash": "abfb7df43b593fc4d9cab8cb99279bb7df0b4b066443648258166eaef189df89",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/pr-reviewer.md": {
+      "lastAppliedHash": "57c3e98177f62ea2935c8781f89c3fe3791d0f754df9b8bf21609c8119a768a5",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/reality-checker.md": {
+      "lastAppliedHash": "242b1ad5365d6b214f7878089b366159959a9992ca46334ad3ed24073450e4f0",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/spec-conformance.md": {
+      "lastAppliedHash": "1aa909fba80f83aeb753ccf4bb1f27b4db13630b23b568464f99f583ff1f70d9",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/spec-coordinator.md": {
+      "lastAppliedHash": "0fb00218ccc9b60c5e4e7cec6caf46583e6bbc6af43c646e67a8daf89fde2141",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/spec-reviewer.md": {
+      "lastAppliedHash": "1ab32432c947eb63f5ff9ba756761336148171020125091c5539daa50beab379",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/triage-agent.md": {
+      "lastAppliedHash": "9162d98930edf026d37aeede30cda3c704a6d035b94aa7ad2bec61410fb1e98a",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/agents/validate-setup.md": {
+      "lastAppliedHash": "534fd7a97a6149920d8e23a8184ad5b6636d775de4173a7f2ffea0eac184ec4c",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/agents/*.md",
+      "customisedLocally": false
+    },
+    ".claude/commands/claudeupdate.md": {
+      "lastAppliedHash": "9e2c3b5f76b23ad4dca784e0499014c50601db2bd0b177090173023162cb078d",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/commands/*.md",
+      "customisedLocally": false
+    },
+    ".claude/hooks/code-graph-freshness-check.js": {
+      "lastAppliedHash": "dfcd177b706eaefb17dff99ce77e9ff2b5605ae291b03a3b40641aa8bd79bcec",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/config-protection.js": {
+      "lastAppliedHash": "dd4e7266c52b3f3e128fe3a4adafb2b57773458ff908267b6dd38e0d1c0f4dc6",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/correction-nudge.js": {
+      "lastAppliedHash": "38924c0b9e56752d912f1b472a6338d2b57479dc5dc93c67ca6fc4f34bb18aad",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/long-doc-guard.js": {
+      "lastAppliedHash": "97c007016ae354730d855894162cb8815642a7ae1d365c6d163376cdb30ce9d8",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/phase-lock.js": {
+      "lastAppliedHash": "2098144f2aad8c55ae225bfad994068d06e971d58788aa2ceb7bba853cfaf5c9",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/phase-lock.test.js": {
+      "lastAppliedHash": "6f84e2f9e5f0c3a1ff87b9e70d53c840c4e03357c5ba9ddb23f685dc3207c567",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/spec-creation-grill-nudge.js": {
+      "lastAppliedHash": "904178ae27edf65d11babceb2b7a43c4409aec51efc14a0efc1a12ee1776df94",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/hooks/spec-creation-grill-nudge.test.js": {
+      "lastAppliedHash": "b9d313d24f497416e32982a4f601f95fae59b13f007449051fc6923664495402",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/hooks/*.{js,sh}",
+      "customisedLocally": false
+    },
+    ".claude/skills/grill-me/SKILL.md": {
+      "lastAppliedHash": "a291bb72a00dd00d1bb1b03bf12ff716128d0633def1a984f57b1cc34ce44d2b",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/skills/grill-me/SKILL.md",
+      "customisedLocally": false
+    },
+    ".claude/skills/zoom-out/SKILL.md": {
+      "lastAppliedHash": "d86300b8b96b810c8e261d8b1e39a672e46fd12fb60663466112a67867d7d0d8",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/skills/zoom-out/SKILL.md",
+      "customisedLocally": false
+    },
+    ".claude/settings.json": {
+      "lastAppliedHash": "fe2087048b537299c3922ea169f25692804fbb0d0b97b8ef7024749b51367c81",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/settings.json",
+      "customisedLocally": false
+    },
+    ".claude/FRAMEWORK_VERSION": {
+      "lastAppliedHash": "566544d255dd6a4929a440484ac10b4198eff0309059f18714ac481e43020690",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/FRAMEWORK_VERSION",
+      "customisedLocally": false
+    },
+    ".claude/CHANGELOG.md": {
+      "lastAppliedHash": "cd3b3db019502824118016f3b28bc871c8eb9b9be44c3ee36ae5f649ec3e3ac4",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/CHANGELOG.md",
+      "customisedLocally": false
+    },
+    ".claude/project-registries.json.template": {
+      "lastAppliedHash": "7d2effa462567a2713f3e5c6ac03f45832a70da7d3c24660411250722a859fb1",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/project-registries.json.template",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "docs/decisions/0001-mixed-mode-review-agents.md": {
+      "lastAppliedHash": "340a38c360a9db1574e969bb02244eb500994b659f41c3ee97797e9b6f9e8cb8",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/decisions/0001-*.md",
+      "customisedLocally": false
+    },
+    "docs/decisions/0002-interactive-vs-walkaway-review-agents.md": {
+      "lastAppliedHash": "3f64ad4ece77992e08bb1dd12a6ff34037de0860c3bf3c70c48b788c1c970ea6",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/decisions/0002-*.md",
+      "customisedLocally": false
+    },
+    "docs/decisions/0005-risk-class-split-rollout-pattern.md": {
+      "lastAppliedHash": "fb3c9ff35630fdbc1b489e0d906167f4ab6d526493eb9d23b6a8fab810cb95c6",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/decisions/0005-*.md",
+      "customisedLocally": false
+    },
+    "docs/decisions/README.md": {
+      "lastAppliedHash": "3db9e8433605bbf1ce3f5dc1f794d92ee9134cc740b9a4bbdb79afcf8b67ebdc",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/decisions/README.md",
+      "customisedLocally": false
+    },
+    "docs/decisions/_template.md": {
+      "lastAppliedHash": "ae8b20933d0226ae969196b851d3be80e0df4723749c84509aa6b055ea4b2b3c",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/decisions/_template.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/README.md": {
+      "lastAppliedHash": "4ca1208b7cc1f219434736499dacb0c17757042b705f1a1c12e037f77e7fa942",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/debug.md": {
+      "lastAppliedHash": "52fc308a967358ea50363cd4a867404f8a2992b0a0df692c89914d3f8256e7d3",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/handover.md": {
+      "lastAppliedHash": "13f82495f9c1ba18d5a3f0436bd8aea42794e7a955a524adeb846a614e11bd33",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/implement.md": {
+      "lastAppliedHash": "59dde3261cfa6e5541a07cb63ff2888617f279c02452538150e85fd4a9c53c18",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/minimal.md": {
+      "lastAppliedHash": "ddc93099fafecb4c75cd6c6f0123931715ba20e2e973d7f5649738d84385d541",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/context-packs/review.md": {
+      "lastAppliedHash": "1179d96ca4960547b91c4e37d993af1855e164dd21ecf5322a606f571646643d",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/context-packs/*.md",
+      "customisedLocally": false
+    },
+    "docs/spec-authoring-checklist.md": {
+      "lastAppliedHash": "9f77592533af3073460d4f7d5b1bd379b3ffe3a63fe270cc44da1829174107fc",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/spec-authoring-checklist.md",
+      "customisedLocally": false
+    },
+    "docs/frontend-design-principles.md": {
+      "lastAppliedHash": "dde25a33f0c82439437b8dd3a1e1a6cae9eb8abbec4dfbd4828a907082f7a0e4",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/frontend-design-principles.md",
+      "customisedLocally": false
+    },
+    "docs/mobile-capability-principles.md": {
+      "lastAppliedHash": "f1c117da09703fd1e242586173fd72d8a859b30dd30a56dc128bcae13409a41c",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/mobile-capability-principles.md",
+      "customisedLocally": false
+    },
+    "references/test-gate-policy.md": {
+      "lastAppliedHash": "dcecba6a2045e2475b54ee3532736e12a9c4542f34b995064659952f69bf0683",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "references/test-gate-policy.md",
+      "customisedLocally": false
+    },
+    "references/spec-review-directional-signals.md": {
+      "lastAppliedHash": "e2a5b90da302b84308a38db94e3a43c741b6705fadcd2a002b5f3b9c9e068716",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "references/spec-review-directional-signals.md",
+      "customisedLocally": false
+    },
+    "docs/incident-response.md": {
+      "lastAppliedHash": "3b7deddc27aeab40390fb0666f623f45a1e401c18ee4286baae1f55e0b620936",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/incident-response.md",
+      "customisedLocally": false
+    },
+    "docs/review-pipeline/parallel-mode.md": {
+      "lastAppliedHash": "7c3e586454b305f0332c0ac086d0d0b52570efef561a3552cd567d3f4a4c316c",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/review-pipeline/parallel-mode.md",
+      "customisedLocally": false
+    },
+    "docs/spec-context.md": {
+      "lastAppliedHash": "d9f7fa02ad5c2fa690b16dec796ba9b6d5a11758483fb8c73b31f72bb69b6b7e",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/spec-context.md",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "docs/frontend-design-examples.md": {
+      "lastAppliedHash": "e8569f42e2a392824112e0bba0137aad2d213f7cc6291d9a29f5c3c534c15527",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/frontend-design-examples.md",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "docs/doc-sync.md": {
+      "lastAppliedHash": "3a14a9658a62eb83098398cdd9a92f96ab7a1522ee74ef47532403acc909ed44",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "docs/doc-sync.md",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "references/verification-commands.md": {
+      "lastAppliedHash": "7054c3c078e7aac8d26fe3762aea91c6f3848b088a3c7e095c62ef1cf79b8cb5",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "references/verification-commands.md",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "scripts/g5-scoped.sh": {
+      "lastAppliedHash": "0a7d0c3cd6b83952f15e445f090d8fbd0827897928ab230ceba1ced181e20e33",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/g5-scoped.sh",
+      "customisedLocally": false,
+      "adoptedOwnership": true
+    },
+    "scripts/chatgpt-review.ts": {
+      "lastAppliedHash": "fa00854503370954e9224bfa56db5490797249e11cfe9a059c5c69d0b680e4a7",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/chatgpt-review.ts",
+      "customisedLocally": false
+    },
+    "scripts/chatgpt-review-api.ts": {
+      "lastAppliedHash": "1bf7e7a0bf9405ba859bb03d7ea34b519962bdf0c28a442be132c7fbc3af96bd",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/chatgpt-review-api.ts",
+      "customisedLocally": false
+    },
+    "scripts/chatgpt-reviewPure.ts": {
+      "lastAppliedHash": "95938bd7a25f6b15b24d3d8a2a62d8a940e902dfcfc1068d48ba0f659c267fef",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/chatgpt-reviewPure.ts",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/chatgpt-reviewPure.test.ts": {
+      "lastAppliedHash": "391d581bff52e6aa358eac4200bf6d87bef7cb7431434fc96ed264e8b76da76d",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/chatgpt-reviewPure.test.ts",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/local-override-smoke.js": {
+      "lastAppliedHash": "6f216e4155ec93e2b5d023bfbfffcd78323e4ede06ed2205682c93c9475ca169",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/local-override-smoke.js",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/local-override-e2e.js": {
+      "lastAppliedHash": "cf0ee2520e73ebc7f81e43ad668f351757c9eda5ef9407a94f7cb31c2219571f",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/local-override-e2e.js",
+      "customisedLocally": false
+    },
+    "references/local-override-convention.md": {
+      "lastAppliedHash": "ef61711e0ad1159b3d6ed676e398ab029bef650a33f20f90e4e29e23a5e0b182",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "references/local-override-convention.md",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/applyFindings.ts": {
+      "lastAppliedHash": "3c1e9c503a96b8a7efd4075bf076e320e7f7b864968741b7cb5b15884b2c4b55",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/applyFindingsPure.ts": {
+      "lastAppliedHash": "9de4a11abc6fbe3c666b716c25916e6a566b01fd706c8d633d2a9b9873e0542c",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/auditLog.ts": {
+      "lastAppliedHash": "ca4d25b28ef42629fedb41fc49880cc9fa92ef9dde0c071bb712ff83ea406501",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/buildDiffPackage.ts": {
+      "lastAppliedHash": "ddc9371507328a02abf1571b31cf3368e2deaec5338cde526213fe864b830728",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/buildDiffPackagePure.ts": {
+      "lastAppliedHash": "66551a08e34e54ec56ac49bc9ac44c3d57cacd7a977ac81eba517c49bf1e0e75",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/resolveBaseRef.ts": {
+      "lastAppliedHash": "a5041e958b768caa0303324f4ed9eed99c443543cccbc71cf6a0f5c7744dab83",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/suppressionStore.ts": {
+      "lastAppliedHash": "0227c86a4b1fe1ac56dcb04070628adcc482e028629cbe9e8bd00fa592e87c10",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "scripts/review-coordinator/validateProjectContextPure.ts": {
+      "lastAppliedHash": "4d04c9ea32ff5c5bd4c3a1ca8736babb0f1a48c941b6fd6a385afb0725e4c174",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/review-coordinator/*.ts",
+      "customisedLocally": false
+    },
+    "schemas/pr-context.schema.json": {
+      "lastAppliedHash": "efd17406a88f6b11b3a9415a168e669b03d49fe24af37687b484df270654d7b6",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "schemas/*.json",
+      "customisedLocally": false
+    },
+    "schemas/prior-rounds.schema.json": {
+      "lastAppliedHash": "86c7c78cb5fa1b5cdb958ca9e9b81788e9833aff3a7e31762dece5668a7d8acf",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "schemas/*.json",
+      "customisedLocally": false
+    },
+    "schemas/review-finding.schema.json": {
+      "lastAppliedHash": "eb75ba47a6ac2b6623691f3556654d6a24001eae11a730d4ecdbfaeb8a687619",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "schemas/*.json",
+      "customisedLocally": false
+    },
+    "schemas/review-result.schema.json": {
+      "lastAppliedHash": "c69f820ee63dcfe6dbf12e0fce3f1cda192153170cb74b1075c921d2e199587a",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "schemas/*.json",
+      "customisedLocally": false
+    },
+    "schemas/CHANGELOG.md": {
+      "lastAppliedHash": "4ba7ea1fe119e8f14daabb53f2ed675c8f1069566ee3ab078caf37dbb379f1e2",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "schemas/CHANGELOG.md",
+      "customisedLocally": false
+    },
+    "scripts/run-migrations.js": {
+      "lastAppliedHash": "cb3864214150fb09b414dbd47e03dddee9747f0d7c4ef343d68f5f1e5b863a91",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/run-migrations.js",
+      "customisedLocally": false
+    },
+    "migrations/README.md": {
+      "lastAppliedHash": "252484a0f57f3d0a9fdba739479652077ff30b8c08cb274c4b6ba0fea313f747",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "migrations/README.md",
+      "customisedLocally": false
+    },
+    "migrations/v2.12.0.js": {
+      "lastAppliedHash": "f073ef54915d5d904909ec9341c0cd1fc4fa21addbcb9cb8c2c90951c0658d7d",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "migrations/v*.js",
+      "customisedLocally": false
+    },
+    "migrations/v2.13.0.js": {
+      "lastAppliedHash": "99438aeeafa8724bf009ead0f317e058208252ac7c539dbb4605eb73420d02f1",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "migrations/v*.js",
+      "customisedLocally": false
+    },
+    "migrations/v2.8.0.js": {
+      "lastAppliedHash": "6d296799d2e7ae2c1c2d0a2da1391f0c7b2768f95b05a112907db7ca5bd3bfd5",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "migrations/v*.js",
+      "customisedLocally": false
+    },
+    "scripts/experiment-runner-loopPure.ts": {
+      "lastAppliedHash": "508155400994641022ecc3eddc2e5a6792dff4f83f7c59402b810361980b5744",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/experiment-runner-loopPure.ts",
+      "customisedLocally": false
+    },
+    "scripts/cross-repo-scoutPure.ts": {
+      "lastAppliedHash": "1f970b38e882bdd2558ba2791c5b1d74f5103b6065882881db54ad662365a9c8",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/cross-repo-scoutPure.ts",
+      "customisedLocally": false
+    },
+    "scripts/audit-context-packs.ts": {
+      "lastAppliedHash": "d0c948d302b37f8603470a5a115760a7f01201cb5a15aeec8e64a0e230656536",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/audit-context-packs.ts",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/experiment-runner-loopPure.test.ts": {
+      "lastAppliedHash": "8622f661030d9bf12e45cd42ee854edfde18c9cad8be014dbd59f54fcaf4c0dd",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/experiment-runner-loopPure.test.ts",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/cross-repo-scoutPure.test.ts": {
+      "lastAppliedHash": "796a0af4eebaae16630756b56a478591ecbae2ab5ba9e41b913137e9ec4ad3fa",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/cross-repo-scoutPure.test.ts",
+      "customisedLocally": false
+    },
+    "scripts/__tests__/audit-context-packs.test.ts": {
+      "lastAppliedHash": "8007c47ce0bd70a7a9719dac990a3605bdd72a23dc0c1b8cf132ddba4af90438",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": "scripts/__tests__/audit-context-packs.test.ts",
+      "customisedLocally": false
+    },
+    ".claude/project-registries.json.template.example.md": {
+      "lastAppliedHash": "d73f0ebe1dbc1f1d8673f6b7c3977bf783e3b2d7b85211f6960398cb0b1bd54f",
+      "lastAppliedFrameworkVersion": "2.19.0",
+      "lastAppliedFrameworkCommit": "ed577bd758372fc2c1e3871717a0f1f672032a8d",
+      "lastAppliedSourcePath": ".claude/project-registries.json.template.example.md",
+      "customisedLocally": false
+    }
+  },
+  "syncIgnore": [],
+  "appliedMigrations": [],
+  "lastSubstitutionHash": "0bbc11a3addee615ab9e81135b9f4834699a477e2aa471d8e0393973c9d8c29e"
+}

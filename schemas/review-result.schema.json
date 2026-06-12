@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "review-result.schema.json",
+  "title": "ReviewResult",
+  "description": "Top-level review result envelope. Version review-result.v2.",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "project_context_version",
+    "source_artifact_sha",
+    "findings",
+    "verdict",
+    "integrity_check"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "review-result.v2"
+    },
+    "prompt_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewer_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stitched_from": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "project_context_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_artifact_sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "review-finding.schema.json"
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["APPROVED", "CHANGES_REQUESTED", "NEEDS_DISCUSSION"]
+    },
+    "integrity_check": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_provider": {
+      "type": "string"
+    },
+    "model_name": {
+      "type": "string"
+    },
+    "model_version": {
+      "type": "string"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "OpenAI-tier result: has prompt_version, no reviewer_version, no stitched_from",
+      "required": ["prompt_version"],
+      "not": {
+        "anyOf": [
+          { "required": ["reviewer_version"] },
+          { "required": ["stitched_from"] }
+        ]
+      }
+    },
+    {
+      "description": "Claude-tier result: has reviewer_version, no prompt_version, no stitched_from",
+      "required": ["reviewer_version"],
+      "not": {
+        "anyOf": [
+          { "required": ["prompt_version"] },
+          { "required": ["stitched_from"] }
+        ]
+      }
+    },
+    {
+      "description": "Coordinator-stitched record: has stitched_from plus both prompt_version and reviewer_version",
+      "required": ["stitched_from", "prompt_version", "reviewer_version"]
+    }
+  ]
+}
