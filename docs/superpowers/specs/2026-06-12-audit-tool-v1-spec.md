@@ -1,6 +1,6 @@
 # Spec — audit-tool v1: internal security audit tool (SAST + staging-only DAST)
 
-**Status:** reviewing
+**Status:** accepted
 **Spec date:** 2026-06-12
 **Last updated:** 2026-06-12
 **Author:** claude (spec-coordinator, autonomous session; operator: michaelhazza)
@@ -13,12 +13,14 @@
 | Capability cluster | Static Scanning, Live Scanning, Correlation & Reporting, Target Registry & Safety, Benchmark & Quality |
 | Capability owner | michaelhazza |
 | Lifecycle state on launch | Inception |
-| Risk surface | None. |
+| Risk surface | Controlled live HTTP traffic to Breakout-owned staging hosts (allowlist-gated, §4); read-only access to source repos; CI artifacts containing security findings. |
 | Review cadence | quarterly (plus the post-v1 "what classes are we not scanning for" human review from the brief) |
 
 > Risk-surface note: the §7.1.1 vocabulary enumerates target-app surfaces that
-> do not exist in this repo. The build's actual highest-stakes surface — live
-> traffic to staging hosts — is governed by §4 (staging-only safety contract).
+> do not exist in this repo, so the declaration above uses descriptive prose
+> instead (operator decision, review of 2026-06-12 — "None." understated the
+> governance posture for a security scanning tool). The highest-stakes
+> surface — live traffic to staging hosts — is governed by §4.
 
 ## ABCd Lifecycle Estimate
 
@@ -123,6 +125,15 @@ structurally impossible, not merely forbidden:
    host (§10), and the self-scan CI gate asserts no other module imports the
    gate with a non-`load.ts` allowlist source. [Added per claude-spec-review
    CR-002.]
+10. **Branded `LoadedAllowlist`.** `assertAllowlisted` accepts only a branded
+    `LoadedAllowlist` type (not raw arrays), mintable solely inside
+    `src/config/load.ts` via two functions: `loadAllowlist()` (production —
+    fixed path per §4.9) and `loadBenchmarkAllowlist()` (fixed path
+    `benchmark/allowlist.benchmark.json`, schema-restricted to loopback hosts:
+    `127.0.0.1` / `localhost` / `*.localhost` only). Normal callers cannot
+    hand the gate an arbitrary allowlist without going through `load.ts`, and
+    the benchmark path structurally cannot allowlist a non-loopback host.
+    [Per operator review, non-blocking note — strengthens §4.9.]
 
 ## 5. Architecture (4 layers)
 
@@ -210,8 +221,10 @@ fields are surface-specific (static vs live shapes are a discriminated union on
     "repo": "automation-v1",               // link for static↔live correlation (§9)
     "activeScan": false,                   // default false — passive + non-intrusive only
     "auth": { "kind": "form", "loginPath": "/api/auth/login",
-              "userEnv": "AUDIT_STAGING_AUTOMATION_USER",
-              "passEnv": "AUDIT_STAGING_AUTOMATION_PASS" },      // env NAMES, never values
+              "testUsers": [               // env NAMES, never values
+                { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_A", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_A" },
+                { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_B", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_B" }
+              ] },
     "rateLimitRps": 10,                    // clamped 1–25 by schema
     "enabled": false                       // shipped disabled until operator confirms
   }]
@@ -219,10 +232,25 @@ fields are surface-specific (static vs live shapes are a discriminated union on
 ```
 
 Producer: operator (PR-reviewed). Consumer: CLI + both scan engines.
-Constraint: `stagingTargets[].url` host MUST also be on the allowlist —
-validated at config load; violation is a config error (not a scan-time skip).
-`auth.kind ∈ { "form" }` in v1 — closed set, same closure rule as `vulnClass`
-(§6.7): adding a kind requires a spec amendment. [Per claude-spec-review CR-003.]
+
+**Allowlist cross-check (enabled targets only).** An `enabled: true` staging
+target's URL host MUST be on the allowlist — validated at config load;
+violation is a config error (not a scan-time skip). Disabled targets MAY exist
+off-allowlist (so the shipped config — one disabled sample target + empty
+allowlist — is valid by design); enabling a target requires its host to
+already be allowlisted. [Per operator review HIGH-1.]
+
+**Auth schema.** `auth.kind ∈ { "form" }` in v1 — closed set, same closure
+rule as `vulnClass` (§6.7): adding a kind requires a spec amendment. [Per
+claude-spec-review CR-003.] `auth.testUsers` is a closed array of env-var-name
+pairs: when `auth` is present the schema requires ≥ 1 entry (authenticated
+passive crawl); when `activeScan: true` it requires **exactly 2** entries —
+the IDOR/access-control cross-access checks (§7.3) need two distinct
+identities. Failure behaviour is pinned: if `activeScan: true` and required
+creds are missing or login fails, the target's run is **failed** (named in
+`meta.failures`) — never silently downgraded to passive. If `activeScan:
+false` and creds are missing/login fails, the scan runs unauthenticated and
+the report records an explicit coverage gap. [Per operator review HIGH-3.]
 
 ### 6.3 `Allowlist` (`config/allowed-staging-hosts.json`)
 
@@ -238,15 +266,25 @@ Shipped EMPTY (`"hosts": []`). Consumer: `src/live/gate.ts` only.
 ```jsonc
 { "entries": [ {
     "findingId": "f-3f9a1c2b8d4e0a17",
+    "ruleId": "BS-SQL-001",                                          // required — must match
+    "target": { "kind": "repo", "name": "automation-v1" },           // required — kind + name (repo) or host (staging)
+    "locationKey": "GET /api/users/:id",                             // optional — symbol (static) / normalizedUrlPath (live)
     "justification": "test-only endpoint, removed in Q3 rewrite",   // required, non-empty
     "expiry": "2026-09-30",                                          // required ISO date
     "approvedBy": "michaelhazza"                                     // required handle
 } ] }
 ```
 
+**Scoped suppression.** A baseline entry suppresses a finding only when ALL of
+its fields match: `findingId` AND `ruleId` AND `target` (kind + name/host),
+plus `locationKey` when present. `findingId` alone is insufficient — ids are
+truncated hashes and suppression is security-sensitive, so it is scoped
+defensively. A benchmark test asserts an entry scoped to one target cannot
+suppress the same findingId on another target. [Per operator review MEDIUM-1.]
+
 Expired entries stop suppressing and the finding re-alerts at full severity
 with `note: "baseline expired <date>"` in the report. Malformed entries
-(missing any field) fail config load. Approval = PR review (CODEOWNERS).
+(missing any required field) fail config load. Approval = PR review (CODEOWNERS).
 
 ### 6.5 `TrendHistory` (`history/trend.jsonl`, committed; one line per run)
 
@@ -260,6 +298,16 @@ Counts only — no finding bodies (full reports are CI artifacts, not committed)
 Source-of-truth precedence: the run's `report.json` (artifact) is authoritative
 for findings; `trend.jsonl` is derived counts; on disagreement, `report.json`
 wins and the trend line is regenerated.
+
+**Partial-run rule (scanner failure must not masquerade as remediation).** On
+a `partial` run (§14), trend accounting is computed only for (target ×
+scanner-family) dimensions whose scanners ALL completed. Any target touched by
+a failed/timed-out scanner records `"status": "unknown"` for that run, and
+`fixed` is NEVER computed from a scanner family that did not complete — a
+finding can only transition to `fixed` when the scanner family that previously
+produced it ran to completion and no longer reports it. Partial reports are
+still emitted for human inspection. Guardrail test pinned in §10. [Per
+operator review HIGH-2.]
 
 ### 6.6 Fingerprint (stable finding identity)
 
@@ -330,8 +378,10 @@ disclosure (ZAP passive), known-CVE fingerprinting (Nuclei).
 **Active family** (only when target has `activeScan: true`):
 ZAP active scan (reflected/stored XSS, SQL/command injection probing, CSRF,
 open redirect) + Nuclei fuzzing templates + auth/session weakness checks +
-IDOR/access-control via authenticated crawl (two test users, cross-access
-probe), using the target's `auth` config (§6.2).
+IDOR/access-control via authenticated crawl (two test users — `auth.testUsers`
+exactly 2 per §6.2 — cross-access probe), using the target's `auth` config
+(§6.2). Missing/failed creds on an `activeScan: true` target fail the run
+(§6.2 failure pinning).
 
 Each check family gets a stable `checkId` (`LIVE-TLS-001`, `LIVE-HDR-001`,
 `LIVE-COOKIE-001`, `LIVE-EXPOSE-001`, `LIVE-LEAK-001`, `ZAP-P-*`, `ZAP-A-*`,
@@ -395,7 +445,17 @@ benchmark/
 - Output: recall (target 100% on corpus) + precision (0 FPs on clean
   fixtures), per rule and aggregate; non-zero exit on any miss. False
   positives are bugs equal in severity to missed detections.
-- New rules enter test-first: seed fixture, then write the rule.
+- New rules enter test-first: seed fixture, then write the rule (enforced from
+  P1 by the minimal harness, §12).
+- **Guardrail tests** (part of the benchmark suite, same immutability as the
+  §4.7 abort test):
+  - *Partial-run trend:* one scanner is forced to time out; a previously-known
+    finding from that scanner family must NOT be counted `fixed`, the target's
+    trend status records `unknown`, and the run reports `partial` (§6.5).
+  - *Scoped suppression:* a baseline entry scoped to one target must not
+    suppress the same `findingId` on another target (§6.4).
+  - *Active-scan cred failure:* an `activeScan: true` target with missing
+    creds must produce a `failed` run, not a passive scan (§6.2).
 - **Self-scan gate:** CI statically scans this repo itself and must be clean;
   `benchmark/corpus/**` and `benchmark/live-fixture/**` are excluded via the
   self-scan config (they are intentionally vulnerable by design — exclusion
@@ -435,12 +495,12 @@ RLS appears only as the SUBJECT of rules.
 
 | Phase | Ships | Depends on |
 |---|---|---|
-| P1 | schemas + config loading + fingerprint + CLI skeleton (`--help`, config validation) | — |
+| P1 | schemas + config loading + fingerprint + CLI skeleton (`--help`, config validation) + **minimal benchmark harness** (corpus walker, EXPECTED.json comparison, recall/precision accounting, non-zero exit) — so P3+ rules land test-first against a working harness | — |
 | P2 | static orchestration: clone/localPath + 3 wrapper scanners + normalizers | P1 |
-| P3 | custom rule pack (11 rules) + their corpus fixtures (test-first) | P1, P2 (semgrep runner) |
+| P3 | custom rule pack (11 rules) + their corpus fixtures (test-first, enforced by the P1 harness) | P1, P2 (semgrep runner) |
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
 | P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend | P2–P4 |
-| P6 | benchmark harness + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
+| P6 | benchmark completion (live-fixture integration, guardrail tests §10) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
 
 No backward references: each phase consumes only earlier phases' outputs.
 The v1 exit loop (post-G2, per launch prompt) runs after P6: benchmark + gates
@@ -471,8 +531,10 @@ exit conditions immutable.
 - **Terminal event:** every `audit run` ends with exactly one run-summary
   record (stdout + `report.json.meta.status`): `success` (all scanners ran) |
   `partial` (≥1 scanner failed/timed out — named per scanner in
-  `meta.failures`, never silent) | `failed` (config invalid, allowlist
-  violation, or no scanner completed). Exit codes: 0 / 2 / 1 respectively;
+  `meta.failures`, never silent; trend `fixed` accounting suppressed for
+  incomplete scanner families per §6.5) | `failed` (config invalid, allowlist
+  violation, active-scan cred failure per §6.2, or no scanner completed).
+  Exit codes: 0 / 2 / 1 respectively;
   findings presence does NOT affect exit code of `run` (reporting tool, not a
   gate) — `--fail-on <severity>` opts into gating (used by self-scan CI).
 - **State machine (live path):** `idle → preflight → gated(allowed) → passive →

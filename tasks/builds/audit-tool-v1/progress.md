@@ -34,6 +34,15 @@
 | 10. current-focus → BUILDING | done | |
 | 11. End-of-phase prompt + commit | done | |
 
+## Operator directional review (post-Phase-1 gate check, 2026-06-12)
+
+Operator reviewed the spec as a Phase 2 gate: **CHANGES_REQUESTED** (3 HIGH,
+3 MEDIUM, 1 non-blocking). All seven items applied same day — see
+`tasks/review-logs/operator-spec-review-audit-tool-v1-2026-06-12.md` for the
+finding-by-finding disposition. Spec status `reviewing → accepted` per the
+review's "build-ready after fixes" outcome. This satisfies the directional
+review that Codex/ChatGPT tier skips had left operator-owned.
+
 ## Claude spec review log
 
 - JSON: `tasks/review-logs/claude-spec-review-log-audit-tool-v1-2026-06-12T11-05-00Z.json`

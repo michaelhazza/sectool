@@ -49,13 +49,14 @@ risk stays visible. No end-user-facing surface.
 
 ## Risk Surface
 
-None.
+Controlled live HTTP traffic to Breakout-owned staging hosts (allowlist-gated,
+spec §4); read-only access to source repos; CI artifacts containing security
+findings.
 
-(The §7.1.1 vocabulary enumerates target-app surfaces — `server/routes`, `RLS
-migrations`, etc. — none of which exist in this repo. The build's real risk
-surface is the live-scan path sending active traffic to staging hosts; that is
-governed by the staging-only safety contract and is treated as the highest-
-stakes design constraint in the spec.)
+(Amended per operator review 2026-06-12 — was "None.". The §7.1.1 vocabulary
+enumerates target-app surfaces, none of which exist in this repo; the operator
+ruled that descriptive prose beats an understated "None." for a security
+scanning tool. Kept verbatim-identical to the spec's Lifecycle Declaration.)
 
 ## Assumptions
 
@@ -146,3 +147,14 @@ Decision: adopted.
 
 > Soft checkpoint after 8 rounds: all launch-prompt branches resolved; no open
 > branches. Terminating per autonomous policy (no operator present to continue).
+
+## Post-grill amendments (operator review, 2026-06-12)
+
+Operator directional review of the spec refined two grill decisions:
+
+- **Q7 (authenticated scanning):** unauthenticated-fallback-with-coverage-gap
+  now applies only to `activeScan: false` targets. For `activeScan: true`
+  targets, missing creds or failed login **fail the run** — active checks
+  (IDOR needs exactly 2 test users) must never silently degrade to passive.
+- **Risk Surface:** changed from "None." to descriptive prose (see § Risk
+  Surface above).

@@ -11,8 +11,9 @@
 **Claude spec review log:** tasks/review-logs/claude-spec-review-log-audit-tool-v1-2026-06-12T11-05-00Z.md
 **Claude spec review iterations used:** 1 / 3 (D5 cap) — verdict CHANGES_REQUESTED, 0 blocking; all 3 findings applied
 **ChatGPT spec review log:** skipped — manual operator loop unavailable in autonomous walkaway session; Claude log preserved for D8 passthrough if the operator runs a round later
+**Operator directional review:** DONE (2026-06-12) — CHANGES_REQUESTED, 3 HIGH + 3 MEDIUM + 1 note, all applied; spec `accepted`. Log: tasks/review-logs/operator-spec-review-audit-tool-v1-2026-06-12.md. Binding refinements for Phase 2: allowlist cross-check scoped to enabled targets (§6.2); partial-run trend rule — `fixed` never computed from incomplete scanner families (§6.5); `auth.testUsers` exactly 2 when `activeScan: true`, cred failure on active targets fails the run (§6.2/§7.3); scoped baseline suppression (§6.4); minimal benchmark harness ships in P1 (§12); branded `LoadedAllowlist`, benchmark loader loopback-only (§4.10); plus three new guardrail tests (§10).
+
 **Open questions for Phase 2:**
-- Directional review is operator-owned (Codex + ChatGPT tiers skipped — environment/walkaway constraints). Operator may re-open Phase 1 reviews before or during build.
 - Exact pinned versions for the 5 scanner binaries (resolve at P6 Dockerfile authoring; record in KNOWLEDGE.md).
 - ZAP orchestration mode: daemon API vs automation-framework YAML (builder decides at P4 behind the wrapper interface).
 - Whether automation-v1 staging gets `activeScan: true` at launch (shipped `false`; operator call).
