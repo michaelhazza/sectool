@@ -77,4 +77,4 @@ None. Zero directional signals matched; zero AUTO-DECIDED items routed to tasks/
   - AUTO-REJECT (convention): 0
   - AUTO-ACCEPT (convention): 0
   - AUTO-DECIDED:             0
-- Spec commit after iteration:   <set after commit>
+- Spec commit after iteration:   987b88d
