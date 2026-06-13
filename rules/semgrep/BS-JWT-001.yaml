@@ -22,8 +22,8 @@ rules:
 
   - id: BS-JWT-001-expiry
     message: >
-      JWT sign call sets algorithm but no expiry. Tokens without expiry remain
-      valid indefinitely and cannot be invalidated after a compromise.
+      JWT sign sets algorithm but no expiry (expiresIn). Tokens without expiry
+      remain valid indefinitely and cannot be invalidated after a compromise.
     severity: ERROR
     metadata:
       category: auth-access-control
@@ -36,11 +36,11 @@ rules:
     languages:
       - javascript
       - typescript
-    # Block scalar: {algorithm: $ALG} without ... matches EXACTLY objects with only
-    # the algorithm key — catches sign calls that set algorithm but not expiresIn.
-    # Exact-object match means {algorithm:'HS256', expiresIn:'15m'} does NOT match.
-    pattern: |
-      jwt.sign($PAYLOAD, $SECRET, {algorithm: $ALG})
+    patterns:
+      - pattern: |
+          jwt.sign($PAYLOAD, $SECRET, {algorithm: $ALG})
+      - pattern-not: |
+          jwt.sign($PAYLOAD, $SECRET, {expiresIn: $EXP})
 
   - id: BS-JWT-001-literal-secret
     message: >
