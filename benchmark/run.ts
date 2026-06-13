@@ -570,6 +570,7 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
       return { stdout: result.stdout, stderr: result.stderr };
     } catch (err) {
       const e = err as { code?: number; stdout?: string; stderr?: string };
+      process.stderr.write(`[semgrep-exec] code=${String(e.code)} stdout_len=${String((e.stdout ?? '').length)} stderr=${String(e.stderr ?? '').slice(0, 80)}\n`);
       // If stdout contains a JSON object (valid semgrep --json output), use it
       // regardless of exit code. semgrep exit codes vary by version (1.x vs 0.x).
       if (typeof e.stdout === 'string' && e.stdout.trimStart().startsWith('{')) {
@@ -613,6 +614,9 @@ export async function runDetectors(
     if (existsSync(vulnDir)) {
       try {
         const findings = runFn(vulnDir, ruleId);
+        if (findings.length > 0) {
+          process.stderr.write(`[benchmark] ${ruleId} vuln: ${findings.length} findings\n`);
+        }
         for (const f of findings) {
           scanResults.push({ ruleId: f.ruleId });
         }
@@ -624,6 +628,9 @@ export async function runDetectors(
     if (existsSync(cleanDir)) {
       try {
         const findings = runFn(cleanDir, ruleId);
+        if (findings.length > 0) {
+          process.stderr.write(`[benchmark] ${ruleId} CLEAN FP: ${findings.length} findings\n`);
+        }
         for (const f of findings) {
           cleanResults.push({ ruleId: f.ruleId });
         }
@@ -646,6 +653,7 @@ export async function runDetectors(
     if (existsSync(vulnDir)) {
       try {
         const findings = await runSemgrep(target, vulnDir, ruleExec);
+        process.stderr.write(`[benchmark] semgrep ${ruleId} vuln: ${findings.length} findings\n`);
         for (const f of findings) {
           // Normalize sub-rule ids (BS-JWT-001-algorithm → BS-JWT-001)
           const normalizedId = f.ruleId.startsWith(ruleId) ? ruleId : f.ruleId;
@@ -735,7 +743,8 @@ export async function runDetectors(
       const reportPath = join(tmpdir(), `gitleaks-bench-${String(Date.now())}.json`);
       try {
         await execFileAsync('gitleaks', [
-          'detect', '--source', dir, '--report-format', 'json',
+          'detect', '--source', dir, '--no-git',  // --no-git: scan files directly, no git history
+          '--report-format', 'json',
           '--report-path', reportPath, '--no-banner', '--exit-code', '1',
         ], { cwd: dir });  // cwd=dir prevents finding /app/.gitleaksignore
         let out = '';
