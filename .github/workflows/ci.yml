@@ -12,6 +12,8 @@ jobs:
     name: Lint + typecheck + test + build
     runs-on: ubuntu-latest
     continue-on-error: false
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Node.js 20 actions deprecated June 16 2026
 
     steps:
       - name: Checkout
@@ -60,7 +62,9 @@ jobs:
 
       - name: Self-scan (must be clean)
         # Scans this repo statically using the built tool.
+        # Uses `run` (not `audit run`) — the entrypoint prepends `node dist/cli.js`
+        # so the subcommand is passed directly. Uses localPath via /app (the repo
+        # is already in the image at /app/src).
         # benchmark/corpus/** and benchmark/live-fixture/** are excluded via
         # .semgrepignore and .gitleaksignore (checked-in, not ad-hoc).
-        # Exits non-zero if any high-or-above finding is detected.
-        run: docker run --rm -v "${{ github.workspace }}:/scan:ro" audit-tool:ci audit run --repo audit-tool --fail-on high
+        run: docker run --rm audit-tool:ci run --repo audit-tool --fail-on high

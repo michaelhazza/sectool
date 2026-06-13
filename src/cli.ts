@@ -778,6 +778,18 @@ async function doRun(
         )
       : config.registry.stagingTargets.filter((t) => t.enabled);
 
+    // If --url was provided but resolved to no registered enabled targets, hard-error.
+    // This prevents audit run --url <off-allowlist-or-unregistered> from silently
+    // succeeding with an empty live scan (OAI-PR-b2-001).
+    if (args.url !== undefined && stagingTargets.length === 0) {
+      process.stderr.write(
+        `Error: --url ${args.url} does not match any enabled staging target in the registry.\n` +
+        `If the host is allowlisted and registered, ensure its entry is enabled: true.\n` +
+        `Use 'audit scan-live --url <url> --dry-run' to check allowlist + registry status.\n`,
+      );
+      process.exit(1);
+    }
+
     for (const st of stagingTargets) {
       const liveResult = await scanLiveTarget(st.url, config, {
         scannerTimeoutMs: args.scannerTimeout * 60_000,

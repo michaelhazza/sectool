@@ -1,6 +1,6 @@
 # Current Focus
 
-**Status:** BUILDING
+**Status:** MERGE_READY
 
 **Slug:** audit-tool-v1
 **Branch:** claude/lucid-albattani-kczh64
@@ -18,10 +18,9 @@
 
 ## Notes
 
-**Status: BUILDING** — Phase 1 (SPEC) complete 2026-06-12; spec reviewed
-(claude-spec-review, 3 findings applied) and handoff written to
-`tasks/builds/audit-tool-v1/handoff.md`. Next: `launch feature coordinator`
-in a fresh session. Plan gate pre-approved (`operator pre-approval via launch
-prompt, 2026-06-12`). Adversarial-reviewer tier mandatory at review phase
-(live-scan safety surface). Active plan (Phase 2 output):
-`tasks/builds/audit-tool-v1/plan.md`. Last updated: 2026-06-12.
+**Status: MERGE_READY** — All P1–P8 chunks built, reviewed (adversarial +
+pr-reviewer + spec-conformance + ChatGPT PR review), and bugs fixed. Both CI
+gates green: gates job (lint/typecheck/787 unit tests/server+SPA build) ✓ and
+benchmark gate (100% recall, 0 false positives, self-scan clean) ✓. Node.js 20
+deprecation handled (FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 set). Last updated:
+2026-06-14.

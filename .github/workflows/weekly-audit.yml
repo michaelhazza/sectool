@@ -10,8 +10,8 @@ jobs:
   audit:
     name: Full portfolio scan (static + live staging)
     runs-on: ubuntu-latest
-
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Node.js 20 actions deprecated June 16 2026
       AUDIT_GITHUB_READ_TOKEN: ${{ secrets.AUDIT_GITHUB_READ_TOKEN }}
       AUDIT_STAGING_AUTOMATION_USER_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_USER_A }}
       AUDIT_STAGING_AUTOMATION_PASS_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_PASS_A }}
