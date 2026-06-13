@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
     "build": "tsc -p tsconfig.build.json",
-    "schemas": "tsx src/schemas/generate.ts"
+    "schemas": "tsx src/schemas/generate.ts",
+    "benchmark": "tsx benchmark/run.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

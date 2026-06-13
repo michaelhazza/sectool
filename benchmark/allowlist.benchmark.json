@@ -1,0 +1,16 @@
+{
+  "hosts": [
+    {
+      "host": "127.0.0.1",
+      "owner": "benchmark",
+      "addedAt": "2026-06-12",
+      "note": "benchmark live fixture — loopback only (§4.10)"
+    },
+    {
+      "host": "localhost",
+      "owner": "benchmark",
+      "addedAt": "2026-06-12",
+      "note": "benchmark live fixture — loopback only (§4.10)"
+    }
+  ]
+}

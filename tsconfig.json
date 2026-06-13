@@ -18,5 +18,5 @@
     "outDir": "dist",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "eslint.config.js"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "benchmark/**/*.ts", "vitest.config.ts", "eslint.config.js"]
 }
