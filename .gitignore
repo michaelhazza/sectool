@@ -6,3 +6,6 @@ coverage/
 .env.*
 .DS_Store
 *.framework-new
+
+# ChatGPT PR review transient diff bundles (session-local)
+.chatgpt-diffs/

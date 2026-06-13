@@ -32,7 +32,10 @@ with a symlink at `/usr/local/bin/zap.sh`.
 
 ## Gotchas
 
-- (none yet)
+- **Running `scripts/chatgpt-review.ts` (the review CLI) on this machine** (seen 2026-06-13 in chatgpt-pr-review): three environment blockers, all fixable without touching project source.
+  1. `ajv` resolves to **v6** (transitive via eslint) but the CLI's validator uses `ajv-formats@3` + a draft schema that require **ajv v8** — `ajv.compile()` then throws at module-eval time as the opaque `Cannot read properties of undefined (reading 'code')`, which the CLI surfaces as if it were an OpenAI API error. Fix: `npm install ajv@^8 ajv-formats@^3 --no-save`. `ajv-formats` may also be missing entirely.
+  2. tsx's bundled esbuild (0.28.1) can mismatch the extracted platform binary (0.21.5) → `Host version "0.28.1" does not match binary version "0.21.5"`. Fix: extract a matching `@esbuild/win32-x64@0.28.1` binary into an isolated dir and set `ESBUILD_BINARY_PATH` to it. Do NOT `npm install --force` the top-level platform pkg — it breaks vitest/vite, which want their nested 0.21.5.
+  3. `gpt-5.5` at `effort: high` (and `medium` over a ~96k-token diff) returns **HTTP 520** (Cloudflare gateway timeout — synchronous Responses call exceeds the edge limit). For large PRs, split the diff into subsystem batches and/or drop to `effort: low`; add retry-on-520. A single 520 is transient and usually clears on retry.
 
 ## Corrections
 

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { argv } from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { FindingSchema } from './finding.js';
 import { TargetRegistrySchema } from './targets.js';
 import { AllowlistSchema } from './allowlist.js';
@@ -27,5 +29,10 @@ export function generateSchemas(outDir: string = 'schemas'): void {
   }
 }
 
-// Run directly when invoked as a script
-generateSchemas();
+// Run only when invoked directly as a CLI script (e.g. `npm run schemas`),
+// not when imported. Without this guard, any import of this module — including
+// a test that imports `generateSchemas` — would write the default `schemas/*`
+// files into the process cwd, dirtying the checkout and breaking test isolation.
+if (argv[1] !== undefined && import.meta.url === pathToFileURL(argv[1]).href) {
+  generateSchemas();
+}

@@ -61,3 +61,80 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: findings, raw scanner output, source snippets, live response bodies/headers, SARIF/MD/HTML, fix packs, and CI artifacts are all first-class outputs, and gitleaks (§7.2) detects literal secrets. The spec requires only HTML-escaping (anti-XSS, §5.2) — it does not redact, so literal secrets, `Set-Cookie`/bearer tokens, and staging credentials get persisted and republished (including into externally-filed GitHub issues). Left UNAPPLIED because it introduces a new product capability that changes what evidence the operator sees and what is shared externally (an evidence-retention policy — reviewer flagged operator_decision_required).
   - Approach (recommended conservative default): redact gitleaks secret values, `Set-Cookie`/bearer-token values, and env-derived credentials to a stable hash/placeholder in every emitted artifact (`report.json`, Markdown, SARIF, HTML, stdout logs, remediation packs), retaining enough context for triage. Acceptance: a redaction fixture + `src/report/redaction.test.ts` (or benchmark harness) per the reviewer's `acceptance_check`.
   - Risk: high — a security tool currently re-exports the very secrets it finds into shareable artifacts and external issues.
+
+
+## PR Review deferred items
+
+### audit-tool-v1 — claude/lucid-albattani-kczh64 (2026-06-13) — chatgpt-pr-review (5th/external ship-gate pass)
+
+15 findings surfaced for operator decision (1 of 16 auto-applied: generate.ts main-module guard). None breach the §4 allowlist contract. All verified against live code. Grouped by theme.
+
+#### Live-scanner correctness / credential exposure (b1)
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b1-001:2026-06-13] [status:open] [user] ZAP active scans never wire session/auth into the automation YAML — unauthenticated active scan reported as success.
+  - Why: `buildZapArgs` records only `s.carrier`; `defaultExecZap`/`buildZapAutomationYaml` (src/live/scanners/zap.ts) ignore all session args and emit no users/authentication/sessionManagement config. An active scan can pass while running unauthenticated, silently misstating IDOR/authenticated coverage.
+  - Approach: wire ZAP automation-framework `users` + `sessionManagement` + `authentication` from the established Sessions; assert in zap.test.ts that the generated YAML carries auth material and that activeScan:true without usable sessions still throws. (Spec §16 lists ZAP auth-context as an open question — operator confirms scope.)
+  - Risk: high — false sense of authenticated DAST coverage.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b1-002:2026-06-13] [status:open] [user] Nuclei bearer/cookie passed via `-H` on argv (src/live/scanners/nuclei.ts:258-261) — visible in process listings.
+  - Why: authenticated Nuclei runs place the bearer token / cookie in argv, observable to other local processes; distinct from the already-fixed git-token-in-argv item.
+  - Approach: hand credentials via a temp `-header-file` / config file (or stdin/env), and unlink it after `defaultExecNuclei`; assert exec args contain no sentinel token.
+  - Risk: medium — local credential exposure on the runner.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b1-003:2026-06-13] [status:open] ZAP report parse failure silently becomes zero findings (src/live/scanners/zap.ts:369-371, 385-388: `catch { return { alerts: [] } }`).
+  - Why: a truncated/empty/schema-incompatible ZAP report is indistinguishable from a clean scan — a silent false-negative.
+  - Approach: on parse failure, reject so the orchestrator marks the family failed; add a zap.test.ts invalid-JSON case asserting rejection.
+  - Risk: medium — tool failure masquerades as clean.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b1-004:2026-06-13] [status:open] ZAP temp report/YAML filenames use only `Date.now()` (src/live/scanners/zap.ts:335,341) — collision across concurrent host scans.
+  - Why: `withHostBudget` runs distinct hosts concurrently; two ZAP runs in the same ms share temp paths and can overwrite/unlink each other's report/config.
+  - Approach: use `fs.mkdtemp`/`crypto.randomUUID`; stub Date.now() in a test to prove unique paths.
+  - Risk: medium — cross-target contamination / spurious failures (low probability).
+
+#### CLI / orchestrator (b2)
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b2-001:2026-06-13] [status:open] [user] `audit run --url <off-allowlist>` exits success with no hard error (src/cli.ts:775-789).
+  - Why: `run --url` filters the registry by hostname and scans `st.url`; an off-allowlist hostname yields an empty target set and a silent success, where the §4 contract promises a hard error and `scan-live --url` correctly hard-errors via preflight(). NOTE: this does NOT breach §4 — no off-allowlist request is ever sent (every scanned URL goes through preflight()). It is a behavior/UX inconsistency operators can be surprised by.
+  - Approach: when `--url` is supplied, preflight it (or assert it resolves to an enabled registry entry) and hard-error on miss, matching scan-live. Operator confirms desired semantics.
+  - Risk: high (contract-promise gap, not a safety breach).
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b2-002:2026-06-13] [status:open] `--scanner-timeout` parsed and threaded into `scanLiveTarget` but never enforced for live scanners (src/cli.ts:605 param unused in 614-680).
+  - Why: static path enforces via `raceWithTimeout`; live ZAP/Nuclei/probe runs are awaited unbounded, so a hung live scanner hangs the CLI despite the documented hard timeout.
+  - Approach: wrap each live runner in a timeout race honoring `scannerTimeoutMs`; mark the family failed on timeout.
+  - Risk: medium — unbounded hang.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b2-003:2026-06-13] [status:open] Static `raceWithTimeout` resolves on timeout but never aborts/kills the scanner subprocess; `cleanup()` deletes the clone while it may still be running (src/static/orchestrator.ts:121-145,201,309).
+  - Why: leaked subprocess + working-dir deletion under a still-running scanner violates the documented hard-timeout guarantee.
+  - Approach: thread an AbortController/child-process handle into the scanner fn and kill it on timeout before cleanup.
+  - Risk: medium — resource leak across targets/runs.
+
+#### Static detection accuracy (b3)
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b3-001:2026-06-13] [status:open] BS-SQL-002 header promises update/delete/insert coverage but body only matches `.from()` (src/static/rules/BS-SQL-002.ts:161).
+  - Why: `db.update(tenantTable)` / `db.delete(tenantTable)` / `db.insert().into(tenantTable)` are never flagged — a false-negative in a tenant-isolation backstop.
+  - Approach: extend matching to update/delete/insert AST shapes (table is the direct call argument, not via `.from()`); add fixtures for each shape. Security-rule change — operator confirms intended Drizzle mutation shapes.
+  - Risk: medium — unscoped tenant mutations pass as clean.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b3-002:2026-06-13] [status:open] BS-RLS-001 regex `\w+` misses quoted / schema-qualified table names (e.g. `"subscriptions"`, `public.subscriptions`).
+  - Why: correctly-protected tables in quoted/schema-qualified migrations are read as missing RLS (false positive) or inconsistently recognized.
+  - Approach: broaden the CREATE POLICY / ALTER TABLE captures to handle quoting and schema qualification; add migration fixtures.
+  - Risk: medium — FP/FN in an RLS backstop.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b3-003:2026-06-13] [status:open] gitleaks report temp path uses only `Date.now()` (src/static/scanners/gitleaks.ts:129) — concurrent-scan collision.
+  - Why: two gitleaks scans in the same ms share the report path; one can read/unlink the other's report.
+  - Approach: mkdtemp/randomUUID (same hardening as ZAP/OAI-PR-b1-004).
+  - Risk: medium — cross-target contamination / missed leaks (low probability).
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b3-004:2026-06-13] [status:open] OSV CVSS vector strings parsed by `parseFloat` → NaN → downgraded to medium (src/static/scanners/osv.ts:67-76).
+  - Why: OSV severity entries often carry `CVSS:3.1/AV:N/...` vector strings, not a leading number; high/critical dependency CVEs are under-prioritized whenever `group.max_severity` is absent.
+  - Approach: parse the CVSS base score from the vector (or read a numeric base-score field) before falling back to medium; add fixtures with vector-form severities. Operator confirms scoring semantics.
+  - Risk: medium — critical CVEs reported as medium.
+
+#### Report / lock (b4)
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b4-001:2026-06-13] [status:open] [user] Live baseline matcher uses raw URL pathname instead of normalizedUrlPath (src/report/baseline.ts) — acknowledged live findings re-alert.
+  - Why: the matcher's doc says it compares `normalizedUrlPath`, but it returns the raw pathname, so a baseline for `/api/users/{id}` won't suppress `/api/users/42` even though the fingerprint layer normalizes id segments. Acknowledged risks re-alert each run.
+  - Approach: normalize the live finding's URL path (reuse the fingerprint/correlate normalizer) before baseline comparison; add a baseline test with a volatile-id path.
+  - Risk: medium — operator-visible: re-alerting of suppressed findings erodes trust in the baseline.
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b4-002:2026-06-13] [status:open] Lock create-empty-then-write window leaves a permanent un-breakable lock (src/report/lock.ts).
+  - Why: `acquireLock` creates an empty file (`openSync 'wx'` + close) then writes JSON; if killed in that window, later runs read the empty file as a null record, and `canBreakLock` is only consulted for non-null records — so the lock is never stale-breakable and every future run fails with `WorkspaceLockedError(pid=0)`. Distinct from the already-fixed release-on-exit lock-leak.
+  - Approach: write the record atomically (write temp + rename), or treat an empty/parse-failed lock file as breakable.
+  - Risk: medium — a crash mid-acquire wedges all future runs until manual cleanup.
+
+#### CI / benchmark (b6)
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b6-001:2026-06-13] [status:open] [user] CI + weekly-audit run steps inside the audit-tool container (ci.yml:13-14, weekly-audit.yml) — container image runs as non-root `USER audit` with `/bin/false` and ENTRYPOINT `node dist/cli.js`.
+  - Why: the reviewer's stated mechanism (GitHub Actions prepends the ENTRYPOINT to `npm ci` etc.) is INCORRECT — GHA overrides a job container's ENTRYPOINT and runs steps via bash. The REAL risk: a job-container image with `USER audit` + `/bin/false` shell (Dockerfile:102-103) typically breaks `actions/checkout` and step execution (GHA needs a shell and generally root in the job container).
+  - Approach: either run CI on the plain `ubuntu-latest` runner (no `container:`) and use the image only for scanner binaries via a step, or add `container.options: --user 0` / ensure a shell, or override the entrypoint. Operator decides the CI execution model. VERIFY by running CI once.
+  - Risk: high — CI/weekly-audit may not execute as intended (must be confirmed against an actual run before relying on green CI).
+- [ ] [origin:chatgpt-pr-review-OAI-PR-b6-002:2026-06-13] [status:open] `npm run benchmark` gate can pass vacuously (benchmark/run.ts main()).
+  - Why: `main()` calls `runBenchmark()` with empty `scanResults`/`cleanResults`/`liveFixtureResults`; the harness only reads EXPECTED.json and computes metrics from caller-supplied arrays — it never runs the audit engine over the corpus. A fixture with empty/unreadable/malformed EXPECTED.json contributes recall=1 with zero actual findings, so the CLAUDE.md recall/precision base gate can pass without exercising detection.
+  - Approach: wire the static/live engine over `benchmark/corpus` + `benchmark/live-fixture` inside `main()` and feed real ScanResults; assert corpus non-empty.
+  - Risk: medium — a base gate that does not actually gate detection quality.
