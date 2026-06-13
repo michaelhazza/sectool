@@ -1053,9 +1053,12 @@ benchmark/
 | `rules/semgrep/*.yaml` (4 rules per §7.1) | custom Semgrep rules |
 | `src/live/gate.ts` | `assertAllowlisted` + `AllowedTarget` brand (§4.1) |
 | `src/live/preflight.ts` | dry-run + mandatory preflight |
+| `src/live/ratelimit.ts` | aggregate per-host token-bucket limiter (§4.5) — serializes request-generating families per host |
+| `src/live/auth.ts` | scripted `form` login + carrier-aware session success check (§6.2, §7.3) |
 | `src/live/scanners/{zap,nuclei}.ts`, `src/live/probes/{tls,headers,cookies,exposure}.ts` | live engine |
 | `src/correlate/{fingerprint,severity,correlate}.ts` | layer 4 core |
 | `src/report/{json,markdown,sarif,html,trend,baseline,redaction}.ts` | outputs (`html.ts` = self-contained export, §5.2); `redaction.ts` = single secret-redaction chokepoint applied by all emitters (§5.4) |
+| `src/report/lock.ts` | workspace lock: pid-liveness + 60s heartbeat (§14) — break only on a proven-dead holder, never elapsed time |
 | `src/ui/server.ts` | `audit ui` localhost server: static assets + read-only JSON endpoints + per-process CSRF nonce mint (P7); the single §5.3 fix-request action endpoint, CSRF/origin-gated (§5.2), is wired in P8 (depends on `src/fix/*`) |
 | `ui/**` | React 18 + Vite SPA — 6 screens per §5.2, plain-language-first |
 | `src/fix/{pack,github,status}.ts` | remediation packs, fix-request issue filing (idempotent by fingerprint), status derivation (§5.3) |

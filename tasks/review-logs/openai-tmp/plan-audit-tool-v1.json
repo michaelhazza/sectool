@@ -1,0 +1,213 @@
+{
+  "mode": "plan",
+  "model": "gpt-5.5",
+  "requested_model": "gpt-5.5",
+  "served_model": "gpt-5.5-2026-04-23",
+  "model_match": true,
+  "input_summary": {
+    "branch": "claude/lucid-albattani-kczh64",
+    "spec_path": "tasks/builds/audit-tool-v1/plan.md",
+    "files_changed": null
+  },
+  "findings": [
+    {
+      "id": "OAI-PLAN-001",
+      "title": "P5-4 requires the workspace lock before the chunk that creates it",
+      "severity": "high",
+      "category": "bug",
+      "finding_type": "transaction_scope",
+      "risk_domain": "data_integrity",
+      "scope_signal": "architectural",
+      "triage_hint": "technical-escalated",
+      "source_refs": [
+        {
+          "type": "quote",
+          "value": "P5-4 — Report builder: `§14 atomic tmp+rename under `reports/.lock`; ... Error handling: lock contention → `WorkspaceLockedError` (§14, full lock impl in P5-6/with the writer)`"
+        },
+        {
+          "type": "quote",
+          "value": "P5-6 — Files: `src/report/trend.ts`; the `reports/.lock` workspace-lock helper (`src/report/lock.ts` — *new file; see plan-gap 2*)"
+        },
+        {
+          "type": "quote",
+          "value": "Dependency summary: `P5-1 → P5-2 → P5-4 → P5-5 → P5-6`"
+        }
+      ],
+      "rationale": "A builder executing chunks forward-only cannot make P5-4 both write `report.json` under `reports/.lock` and import/reuse the canonical lock helper, because `src/report/lock.ts` is not created until P5-6. With the plan's type-aware per-chunk lint, P5-4 either fails at its commit point or duplicates the lock primitive, creating divergent report/trend write semantics.",
+      "recommendation": "implement",
+      "acceptance_check": "Move `src/report/lock.ts` and `src/report/lock.test.ts` into P5-4 or a new P5-3.5 before P5-4; reviewer proof is `grep -R \"withWorkspaceLock\" src/report/json.ts src/report/trend.ts` showing both consumers use the same helper plus `npx vitest run src/report/lock.test.ts src/report/json.test.ts`.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "architectural",
+      "operator_decision_required_reason": "High-severity data-integrity sequencing issue affects the shared write primitive used by report and trend writers.",
+      "affected_files": [
+        "src/report/json.ts",
+        "src/report/lock.ts",
+        "src/report/trend.ts"
+      ]
+    },
+    {
+      "id": "OAI-PLAN-002",
+      "title": "No chunk owns replacing CLI scan stubs with static/live/run orchestration",
+      "severity": "high",
+      "category": "architecture",
+      "finding_type": "architecture",
+      "risk_domain": "user_visible",
+      "scope_signal": "architectural",
+      "triage_hint": "technical-escalated",
+      "source_refs": [
+        {
+          "type": "quote",
+          "value": "P1-4 — `In P1 the subcommands parse + validate config + print help; scan bodies are stubs that later phases fill.`"
+        },
+        {
+          "type": "quote",
+          "value": "P5-6 — Files: `src/report/trend.ts`; ... `wire `audit run` / `audit report` in `src/cli.ts``"
+        },
+        {
+          "type": "quote",
+          "value": "P5-6 — Depends on: `P5-4, P5-5, P1-4.`"
+        },
+        {
+          "type": "quote",
+          "value": "P4-7 — Depends on: `P4-1, P4-2, P1-5.`"
+        },
+        {
+          "type": "quote",
+          "value": "Dependency summary: `P4-1 → P4-2 → P4-3 → P4-4/P4-5/P4-6 → P4-7   (gate→preflight→ratelimit→scanners→fixture)`"
+        }
+      ],
+      "rationale": "The plan creates scanner wrappers and report builders, but it never names a live orchestration module or an integration chunk that connects `scan-source`, `scan-live`, and `run` from the P1 stubs to `scanRepos`, preflight, auth, probes, ZAP/Nuclei, and `buildReport`. P5-6 claims to wire `audit run` while depending only on report chunks, and P4-7's detailed dependency line contradicts the summary about needing scanners before the fixture/abort test. A builder can complete the listed chunks while leaving user-facing scan commands as stubs or only partially wired.",
+      "recommendation": "implement",
+      "acceptance_check": "Add an integration chunk after P4-6 and before P4-7/P5-6 that owns `src/live/orchestrator.ts` and `src/cli.ts`; proof is `src/cli.test.ts` asserting `scan-source` calls `scanRepos`, `scan-live --dry-run` calls preflight without scanners, non-dry-run `scan-live` calls the live orchestrator with an `AllowedTarget`, and `audit run` passes scanner outputs into `buildReport`, plus `grep -R \"stub\" src/cli.ts` returning no scan-body stubs.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "architectural",
+      "operator_decision_required_reason": "Architectural integration gap spans CLI, static scanning, live scanning, benchmark fixture, and report generation.",
+      "affected_files": [
+        "src/cli.ts",
+        "src/static/orchestrator.ts",
+        "src/live/orchestrator.ts",
+        "src/live/preflight.ts",
+        "src/report/json.ts"
+      ]
+    },
+    {
+      "id": "OAI-PLAN-003",
+      "title": "Stable rule/check inventory is referenced but never created, and wildcard IDs are left in contracts",
+      "severity": "high",
+      "category": "architecture",
+      "finding_type": "other",
+      "risk_domain": "data_integrity",
+      "scope_signal": "architectural",
+      "triage_hint": "technical-escalated",
+      "source_refs": [
+        {
+          "type": "quote",
+          "value": "P1-5 — `rule-inventory ↔ corpus-directory cross-check`"
+        },
+        {
+          "type": "quote",
+          "value": "P6-1 — `rule-inventory ↔ corpus cross-check now covers all 11 rules + 3 wrapped families + each live `checkId` family`"
+        },
+        {
+          "type": "quote",
+          "value": "P4-6 — `checkId`s `ZAP-P-*`/`ZAP-A-*`/`NUCLEI-*`/`LIVE-IDOR-001`/`LIVE-SESSION-001`"
+        },
+        {
+          "type": "quote",
+          "value": "P6-3 — `docs/rules/<ID>.md` ... `LIVE-TLS-001`, `LIVE-HDR-001`, `LIVE-COOKIE-001`, `LIVE-EXPOSE-001`, `LIVE-LEAK-001`, `ZAP-P-*`, `ZAP-A-*`, `NUCLEI-*`, `LIVE-IDOR-001`, `LIVE-SESSION-001`"
+        }
+      ],
+      "rationale": "Benchmark coverage, SARIF help URIs, remediation packs, fingerprints, and docs all depend on exact stable IDs, but the plan never creates a canonical inventory file and leaves ZAP/Nuclei IDs as wildcards. That makes the corpus cross-check and `docs/rules/<ID>.md` completeness tests underspecified, and different builders could mint incompatible IDs in wrappers, docs, SARIF, and fix packs.",
+      "recommendation": "implement",
+      "acceptance_check": "Add a canonical inventory such as `src/rules/inventory.ts` plus `src/rules/inventory.test.ts`; proof is that the test asserts every inventory ID has the required corpus/live-fixture expectation and `docs/rules/<id>.md`, and `grep -R \"ZAP-P-\\*\\|ZAP-A-\\*\\|NUCLEI-\\*\" src docs benchmark rules` returns no wildcard contract IDs.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "architectural",
+      "operator_decision_required_reason": "Stable identifiers are cross-cutting contracts for benchmark, reporting, SARIF, and remediation, so the exact inventory must be settled before builders mint IDs.",
+      "affected_files": [
+        "src/rules/inventory.ts",
+        "benchmark/run.ts",
+        "src/live/scanners/zap.ts",
+        "src/live/scanners/nuclei.ts",
+        "docs/rules"
+      ]
+    },
+    {
+      "id": "OAI-PLAN-004",
+      "title": "Several chunks declare edits outside their file/dependency rows",
+      "severity": "medium",
+      "category": "bug",
+      "finding_type": "other",
+      "risk_domain": "none",
+      "scope_signal": "local",
+      "triage_hint": "technical",
+      "source_refs": [
+        {
+          "type": "quote",
+          "value": "P1-1 — Files: `src/schemas/finding.ts`, ... `src/schemas/generate.ts`; tests `src/schemas/*.test.ts`"
+        },
+        {
+          "type": "quote",
+          "value": "P1-1 — Depends on: none. `This chunk adds the `benchmark`/`schemas` npm scripts + a `bin` entry and pins the TS runner (`tsx`) per plan-gap 1`"
+        },
+        {
+          "type": "quote",
+          "value": "P7-3 — Files: `src/report/html.ts`; test `src/report/html.test.ts`; wire `audit report --format html` (stub from P5-6 now real)"
+        },
+        {
+          "type": "quote",
+          "value": "P7-3 — Depends on: `P5-4, P2-1.`"
+        }
+      ],
+      "rationale": "The plan's convention says each chunk lists exact files, but P1-1 modifies `package.json`/lockfile and possibly dev dependencies without listing them, while P7-3 modifies the CLI and relies on the P5-6 report stub without listing `src/cli.ts` or depending on P5-6. Builders following only the file rows can miss required edits; builders following prose can touch files outside the reviewable chunk surface.",
+      "recommendation": "implement",
+      "acceptance_check": "Update P1-1's file row to include `package.json` and the lockfile, and update P7-3's file/dependency rows to include `src/cli.ts`, `src/cli.test.ts`, and `P5-6`; reviewer proof is `grep -n \"package.json\"` in P1-1 and `grep -n \"src/cli.ts\"` in P7-3 of the final plan.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "ambiguous_fix",
+      "affected_files": [
+        "package.json",
+        "package-lock.json",
+        "src/cli.ts",
+        "src/cli.test.ts",
+        "src/report/html.ts"
+      ]
+    },
+    {
+      "id": "OAI-PLAN-005",
+      "title": "Judgement-heavy UI and documentation chunks lack reviewer-auditable acceptance artefacts",
+      "severity": "medium",
+      "category": "improvement",
+      "finding_type": "test_coverage",
+      "risk_domain": "none",
+      "scope_signal": "local",
+      "triage_hint": "technical",
+      "source_refs": [
+        {
+          "type": "quote",
+          "value": "P7-2 — `acceptance is shape-match to the locked prototypes + plain-language vocabulary presence, verified by the pr-reviewer/mockup reference at review time, plus `npx eslint` on `ui/**`.`"
+        },
+        {
+          "type": "quote",
+          "value": "P8-6 — `Test-first/G1 acceptance: doc completeness reviewed at PR; `npx eslint` n/a.`"
+        }
+      ],
+      "rationale": "The plan explicitly avoids SPA component tests, which may be acceptable under its framing, but the replacement evidence is only reviewer judgement. P8-6 similarly says the doc is reviewed at PR with no concrete checklist or grepable contract. A context-free builder has no artefact to produce, and a reviewer has no stable evidence trail for prototype/vocabulary/doc completeness.",
+      "recommendation": "implement",
+      "acceptance_check": "Add concrete acceptance artefacts: for P7-2 require `docs/ui-prototype-mapping.md` with one row per locked prototype screen and a grepable `ui/src/vocabulary.ts` normative-term export; for P8-6 require `docs/fix-workflow.md` headings or checklist entries matching `standard Claude Code action`, `audit-fix label`, `manual fallback`, `fingerprint marker`, and `token scopes`.",
+      "auto_apply_eligible": false,
+      "auto_apply_reason": "invalid_acceptance_check",
+      "affected_files": [
+        "ui",
+        "ui/src/vocabulary.ts",
+        "docs/ui-prototype-mapping.md",
+        "docs/fix-workflow.md"
+      ]
+    }
+  ],
+  "verdict": "CHANGES_REQUESTED",
+  "raw_response": "{\n  \"contract_version\": \"review-result.v2\",\n  \"prompt_version\": \"openai-plan-review.v2\",\n  \"project_context_version\": \"unknown\",\n  \"source_artifact_sha\": \"unknown\",\n  \"verdict\": \"CHANGES_REQUESTED\",\n  \"integrity_check\": \"Reviewed the plan in isolation with no spec/project-context supplied; duplicates suppressed and forward-reference, acceptance-evidence, and builder-blocking ambiguity cases considered.\",\n  \"findings\": [\n    {\n      \"id\": \"OAI-PLAN-001\",\n      \"title\": \"P5-4 requires the workspace lock before the chunk that creates it\",\n      \"severity\": \"high\",\n      \"category\": \"bug\",\n      \"finding_type\": \"transaction_scope\",\n      \"risk_domain\": \"data_integrity\",\n      \"scope_signal\": \"architectural\",\n      \"triage_hint\": \"technical-escalated\",\n      \"source_refs\": [\n        {\n          \"type\": \"quote\",\n          \"value\": \"P5-4 — Report builder: `§14 atomic tmp+rename under `reports/.lock`; ... Error handling: lock contention → `WorkspaceLockedError` (§14, full lock impl in P5-6/with the writer)`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P5-6 — Files: `src/report/trend.ts`; the `reports/.lock` workspace-lock helper (`src/report/lock.ts` — *new file; see plan-gap 2*)\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"Dependency summary: `P5-1 → P5-2 → P5-4 → P5-5 → P5-6`\"\n        }\n      ],\n      \"rationale\": \"A builder executing chunks forward-only cannot make P5-4 both write `report.json` under `reports/.lock` and import/reuse the canonical lock helper, because `src/report/lock.ts` is not created until P5-6. With the plan's type-aware per-chunk lint, P5-4 either fails at its commit point or duplicates the lock primitive, creating divergent report/trend write semantics.\",\n      \"recommendation\": \"implement\",\n      \"acceptance_check\": \"Move `src/report/lock.ts` and `src/report/lock.test.ts` into P5-4 or a new P5-3.5 before P5-4; reviewer proof is `grep -R \\\"withWorkspaceLock\\\" src/report/json.ts src/report/trend.ts` showing both consumers use the same helper plus `npx vitest run src/report/lock.test.ts src/report/json.test.ts`.\",\n      \"auto_apply_eligible\": false,\n      \"auto_apply_reason\": \"architectural\",\n      \"operator_decision_required_reason\": \"High-severity data-integrity sequencing issue affects the shared write primitive used by report and trend writers.\",\n      \"affected_files\": [\n        \"src/report/json.ts\",\n        \"src/report/lock.ts\",\n        \"src/report/trend.ts\"\n      ]\n    },\n    {\n      \"id\": \"OAI-PLAN-002\",\n      \"title\": \"No chunk owns replacing CLI scan stubs with static/live/run orchestration\",\n      \"severity\": \"high\",\n      \"category\": \"architecture\",\n      \"finding_type\": \"architecture\",\n      \"risk_domain\": \"user_visible\",\n      \"scope_signal\": \"architectural\",\n      \"triage_hint\": \"technical-escalated\",\n      \"source_refs\": [\n        {\n          \"type\": \"quote\",\n          \"value\": \"P1-4 — `In P1 the subcommands parse + validate config + print help; scan bodies are stubs that later phases fill.`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P5-6 — Files: `src/report/trend.ts`; ... `wire `audit run` / `audit report` in `src/cli.ts``\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P5-6 — Depends on: `P5-4, P5-5, P1-4.`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P4-7 — Depends on: `P4-1, P4-2, P1-5.`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"Dependency summary: `P4-1 → P4-2 → P4-3 → P4-4/P4-5/P4-6 → P4-7   (gate→preflight→ratelimit→scanners→fixture)`\"\n        }\n      ],\n      \"rationale\": \"The plan creates scanner wrappers and report builders, but it never names a live orchestration module or an integration chunk that connects `scan-source`, `scan-live`, and `run` from the P1 stubs to `scanRepos`, preflight, auth, probes, ZAP/Nuclei, and `buildReport`. P5-6 claims to wire `audit run` while depending only on report chunks, and P4-7's detailed dependency line contradicts the summary about needing scanners before the fixture/abort test. A builder can complete the listed chunks while leaving user-facing scan commands as stubs or only partially wired.\",\n      \"recommendation\": \"implement\",\n      \"acceptance_check\": \"Add an integration chunk after P4-6 and before P4-7/P5-6 that owns `src/live/orchestrator.ts` and `src/cli.ts`; proof is `src/cli.test.ts` asserting `scan-source` calls `scanRepos`, `scan-live --dry-run` calls preflight without scanners, non-dry-run `scan-live` calls the live orchestrator with an `AllowedTarget`, and `audit run` passes scanner outputs into `buildReport`, plus `grep -R \\\"stub\\\" src/cli.ts` returning no scan-body stubs.\",\n      \"auto_apply_eligible\": false,\n      \"auto_apply_reason\": \"architectural\",\n      \"operator_decision_required_reason\": \"Architectural integration gap spans CLI, static scanning, live scanning, benchmark fixture, and report generation.\",\n      \"affected_files\": [\n        \"src/cli.ts\",\n        \"src/static/orchestrator.ts\",\n        \"src/live/orchestrator.ts\",\n        \"src/live/preflight.ts\",\n        \"src/report/json.ts\"\n      ]\n    },\n    {\n      \"id\": \"OAI-PLAN-003\",\n      \"title\": \"Stable rule/check inventory is referenced but never created, and wildcard IDs are left in contracts\",\n      \"severity\": \"high\",\n      \"category\": \"architecture\",\n      \"finding_type\": \"other\",\n      \"risk_domain\": \"data_integrity\",\n      \"scope_signal\": \"architectural\",\n      \"triage_hint\": \"technical-escalated\",\n      \"source_refs\": [\n        {\n          \"type\": \"quote\",\n          \"value\": \"P1-5 — `rule-inventory ↔ corpus-directory cross-check`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P6-1 — `rule-inventory ↔ corpus cross-check now covers all 11 rules + 3 wrapped families + each live `checkId` family`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P4-6 — `checkId`s `ZAP-P-*`/`ZAP-A-*`/`NUCLEI-*`/`LIVE-IDOR-001`/`LIVE-SESSION-001`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P6-3 — `docs/rules/<ID>.md` ... `LIVE-TLS-001`, `LIVE-HDR-001`, `LIVE-COOKIE-001`, `LIVE-EXPOSE-001`, `LIVE-LEAK-001`, `ZAP-P-*`, `ZAP-A-*`, `NUCLEI-*`, `LIVE-IDOR-001`, `LIVE-SESSION-001`\"\n        }\n      ],\n      \"rationale\": \"Benchmark coverage, SARIF help URIs, remediation packs, fingerprints, and docs all depend on exact stable IDs, but the plan never creates a canonical inventory file and leaves ZAP/Nuclei IDs as wildcards. That makes the corpus cross-check and `docs/rules/<ID>.md` completeness tests underspecified, and different builders could mint incompatible IDs in wrappers, docs, SARIF, and fix packs.\",\n      \"recommendation\": \"implement\",\n      \"acceptance_check\": \"Add a canonical inventory such as `src/rules/inventory.ts` plus `src/rules/inventory.test.ts`; proof is that the test asserts every inventory ID has the required corpus/live-fixture expectation and `docs/rules/<id>.md`, and `grep -R \\\"ZAP-P-\\\\*\\\\|ZAP-A-\\\\*\\\\|NUCLEI-\\\\*\\\" src docs benchmark rules` returns no wildcard contract IDs.\",\n      \"auto_apply_eligible\": false,\n      \"auto_apply_reason\": \"architectural\",\n      \"operator_decision_required_reason\": \"Stable identifiers are cross-cutting contracts for benchmark, reporting, SARIF, and remediation, so the exact inventory must be settled before builders mint IDs.\",\n      \"affected_files\": [\n        \"src/rules/inventory.ts\",\n        \"benchmark/run.ts\",\n        \"src/live/scanners/zap.ts\",\n        \"src/live/scanners/nuclei.ts\",\n        \"docs/rules\"\n      ]\n    },\n    {\n      \"id\": \"OAI-PLAN-004\",\n      \"title\": \"Several chunks declare edits outside their file/dependency rows\",\n      \"severity\": \"medium\",\n      \"category\": \"bug\",\n      \"finding_type\": \"other\",\n      \"risk_domain\": \"none\",\n      \"scope_signal\": \"local\",\n      \"triage_hint\": \"technical\",\n      \"source_refs\": [\n        {\n          \"type\": \"quote\",\n          \"value\": \"P1-1 — Files: `src/schemas/finding.ts`, ... `src/schemas/generate.ts`; tests `src/schemas/*.test.ts`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P1-1 — Depends on: none. `This chunk adds the `benchmark`/`schemas` npm scripts + a `bin` entry and pins the TS runner (`tsx`) per plan-gap 1`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P7-3 — Files: `src/report/html.ts`; test `src/report/html.test.ts`; wire `audit report --format html` (stub from P5-6 now real)\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P7-3 — Depends on: `P5-4, P2-1.`\"\n        }\n      ],\n      \"rationale\": \"The plan's convention says each chunk lists exact files, but P1-1 modifies `package.json`/lockfile and possibly dev dependencies without listing them, while P7-3 modifies the CLI and relies on the P5-6 report stub without listing `src/cli.ts` or depending on P5-6. Builders following only the file rows can miss required edits; builders following prose can touch files outside the reviewable chunk surface.\",\n      \"recommendation\": \"implement\",\n      \"acceptance_check\": \"Update P1-1's file row to include `package.json` and the lockfile, and update P7-3's file/dependency rows to include `src/cli.ts`, `src/cli.test.ts`, and `P5-6`; reviewer proof is `grep -n \\\"package.json\\\"` in P1-1 and `grep -n \\\"src/cli.ts\\\"` in P7-3 of the final plan.\",\n      \"auto_apply_eligible\": false,\n      \"auto_apply_reason\": \"ambiguous_fix\",\n      \"affected_files\": [\n        \"package.json\",\n        \"package-lock.json\",\n        \"src/cli.ts\",\n        \"src/cli.test.ts\",\n        \"src/report/html.ts\"\n      ]\n    },\n    {\n      \"id\": \"OAI-PLAN-005\",\n      \"title\": \"Judgement-heavy UI and documentation chunks lack reviewer-auditable acceptance artefacts\",\n      \"severity\": \"medium\",\n      \"category\": \"improvement\",\n      \"finding_type\": \"test_coverage\",\n      \"risk_domain\": \"none\",\n      \"scope_signal\": \"local\",\n      \"triage_hint\": \"technical\",\n      \"source_refs\": [\n        {\n          \"type\": \"quote\",\n          \"value\": \"P7-2 — `acceptance is shape-match to the locked prototypes + plain-language vocabulary presence, verified by the pr-reviewer/mockup reference at review time, plus `npx eslint` on `ui/**`.`\"\n        },\n        {\n          \"type\": \"quote\",\n          \"value\": \"P8-6 — `Test-first/G1 acceptance: doc completeness reviewed at PR; `npx eslint` n/a.`\"\n        }\n      ],\n      \"rationale\": \"The plan explicitly avoids SPA component tests, which may be acceptable under its framing, but the replacement evidence is only reviewer judgement. P8-6 similarly says the doc is reviewed at PR with no concrete checklist or grepable contract. A context-free builder has no artefact to produce, and a reviewer has no stable evidence trail for prototype/vocabulary/doc completeness.\",\n      \"recommendation\": \"implement\",\n      \"acceptance_check\": \"Add concrete acceptance artefacts: for P7-2 require `docs/ui-prototype-mapping.md` with one row per locked prototype screen and a grepable `ui/src/vocabulary.ts` normative-term export; for P8-6 require `docs/fix-workflow.md` headings or checklist entries matching `standard Claude Code action`, `audit-fix label`, `manual fallback`, `fingerprint marker`, and `token scopes`.\",\n      \"auto_apply_eligible\": false,\n      \"auto_apply_reason\": \"invalid_acceptance_check\",\n      \"affected_files\": [\n        \"ui\",\n        \"ui/src/vocabulary.ts\",\n        \"docs/ui-prototype-mapping.md\",\n        \"docs/fix-workflow.md\"\n      ]\n    }\n  ]\n}",
+  "contract_version": "review-result.v2",
+  "prompt_version": "openai-plan-review.v2",
+  "project_context_version": "unknown",
+  "source_artifact_sha": "unknown",
+  "integrity_check": "Reviewed the plan in isolation with no spec/project-context supplied; duplicates suppressed and forward-reference, acceptance-evidence, and builder-blocking ambiguity cases considered."
+}
