@@ -13,7 +13,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Finding } from '../schemas/finding.js';
 import { redact } from '../report/redaction.js';
@@ -27,6 +27,10 @@ const RULES_DIR = resolve(REPO_ROOT, 'docs', 'rules');
 // Rule-doc path resolution (§11 wildcard-family convention)
 // ---------------------------------------------------------------------------
 
+// Safe charset for rule ids: letters, digits, dots, underscores, hyphens only.
+// Rejects path separators and dot-dot sequences at the character level.
+const SAFE_RULE_ID_RE = /^[A-Za-z0-9._-]+$/;
+
 /**
  * Resolve the doc path for a given ruleId + source.
  * Returns the absolute path if a doc exists, or null if no doc is found.
@@ -37,9 +41,18 @@ const RULES_DIR = resolve(REPO_ROOT, 'docs', 'rules');
  * 3. ZAP-A-* prefix → docs/rules/ZAP-A.md
  * 4. NUCLEI-* prefix → docs/rules/NUCLEI.md
  * 5. Wrapped-scanner family by source: docs/rules/<source>.md
+ *
+ * ruleId is scanner-emitted and therefore attacker-influenceable. We validate
+ * it against a safe charset and assert the resolved path stays within RULES_DIR
+ * before any file read is attempted (path-traversal guard).
  */
 export function resolveRuleDocPath(ruleId: string, source: string): string | null {
+  // Reject any ruleId that contains path separators or is not safe-charset.
+  if (!SAFE_RULE_ID_RE.test(ruleId)) return null;
+
   const exactPath = resolve(RULES_DIR, `${ruleId}.md`);
+  // Assert the resolved path stays within RULES_DIR (belt-and-suspenders after charset check).
+  if (!exactPath.startsWith(RULES_DIR + sep)) return null;
   if (existsSync(exactPath)) return exactPath;
 
   if (ruleId.startsWith('ZAP-P-')) {

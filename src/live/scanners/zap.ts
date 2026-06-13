@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AllowedTarget } from '../gate.js';
 import type { Session } from '../auth.js';
@@ -297,7 +297,7 @@ export async function runZap(
 function buildZapArgs(target: AllowedTarget, opts: ZapOpts): readonly string[] {
   // The real defaultExecZap uses these args to construct the automation YAML
   // and invoke ZAP. The test injectable ignores this and returns fixture JSON.
-  const args = ['-autorun', '-host', target.url, '-passive'];
+  const args = ['-autorun', '-host', target.url, '-passive', '-rate-limit', String(opts.rps)];
   if (opts.activeScan) {
     args.push('-active');
     if (opts.sessions) {
@@ -328,41 +328,59 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
 
   const isActive = args.includes('-active');
 
+  const rateLimitIdx = args.indexOf('-rate-limit');
+  const rateLimitRps = rateLimitIdx !== -1 ? Number(args[rateLimitIdx + 1] ?? 10) : 10;
+
+  // Write ZAP JSON report to a temp file (cross-platform; avoids /dev/stdout dependency).
+  const reportFile = join(tmpdir(), `zap-report-${Date.now()}.json`);
+
   // Minimal automation-framework YAML for ZAP 2.14+
-  const zapYaml = buildZapAutomationYaml(targetUrl, isActive);
+  const zapYaml = buildZapAutomationYaml(targetUrl, isActive, rateLimitRps, reportFile);
 
   // Write the YAML to a temp file; execFile does not accept stdin input.
   const tmpFile = join(tmpdir(), `zap-autorun-${Date.now()}.yaml`);
   writeFileSync(tmpFile, zapYaml, 'utf8');
 
-  let stdout: string;
+  let reportContent: string;
   try {
-    const result = await execFileAsync('zap.sh', ['-autorun', tmpFile, '-cmd', '-silent'], {
+    await execFileAsync('zap.sh', ['-autorun', tmpFile, '-cmd', '-silent'], {
       timeout: 300_000, // 5 min cap per §5 scanner-timeout
       encoding: 'utf8',
     });
-    stdout = result.stdout;
+    // Read the report from the temp file ZAP wrote to (set in the YAML)
+    reportContent = readFileSync(reportFile, 'utf8');
   } catch (err) {
     try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
+    try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
     throw err;
   }
   try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
+  try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
 
-  // ZAP outputs the report JSON to stdout (configured in the YAML)
   try {
-    return JSON.parse(stdout) as ZapReport;
+    return JSON.parse(reportContent) as ZapReport;
   } catch {
-    // If stdout is not JSON, it may contain status lines before the JSON.
-    const jsonStart = stdout.indexOf('{');
-    if (jsonStart !== -1) {
-      return JSON.parse(stdout.slice(jsonStart)) as ZapReport;
-    }
     // Empty or unparseable output — return empty report (no alerts)
     return { alerts: [] };
   }
 };
 
-function buildZapAutomationYaml(targetUrl: string, activeMode: boolean): string {
+/**
+ * YAML-quote a string value: wrap in double quotes and escape embedded
+ * backslashes, double-quotes, and control characters (including newlines)
+ * so the value cannot inject YAML directives.
+ */
+function yamlQuote(value: string): string {
+  const escaped = value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
+  return `"${escaped}"`;
+}
+
+export function buildZapAutomationYaml(targetUrl: string, activeMode: boolean, rateLimitRps: number, reportFilePath: string): string {
+  const quotedUrl = yamlQuote(targetUrl);
   const scanPolicy = activeMode
     ? `    - type: activeScan
       parameters:
@@ -374,9 +392,11 @@ env:
   contexts:
     - name: default
       urls:
-        - ${targetUrl}
+        - ${quotedUrl}
       includePaths:
-        - ${targetUrl}.*
+        - ${quotedUrl}.*
+  parameters:
+    maxRequestsPerSecond: ${rateLimitRps}
 jobs:
   - type: spider
     parameters:
@@ -384,7 +404,7 @@ jobs:
   - type: passiveScan-wait
 ${scanPolicy}  - type: report
     parameters:
-      reportFile: /dev/stdout
+      reportFile: ${yamlQuote(reportFilePath)}
       reportTitle: audit-tool-zap
       template: traditional-json
 `;

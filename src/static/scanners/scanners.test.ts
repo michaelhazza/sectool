@@ -385,6 +385,33 @@ describe('runGitleaks', () => {
       /failed to parse JSON output/,
     );
   });
+
+  // Fix 7: cross-platform temp-file report — the injectable exec receives dir
+  // and returns { stdout, exitCode }, matching the temp-file-based implementation.
+  it('parses a temp-file report via the injectable exec (cross-platform, no /dev/stdout)', async () => {
+    // The injectable exec interface returns the parsed JSON content as stdout —
+    // this mirrors how the real defaultExecGitleaks reads a temp file and returns
+    // its content in the stdout field. The test verifies the wrapper correctly
+    // parses the content regardless of how it was obtained.
+    const tempFileContent = JSON.stringify([
+      {
+        RuleID: 'generic-api-key',
+        Description: 'Generic API Key via temp file',
+        File: 'config/prod.ts',
+        StartLine: 3,
+        Secret: 'EXAMPLE-fake-secret-tempfile-001',
+        Match: 'apiKey = "EXAMPLE-fake-secret-tempfile-001"',
+        Entropy: 4.1,
+      },
+    ]);
+    const exec = () => Promise.resolve({ stdout: tempFileContent, exitCode: 1 });
+    const findings = await runGitleaks(FIXTURE_TARGET, '/fake/dir', exec);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.ruleId).toBe('generic-api-key');
+    // Secret must be redacted (not raw value in any evidence field)
+    const evidenceStr = JSON.stringify(findings[0]!.evidence);
+    expect(evidenceStr).not.toContain('EXAMPLE-fake-secret-tempfile-001');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -57,6 +57,23 @@ export const CSRF_NONCE: string = (() => {
  */
 export type FixHandler = (fingerprint: string) => Promise<{ issueUrl: string }>;
 
+// Per-fingerprint promise chain — serializes concurrent fix requests for the
+// same fingerprint so fileFixRequest + upsertFix never race on the same issue.
+const fixLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Run fn() serially per fingerprint key. If a request for the same fingerprint
+ * is already in-flight, the new call waits for the prior one to settle before
+ * starting its own execution (not reusing the prior result).
+ */
+function withFixLock(key: string, fn: () => Promise<{ issueUrl: string }>): Promise<{ issueUrl: string }> {
+  const prior = fixLocks.get(key) ?? Promise.resolve();
+  const next: Promise<{ issueUrl: string }> = prior.then(() => fn(), () => fn());
+  // Store the settling chain (void) so the next waiter sees this one complete.
+  fixLocks.set(key, next.then(() => undefined, () => undefined));
+  return next;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -76,13 +93,33 @@ function readJsonFile(path: string): unknown {
   return JSON.parse(raw) as unknown;
 }
 
-/** Read the full request body as a UTF-8 string. */
+/** Maximum accepted request body size (64 KiB). Fix-request bodies are tiny. */
+const MAX_BODY_BYTES = 64 * 1024;
+
+/** Read the full request body as a UTF-8 string, capped at MAX_BODY_BYTES.
+ *  Rejects with a {tooLarge: true} error if the cap is exceeded. */
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((res, rej) => {
     let data = '';
-    req.on('data', (chunk: Buffer | string) => { data += chunk.toString(); });
-    req.on('end', () => res(data));
-    req.on('error', rej);
+    let byteCount = 0;
+    let aborted = false;
+    req.on('data', (chunk: Buffer | string) => {
+      if (aborted) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      byteCount += buf.byteLength;
+      if (byteCount > MAX_BODY_BYTES) {
+        aborted = true;
+        // Drain remaining data silently so the socket stays open long enough
+        // for the caller to write the 413 response before destroying.
+        req.resume();
+        const err = Object.assign(new Error('Request body too large'), { tooLarge: true });
+        rej(err);
+        return;
+      }
+      data += buf.toString('utf8');
+    });
+    req.on('end', () => { if (!aborted) res(data); });
+    req.on('error', (e) => { if (!aborted) rej(e); });
   });
 }
 
@@ -305,12 +342,17 @@ async function handleFixPost(
     return;
   }
 
-  // Guards passed — read and parse body
+  // Guards passed — read and parse body (capped at MAX_BODY_BYTES)
   let body: string;
   try {
     body = await readBody(req);
-  } catch {
-    jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+  } catch (bodyErr) {
+    const isTooLarge = typeof bodyErr === 'object' && bodyErr !== null && (bodyErr as { tooLarge?: boolean }).tooLarge === true;
+    if (isTooLarge) {
+      jsonResponse(res, 413, { error: 'Request body too large' });
+    } else {
+      jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+    }
     return;
   }
 
@@ -328,7 +370,7 @@ async function handleFixPost(
   }
 
   try {
-    const result = await fixHandler(fingerprint);
+    const result = await withFixLock(fingerprint, () => fixHandler(fingerprint));
     jsonResponse(res, 200, { issueUrl: result.issueUrl });
   } catch (err) {
     if (err instanceof MissingFixTokenError) {

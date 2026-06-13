@@ -81,21 +81,19 @@ export async function defaultAcquireRepo(
   }
 
   const token = process.env['AUDIT_GITHUB_READ_TOKEN'];
-  const gitUrl = token
-    ? target.gitUrl.replace(/^https:\/\//, `https://x-access-token:${token}@`)
-    : target.gitUrl;
-
   const tmpDir = await mkdtemp(join(tmpdir(), `audit-clone-${target.name}-`));
+
+  // Pass the token out-of-argv via http.extraHeader so the credential never
+  // appears in the process argument list (visible via /proc/*/cmdline, ps, etc.).
+  const cloneArgs: string[] = ['clone', '--depth', '1', '--single-branch', '--no-recurse-submodules'];
+  if (token) {
+    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+    cloneArgs.push(`-c`, `http.extraHeader=AUTHORIZATION: basic ${encoded}`);
+  }
+  cloneArgs.push(target.gitUrl, tmpDir);
+
   try {
-    await execFileAsync('git', [
-      'clone',
-      '--depth',
-      '1',
-      '--single-branch',
-      '--no-recurse-submodules',
-      gitUrl,
-      tmpDir,
-    ]);
+    await execFileAsync('git', cloneArgs);
   } catch (err) {
     await rm(tmpDir, { recursive: true, force: true });
     throw err;

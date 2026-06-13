@@ -99,6 +99,26 @@ describe('redact — Set-Cookie header', () => {
     expect(out['cookie']).toMatch(/^session=\[redacted:[0-9a-f]{8}\]/);
     expect(out['cookie']).not.toContain('s%3Afake_session_secret_abc123');
   });
+
+  // Fix 6: ALL cookie pairs must be redacted (not just the first one)
+  it('redacts ALL cookie pairs — both SECRET1 and SECRET2 are replaced (fix 6)', () => {
+    const obj = { cookie: 'a=SECRET1; b=SECRET2' };
+    const out = redact(obj) as Record<string, string>;
+    expect(out['cookie']).not.toContain('SECRET1');
+    expect(out['cookie']).not.toContain('SECRET2');
+    // Both names are preserved; both values are placeholders
+    expect(out['cookie']).toMatch(/a=\[redacted:[0-9a-f]{8}\]/);
+    expect(out['cookie']).toMatch(/b=\[redacted:[0-9a-f]{8}\]/);
+  });
+
+  it('redacts all pairs in a multi-pair cookie header with different values', () => {
+    const multiCookie = 'session=abc123; csrf=xyz789; user=alice';
+    const obj = { cookie: multiCookie };
+    const out = redact(obj) as Record<string, string>;
+    expect(out['cookie']).not.toContain('abc123');
+    expect(out['cookie']).not.toContain('xyz789');
+    expect(out['cookie']).not.toContain('alice');
+  });
 });
 
 describe('redact — gitleaks secret field', () => {

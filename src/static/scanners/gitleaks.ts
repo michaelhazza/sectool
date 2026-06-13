@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fingerprint, displayId, normalizePath } from '../../correlate/fingerprint.js';
 import { redactString } from '../../report/redaction.js';
 import type { Finding } from '../../schemas/finding.js';
@@ -122,25 +125,33 @@ async function defaultExecGitleaks(
 ): Promise<{ stdout: string; exitCode: number }> {
   // gitleaks exits 1 when leaks are found, 0 when clean — both are valid.
   // We treat exit code 2+ as a hard error (misconfiguration / unreadable repo).
+  // Use a temp file for the report (cross-platform; /dev/stdout is POSIX-only).
+  const reportPath = join(tmpdir(), `gitleaks-report-${Date.now()}.json`);
   try {
-    const { stdout } = await execFileAsync('gitleaks', [
+    await execFileAsync('gitleaks', [
       'detect',
       '--source', dir,
       '--report-format', 'json',
-      '--report-path', '/dev/stdout',
+      '--report-path', reportPath,
       '--no-banner',
       '--exit-code', '1',
     ]);
-    return { stdout, exitCode: 0 };
+    // Exit 0 = clean scan; read the (possibly empty) report file.
+    let reportContent = '';
+    try { reportContent = readFileSync(reportPath, 'utf8'); } catch { /* file may not exist on clean scan */ }
+    try { unlinkSync(reportPath); } catch { /* ignore cleanup errors */ }
+    return { stdout: reportContent, exitCode: 0 };
   } catch (err) {
-    // execFile throws on non-zero exit. Capture stdout from the error object.
-    const execErr = err as { stdout?: string; code?: number };
+    const execErr = err as { code?: number };
     const code = execErr.code ?? 1;
-    const stdout = execErr.stdout ?? '';
-    // Exit code 1 = leaks found (normal); anything else is a tool error.
+    // Exit code 1 = leaks found (normal); read the report file.
     if (code === 1) {
-      return { stdout, exitCode: 1 };
+      let reportContent = '';
+      try { reportContent = readFileSync(reportPath, 'utf8'); } catch { /* ignore */ }
+      try { unlinkSync(reportPath); } catch { /* ignore cleanup errors */ }
+      return { stdout: reportContent, exitCode: 1 };
     }
+    try { unlinkSync(reportPath); } catch { /* ignore cleanup errors */ }
     throw err;
   }
 }

@@ -227,4 +227,32 @@ describe('runNuclei', () => {
     expect(ruleIds).toContain('NUCLEI-CVE-2021-44228');
     expect(ruleIds).toContain('NUCLEI-exposed-kibana');
   });
+
+  // Fix 4: rate limit passed through to Nuclei args
+  it('passes -rate-limit <rps> in args to the ExecNuclei function', async () => {
+    const target = makeTarget();
+    let capturedArgs: readonly string[] = [];
+    const capturingExec: ExecNuclei = (args) => {
+      capturedArgs = args;
+      return Promise.resolve([]);
+    };
+    const opts: NucleiOpts = { rps: 3, activeScan: false };
+    await runNuclei(target, opts, capturingExec);
+    expect(capturedArgs).toContain('-rate-limit');
+    const idx = Array.from(capturedArgs).indexOf('-rate-limit');
+    expect(capturedArgs[idx + 1]).toBe('3');
+  });
+
+  it('rate limit value matches opts.rps exactly in args', async () => {
+    const target = makeTarget();
+    let capturedArgs: readonly string[] = [];
+    const capturingExec: ExecNuclei = (args) => {
+      capturedArgs = args;
+      return Promise.resolve([]);
+    };
+    const opts: NucleiOpts = { rps: 15, activeScan: false };
+    await runNuclei(target, opts, capturingExec);
+    const idx = Array.from(capturedArgs).indexOf('-rate-limit');
+    expect(capturedArgs[idx + 1]).toBe('15');
+  });
 });

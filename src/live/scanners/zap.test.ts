@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { runZap } from './zap.js';
+import { runZap, buildZapAutomationYaml } from './zap.js';
 import type { ZapReport, ZapOpts, ExecZap } from './zap.js';
 import type { AllowedTarget } from '../gate.js';
 import type { Session } from '../auth.js';
@@ -257,5 +257,64 @@ describe('runZap', () => {
     const findings = await runZap(target, makePassiveOpts(), fixedExecZap(FIXTURE_PASSIVE_REPORT));
     expect(findings).toHaveLength(1);
     expect(findings[0]!.confidence).toBe('probable');
+  });
+
+  // Fix 4: rate limit passed to scanner args
+  it('passes -rate-limit <rps> in args to the ExecZap function', async () => {
+    const target = makeTarget();
+    let capturedArgs: readonly string[] = [];
+    const capturingExec: ExecZap = (args) => {
+      capturedArgs = args;
+      return Promise.resolve(FIXTURE_EMPTY_REPORT);
+    };
+    const opts: ZapOpts = { rps: 5, activeScan: false };
+    await runZap(target, opts, capturingExec);
+    expect(capturedArgs).toContain('-rate-limit');
+    const idx = Array.from(capturedArgs).indexOf('-rate-limit');
+    expect(capturedArgs[idx + 1]).toBe('5');
+  });
+
+  it('rate limit value matches opts.rps in args', async () => {
+    const target = makeTarget();
+    let capturedArgs: readonly string[] = [];
+    const capturingExec: ExecZap = (args) => {
+      capturedArgs = args;
+      return Promise.resolve(FIXTURE_EMPTY_REPORT);
+    };
+    const opts: ZapOpts = { rps: 20, activeScan: false };
+    await runZap(target, opts, capturingExec);
+    const idx = Array.from(capturedArgs).indexOf('-rate-limit');
+    expect(capturedArgs[idx + 1]).toBe('20');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 8: buildZapAutomationYaml — YAML URL quoting
+// ---------------------------------------------------------------------------
+
+describe('buildZapAutomationYaml — URL quoting (fix 8)', () => {
+  it('wraps the target URL in double quotes in the YAML output', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.dev/', false, 10, '/tmp/report.json');
+    expect(yaml).toMatch(/"https:\/\/staging\.example\.dev\/"/);
+  });
+
+  it('escapes double quotes in the URL to prevent YAML injection', () => {
+    const maliciousUrl = 'https://example.dev/"\nmalicious: directive';
+    const yaml = buildZapAutomationYaml(maliciousUrl, false, 10, '/tmp/report.json');
+    // The injected newline+directive must not appear as a raw YAML directive.
+    // The double-quote in the URL is escaped as \\"
+    expect(yaml).toMatch(/\\"/);
+    expect(yaml).not.toMatch(/^malicious:/m);
+  });
+
+  it('includes maxRequestsPerSecond matching rateLimitRps', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.dev/', false, 7, '/tmp/report.json');
+    expect(yaml).toMatch(/maxRequestsPerSecond:\s*7/);
+  });
+
+  it('uses the provided reportFilePath (not /dev/stdout)', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.dev/', false, 10, '/tmp/zap-report-123.json');
+    expect(yaml).toMatch(/zap-report-123\.json/);
+    expect(yaml).not.toContain('/dev/stdout');
   });
 });

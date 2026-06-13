@@ -21,9 +21,8 @@ const BEARER_RE = /^(Bearer|Basic|Token)\s+\S+/i;
 // Pattern: Authorization header full value (any scheme + credential)
 const AUTH_VALUE_RE = /^[A-Za-z0-9+/._-]+\s+\S+/;
 
-// Pattern: key=value pairs in Set-Cookie / Cookie header values
-// Matches the value portion of cookie key=value pairs
-const COOKIE_VALUE_RE = /^([^=]+)=([^;,\s]+)/;
+// Pattern: key=value pairs in Set-Cookie / Cookie header values (global, covers all pairs).
+const COOKIE_VALUE_RE = /([^=;,\s]+)=([^;,\s]+)/g;
 
 /**
  * Derive a stable 8-hex placeholder digest for a known credential string.
@@ -92,7 +91,7 @@ function redactHeaderValue(headerName: string, headerValue: string): string {
   }
 
   if (nameLower === 'set-cookie' || nameLower === 'cookie') {
-    // Redact the value portion of each key=value token.
+    // Redact the value portion of every key=value pair (global flag covers all).
     // Set-Cookie: name=value; Path=/; HttpOnly
     // Cookie: name1=val1; name2=val2
     return headerValue.replace(COOKIE_VALUE_RE, (_match, cookieName: string, cookieVal: string) => {

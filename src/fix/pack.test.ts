@@ -102,6 +102,33 @@ describe('resolveRuleDocPath', () => {
     const p = resolveRuleDocPath('UNKNOWN-RULE-999', 'unknown-source');
     expect(p).toBeNull();
   });
+
+  // Fix 1: path-traversal guard
+  it('rejects a ruleId with path traversal using forward slashes (../../config/targets)', () => {
+    const p = resolveRuleDocPath('../../config/targets', 'ast');
+    expect(p).toBeNull();
+  });
+
+  it('rejects a ruleId with path traversal using backslash sequences', () => {
+    const p = resolveRuleDocPath('..\\..\\x', 'ast');
+    expect(p).toBeNull();
+  });
+
+  it('rejects a ruleId containing a forward slash', () => {
+    const p = resolveRuleDocPath('foo/bar', 'ast');
+    expect(p).toBeNull();
+  });
+
+  it('rejects a ruleId containing null byte', () => {
+    const p = resolveRuleDocPath('foo\0bar', 'ast');
+    expect(p).toBeNull();
+  });
+
+  it('accepts a well-formed ruleId with hyphens and dots', () => {
+    // BS-SQL-001 is a real doc; this just tests the charset check doesn't block valid ids.
+    const p = resolveRuleDocPath('BS-SQL-001', 'ast');
+    expect(p).toMatch(/BS-SQL-001\.md$/);
+  });
 });
 
 // ---------------------------------------------------------------------------

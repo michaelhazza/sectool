@@ -354,6 +354,107 @@ describe('POST /api/fix — CSRF/origin guardrail (§10)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fix 2: body size cap → HTTP 413 (DoS guard)
+// ---------------------------------------------------------------------------
+
+describe('POST /api/fix — body size cap (fix 2)', () => {
+  let capSrv: AuditServer;
+  let fixHandlerCalled: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const fixSpy: FixHandler = (_fp: string) => {
+    fixHandlerCalled = true;
+    return Promise.resolve({ issueUrl: 'https://github.com/test/repo/issues/9' });
+  };
+
+  beforeAll(async () => {
+    fixHandlerCalled = false;
+    capSrv = await startServer(0, fixSpy);
+  });
+
+  afterAll(async () => {
+    await capSrv.stop();
+  });
+
+  beforeEach(() => {
+    fixHandlerCalled = false;
+  });
+
+  it('returns 413 when body exceeds 64 KiB and does NOT call the fix handler', async () => {
+    // Build a body that's 65 KiB — over the 64 KiB cap.
+    const oversizedBody = JSON.stringify({ fingerprint: 'a'.repeat(64), padding: 'x'.repeat(65 * 1024) });
+    const { status } = await post(
+      capSrv.port,
+      '/api/fix',
+      oversizedBody,
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': `http://127.0.0.1:${capSrv.port}`,
+      },
+    );
+    expect(status).toBe(413);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('accepts a normal-sized body (under 64 KiB) and calls the fix handler', async () => {
+    const normalBody = JSON.stringify({ fingerprint: 'a'.repeat(64) });
+    const { status } = await post(
+      capSrv.port,
+      '/api/fix',
+      normalBody,
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': `http://127.0.0.1:${capSrv.port}`,
+      },
+    );
+    expect(status).toBe(200);
+    expect(fixHandlerCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5: concurrent fix requests for the same fingerprint are serialized
+// ---------------------------------------------------------------------------
+
+describe('POST /api/fix — per-fingerprint serialization (fix 5)', () => {
+  let seqSrv: AuditServer;
+  let callCount: number;
+
+  beforeAll(async () => {
+    callCount = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const serialSpy: FixHandler = (_fp: string) => {
+      callCount++;
+      return Promise.resolve({ issueUrl: 'https://github.com/test/repo/issues/serial' });
+    };
+    seqSrv = await startServer(0, serialSpy);
+  });
+
+  afterAll(async () => {
+    await seqSrv.stop();
+  });
+
+  beforeEach(() => {
+    callCount = 0;
+  });
+
+  it('two concurrent POSTs for the same fingerprint call the handler exactly twice (serialized)', async () => {
+    const body = JSON.stringify({ fingerprint: 'b'.repeat(64) });
+    const headers = {
+      'X-Audit-CSRF': CSRF_NONCE,
+      'Origin': `http://127.0.0.1:${seqSrv.port}`,
+    };
+    const [r1, r2] = await Promise.all([
+      post(seqSrv.port, '/api/fix', body, headers),
+      post(seqSrv.port, '/api/fix', body, headers),
+    ]);
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    // Both calls run (serialized, not deduplicated) — count is 2
+    expect(callCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Trend endpoint with real data
 // ---------------------------------------------------------------------------
 
