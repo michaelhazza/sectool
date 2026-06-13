@@ -40,3 +40,25 @@ rules:
       - javascript
       - typescript
     pattern: 'cors("*")'
+
+  - id: BS-CORS-001-reflected-origin
+    message: >
+      CORS origin reflects the incoming Origin header, granting any origin
+      full access equivalent to a wildcard.
+    severity: ERROR
+    metadata:
+      category: misconfiguration
+      confidence: MEDIUM
+      bs-rule-id: BS-CORS-001
+      bs-vuln-class: misconfiguration
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-community/attacks/CORS_OriginHeaderScrutiny
+    languages:
+      - javascript
+      - typescript
+    pattern-either:
+      - pattern: |
+          $RES.header("Access-Control-Allow-Origin", $REQ.headers.origin)
+      - pattern: |
+          $RES.setHeader("Access-Control-Allow-Origin", $REQ.headers.origin)

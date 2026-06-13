@@ -1,5 +1,5 @@
 rules:
-  - id: BS-UPLOAD-001-no-limits
+  - id: BS-UPLOAD-001-no-size-limit
     message: >
       multer upload has no file-size limit. Without limits.fileSize an attacker
       can upload arbitrarily large files, exhausting disk space or memory.
