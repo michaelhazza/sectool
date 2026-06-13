@@ -1,6 +1,7 @@
 {
-  "_comment": "BS-JWT-001: algorithm rule finds 2 (sign+verify without algo), expiry rule finds 1 (sign with only {algorithm:...}). Literal-secret finds 0 (STATIC_SECRET is a variable, not string literal).",
+  "_comment": "JWT-001: algorithm×2 + expiry×1 + literal-secret×1 (semgrep matches 'fallback' string literal inside nullish-coalescing expression). Total: 4.",
   "findings": [
+    { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" },
     { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" },
     { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" },
     { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" }
