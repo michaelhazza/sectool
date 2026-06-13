@@ -236,7 +236,7 @@ import + `issues:write`-only properties (§5.2), not on a blanket no-write rule.
 | `audit run [--repo <name>] [--url <staging-url>]` | scan-source + scan-live + correlate + report |
 | `audit report [--format json\|md\|sarif\|html]` | Re-emit report from the last run's findings (no scanning); `html` is the self-contained single-file export (§5.2) |
 | `audit ui [--port <n>]` | Serve the local dashboard on `127.0.0.1` (default port 4173); no scan capability; sole outward action is the §5.3 fix request |
-| `audit fix (<finding-ref> \| --min-severity <s>) [--dry-run]` | File fix-request issue(s) in the target repo (§5.3). `<finding-ref>` files exactly one finding; `--min-severity <s>` bulk-files every not-yet-filed finding at or above severity `s`. `<finding-ref>` is the full 64-hex `fingerprint` OR a display id (`f-<16hex>`) that resolves to exactly one finding in the selected report — an ambiguous prefix fails with `AmbiguousFindingIdError` listing the matching full fingerprints. All filing + idempotency key by the full `fingerprint`, never the display id (§6.6). `--dry-run` prints the pack(s) without filing. There is no per-finding severity override (severity is computed, §8). |
+| `audit fix (<finding-ref> \| --min-severity <s>) [--dry-run]` | File fix-request issue(s) in the target repo (§5.3). `<finding-ref>` files exactly one finding; `--min-severity <s>` bulk-files every not-yet-filed finding at or above severity `s`, **excluding `suppressed: true` findings** — accepted/acknowledged risks (PR-approved baseline, §6.4) are never bulk-filed; a suppressed finding can be filed only by explicit `<finding-ref>` selection (no `--include-suppressed` in v1). `<finding-ref>` is the full 64-hex `fingerprint` OR a display id (`f-<16hex>`) that resolves to exactly one finding in the selected report — an ambiguous prefix fails with `AmbiguousFindingIdError` listing the matching full fingerprints. All filing + idempotency key by the full `fingerprint`, never the display id (§6.6). `--dry-run` prints the pack(s) without filing. There is no per-finding severity override (severity is computed, §8). |
 
 CLI plumbing: `node:util` `parseArgs` (dependency-light per brief).
 
@@ -1021,11 +1021,14 @@ benchmark/
     target `failed` — never a silent unauthenticated active scan (§6.2).
     [OAI-SPEC-009.]
   - *Secret redaction (§5.4):* a fixture carrying known secrets (a gitleaks
-    hit, a bearer token, a `Set-Cookie`) flows through every emitter
-    (`report.json`, MD, SARIF, HTML, remediation pack, fix-issue body) and the
-    test asserts no raw fixture secret appears in any output — only
-    `[redacted:<8hex>]`. Ships with the P5 emitters (`src/report/redaction.test.ts`).
-    [OAI-SPEC-005.]
+    hit, a bearer token, a `Set-Cookie`) is asserted absent from EVERY emitted
+    surface — the per-repo raw findings file, stdout/logs, `report.json`,
+    Markdown, SARIF, HTML, remediation pack, and fix-issue body — appearing only
+    as `[redacted:<8hex>]`. The redaction function + its unit test
+    (`src/report/redaction.test.ts`) ship in P2 at the normalizer boundary;
+    each surface's redaction-pass is asserted as that emitter lands (raw
+    findings P2, report formats P5, HTML P7, fix issues P8). [OAI-SPEC-005;
+    surface list reconciled with §5.4 per external review MEDIUM-2.]
   - *UI fix-endpoint CSRF/origin guard (§5.2):* `src/ui/server.test.ts` asserts
     the mutating "Send for fixing" route returns 403 (and never calls
     `src/fix/github.ts`) on a missing/wrong `X-Audit-CSRF` nonce or a foreign
@@ -1080,7 +1083,7 @@ RLS appears only as the SUBJECT of rules.
 | P3 | custom rule pack (11 rules) + their corpus fixtures (test-first, enforced by the P1 harness) | P1, P2 (semgrep runner) |
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
 | P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend (every report emitter applies the §5.4 redaction chokepoint authored in P2; live response material from P4 is redacted at its normalizer too) | P2–P4 |
-| P6 | benchmark completion (live-fixture integration, **engine-available §10 guardrail tests only** — partial-run trend, scoped suppression, active-scan cred failure, allowlist IP-literal rejection, carrier-aware login success; the §10 *HTML evidence inert-text matrix* guardrail is NOT a P6 deliverable because it targets the P7 HTML exporter — see P7) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
+| P6 | benchmark completion (live-fixture integration, **engine-available §10 guardrail tests only** — partial-run trend, scoped suppression, active-scan cred failure, allowlist IP-literal rejection, preflight-before-DNS, aggregate per-host rate limiting, carrier-aware login success; the §10 *HTML evidence inert-text matrix* guardrail is NOT a P6 deliverable because it targets the P7 HTML exporter — see P7) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
 | P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. **`src/report/html.test.ts` owns the §10 HTML evidence inert-text matrix guardrail** (it ships with the exporter it tests; required before final v1 ship). All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
 | P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`, CSRF/origin-gated per §5.2)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
 
