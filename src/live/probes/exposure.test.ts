@@ -25,7 +25,7 @@ function allNotFoundClient(): ExposureClient {
 function exposedPathClient(exposedPath: string, status: number, bodyPreview?: string): ExposureClient {
   return (_target: AllowedTarget, path: string): Promise<PathProbeResult> => {
     if (path === exposedPath) {
-      return Promise.resolve({ path, status, contentType: 'text/plain', bodyPreview });
+      return Promise.resolve({ path, status, contentType: 'text/plain', ...(bodyPreview !== undefined ? { bodyPreview } : {}) });
     }
     return Promise.resolve({ path, status: 404 });
   };

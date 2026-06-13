@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { tmpdir } from 'node:os';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AllowedTarget } from '../gate.js';
 import type { Session } from '../auth.js';
 import { withHostBudget } from '../ratelimit.js';
@@ -328,12 +331,22 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
   // Minimal automation-framework YAML for ZAP 2.14+
   const zapYaml = buildZapAutomationYaml(targetUrl, isActive);
 
-  // Run ZAP with automation framework via stdin
-  const { stdout } = await execFileAsync('zap.sh', ['-autorun', '-cmd', '-silent'], {
-    input: zapYaml,
-    timeout: 300_000, // 5 min cap per §5 scanner-timeout
-    encoding: 'utf8',
-  });
+  // Write the YAML to a temp file; execFile does not accept stdin input.
+  const tmpFile = join(tmpdir(), `zap-autorun-${Date.now()}.yaml`);
+  writeFileSync(tmpFile, zapYaml, 'utf8');
+
+  let stdout: string;
+  try {
+    const result = await execFileAsync('zap.sh', ['-autorun', tmpFile, '-cmd', '-silent'], {
+      timeout: 300_000, // 5 min cap per §5 scanner-timeout
+      encoding: 'utf8',
+    });
+    stdout = result.stdout;
+  } catch (err) {
+    try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
+    throw err;
+  }
+  try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
 
   // ZAP outputs the report JSON to stdout (configured in the YAML)
   try {

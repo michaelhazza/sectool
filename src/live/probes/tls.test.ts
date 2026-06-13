@@ -127,7 +127,10 @@ describe('runTlsProbe', () => {
       expect(f.source).toBe('probe');
       expect(f.surface).toBe('live');
       expect(f.target.kind).toBe('staging');
-      expect(typeof f.location.url).toBe('string');
+      expect('url' in f.location).toBe(true);
+      if ('url' in f.location) {
+        expect(typeof f.location.url).toBe('string');
+      }
     }
   });
 
