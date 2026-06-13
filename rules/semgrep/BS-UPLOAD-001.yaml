@@ -20,7 +20,7 @@ rules:
           multer({dest: $DEST})
       - pattern-not: |
           multer({dest: $DEST, limits: $LIMITS})
-      - pattern-not: 'multer({fileFilter: $F})'
+      - pattern-not: 'multer({fileFilter: $F, ...})'
 
   - id: BS-UPLOAD-001-no-type-filter
     message: >
@@ -41,4 +41,4 @@ rules:
     patterns:
       - pattern: |
           multer({dest: $DEST, limits: $LIMITS})
-      - pattern-not: 'multer({fileFilter: $F})'
+      - pattern-not: 'multer({fileFilter: $F, ...})'
