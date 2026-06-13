@@ -1,12 +1,17 @@
 {
-  "_comment": "EXPECTED.json shape for benchmark/corpus/static/<RULE-ID>/vulnerable/",
-  "_schema": "Each entry in 'findings' describes one expected Finding the rule must produce on this fixture. The harness compares actual scan output against this list. An 'id' must be present for each entry; 'ruleId' and 'vulnClass' are the minimum for recall accounting. All fields are matched by ruleId; additional fields may be asserted by the harness when present.",
+  "_comment": "BS-SQL-001: SQL injection via request-derived interpolation in sql tagged template / db.execute",
   "findings": [
     {
       "ruleId": "BS-SQL-001",
       "vulnClass": "injection",
       "surface": "static",
-      "_note": "SQL injection via raw interpolation in tagged template literal"
+      "_note": "getUserById: req.params.id flows into sql`` template"
+    },
+    {
+      "ruleId": "BS-SQL-001",
+      "vulnClass": "injection",
+      "surface": "static",
+      "_note": "getItemByName: req.query.name flows into sql`` template"
     }
   ]
 }

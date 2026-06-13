@@ -1,0 +1,17 @@
+{
+  "_comment": "BS-RLS-001: Drizzle tenant table with no RLS policy in migrations",
+  "findings": [
+    {
+      "ruleId": "BS-RLS-001",
+      "vulnClass": "tenant-isolation",
+      "surface": "static",
+      "_note": "subscriptions table has organisationId column but no RLS policy in migrations/"
+    },
+    {
+      "ruleId": "BS-RLS-001",
+      "vulnClass": "tenant-isolation",
+      "surface": "static",
+      "_note": "users table has organisationId column but no RLS policy in migrations/"
+    }
+  ]
+}

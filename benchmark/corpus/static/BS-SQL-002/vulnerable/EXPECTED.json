@@ -1,0 +1,17 @@
+{
+  "_comment": "BS-SQL-002: queries on tenant tables bypassing the scoped query helper",
+  "findings": [
+    {
+      "ruleId": "BS-SQL-002",
+      "vulnClass": "tenant-isolation",
+      "surface": "static",
+      "_note": "getAllInvoices: direct db.select() on invoices (tenant table) without scopedQuery helper"
+    },
+    {
+      "ruleId": "BS-SQL-002",
+      "vulnClass": "tenant-isolation",
+      "surface": "static",
+      "_note": "getRawInvoiceData: direct db.select() on invoices (tenant table) without scopedQuery helper"
+    }
+  ]
+}
