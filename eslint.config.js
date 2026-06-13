@@ -15,6 +15,9 @@ export default tseslint.config(
       // code samples, not tool source — they are scanned, not linted/type-checked.
       'benchmark/corpus/**',
       'benchmark/live-fixture/**',
+      // the React SPA builds + type-checks under its own ui/tsconfig.json + Vite;
+      // it is not part of the main `eslint .` / `tsc --noEmit` project.
+      'ui/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,
