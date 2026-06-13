@@ -13,6 +13,7 @@ import { correlate } from './correlate/correlate.js';
 import { buildReport, writeReport } from './report/json.js';
 import { toMarkdown } from './report/markdown.js';
 import { toSarif } from './report/sarif.js';
+import { toHtml } from './report/html.js';
 import {
   writeTrend,
   buildTrendLine,
@@ -717,8 +718,7 @@ function doReport(args: ReportArgs): void {
       process.stdout.write(toSarif(report) + '\n');
       break;
     case 'html':
-      // html stub — replaced by P7-3
-      process.stdout.write('[html export] not yet implemented (P7)\n');
+      process.stdout.write(toHtml(report) + '\n');
       break;
   }
 }

@@ -65,6 +65,10 @@ vi.mock('./report/sarif.js', () => ({
   toSarif: vi.fn(() => '{}'),
 }));
 
+vi.mock('./report/html.js', () => ({
+  toHtml: vi.fn(() => '<!DOCTYPE html><html><body>Report</body></html>'),
+}));
+
 vi.mock('./report/lock.js', () => ({
   WorkspaceLockedError: class WorkspaceLockedError extends Error {
     pid = 0;
@@ -102,10 +106,12 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+import { readdirSync } from 'node:fs';
 import { main } from './cli.js';
 import { ConfigError, loadAllowlist, loadTargets } from './config/load.js';
 import { scanRepos } from './static/orchestrator.js';
 import { dryRun } from './live/preflight.js';
+import { toHtml } from './report/html.js';
 
 // ── ExitSignal ─────────────────────────────────────────────────────────────
 
@@ -414,6 +420,52 @@ describe('CLI — P1-4 + P5-6', () => {
     it('audit ui --port 0 does not emit stub text', () => {
       const { stdout } = capture(['ui', '--port', '0']);
       expect(stdout).not.toMatch(/not yet implemented/);
+    });
+  });
+
+  // ── P7-3 CLI wiring — audit report --format html ─────────────────────────
+
+  describe('P7-3 CLI wiring — audit report --format html', () => {
+    it('audit report --format html does not emit the P7 stub message', () => {
+      // Even when there is no report (exits 1), no stub message appears
+      const { stdout, stderr } = capture(['report', '--format', 'html']);
+      expect(stdout).not.toMatch(/not yet implemented \(P7\)/);
+      expect(stderr).not.toMatch(/not yet implemented \(P7\)/);
+    });
+
+    it('audit report --format html calls toHtml when a report exists', async () => {
+      const fakeReport = {
+        runId: '2026-06-13T00-00-00Z-test',
+        date: '2026-06-13',
+        findings: [],
+        targets: [],
+        meta: {
+          status: 'success',
+          failures: [],
+          scannerStatus: [],
+          startedAt: '2026-06-13T00:00:00.000Z',
+          finishedAt: '2026-06-13T00:00:01.000Z',
+          toolVersion: 'audit-tool/1.0.0',
+        },
+      };
+
+      // Provide a run dir so findLatestReport() finds the fake report.
+      // readdirSync is a vi.fn() from the mock setup.
+      vi.mocked(readdirSync).mockReturnValueOnce(
+        ['2026-06-13T00-00-00Z-test'] as unknown as ReturnType<typeof readdirSync>,
+      );
+      // Spy on the mocked node:fs module's readFileSync for this one call.
+      const fsMod = await import('node:fs');
+      const spy = vi.spyOn(fsMod, 'readFileSync').mockReturnValueOnce(JSON.stringify(fakeReport));
+
+      const { stdout, exitCode } = capture(['report', '--format', 'html']);
+      spy.mockRestore();
+
+      expect(exitCode).toBe(0);
+      // The mock toHtml returns a DOCTYPE string
+      expect(stdout).toMatch(/<!DOCTYPE html>/i);
+      expect(stdout).not.toMatch(/not yet implemented/);
+      expect(vi.mocked(toHtml)).toHaveBeenCalled();
     });
   });
 });
