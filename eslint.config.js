@@ -11,6 +11,10 @@ export default tseslint.config(
       'coverage/**',
       'migrations/**',
       'scripts/**',
+      // benchmark corpus + live fixtures are intentionally-vulnerable target-app
+      // code samples, not tool source — they are scanned, not linted/type-checked.
+      'benchmark/corpus/**',
+      'benchmark/live-fixture/**',
     ],
   },
   ...tseslint.configs.recommendedTypeChecked,

@@ -115,7 +115,7 @@ function isTainted(arg: Node, taintedLocals: Set<string>): boolean {
     return taintedLocals.has(arg.asKindOrThrow(SyntaxKind.Identifier).getText());
   }
   // Template literal with tainted span
-  if (arg.getKind() === SyntaxKind.TemplateLiteral || arg.getKind() === SyntaxKind.NoSubstitutionTemplateLiteral) {
+  if (arg.getKind() === SyntaxKind.TemplateExpression || arg.getKind() === SyntaxKind.NoSubstitutionTemplateLiteral) {
     let found = false;
     arg.forEachDescendant((n) => {
       if (found) return;

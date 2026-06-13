@@ -11,12 +11,10 @@ import { join } from 'node:path';
 
 /** Create a ts-morph Project for the given repo directory. */
 export function createProject(repoDir: string): Project {
+  const hasTsConfig = existsSync(join(repoDir, 'tsconfig.json'));
   return new Project({
-    tsConfigFilePath: existsSync(join(repoDir, 'tsconfig.json'))
-      ? join(repoDir, 'tsconfig.json')
-      : undefined,
-    addFilesFromTsConfig: existsSync(join(repoDir, 'tsconfig.json')),
-    skipAddingFilesFromTsConfig: !existsSync(join(repoDir, 'tsconfig.json')),
+    ...(hasTsConfig ? { tsConfigFilePath: join(repoDir, 'tsconfig.json') } : {}),
+    skipAddingFilesFromTsConfig: !hasTsConfig,
     skipFileDependencyResolution: true,
     useInMemoryFileSystem: false,
   });
