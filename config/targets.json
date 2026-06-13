@@ -1,0 +1,35 @@
+{
+  "repos": [
+    {
+      "name": "automation-v1",
+      "gitUrl": "https://github.com/michaelhazza/automation-v1.git",
+      "localPath": null,
+      "stackTags": ["express", "drizzle-rls", "jwt", "react"],
+      "publicRoutes": ["POST /api/auth/login", "GET /api/health"],
+      "enabled": true
+    }
+  ],
+  "stagingTargets": [
+    {
+      "name": "automation-v1-staging",
+      "url": "https://staging.automation.breakout.dev",
+      "repo": "automation-v1",
+      "activeScan": false,
+      "auth": {
+        "kind": "form",
+        "loginPath": "/api/auth/login",
+        "method": "POST",
+        "userField": "email",
+        "passField": "password",
+        "bodyType": "json",
+        "sessionCarrier": "cookie",
+        "successCheck": { "statusIn": [200, 204] },
+        "testUsers": [
+          { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_A", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_A" }
+        ]
+      },
+      "rateLimitRps": 10,
+      "enabled": false
+    }
+  ]
+}
