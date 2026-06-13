@@ -19,12 +19,12 @@ FROM node:20-bookworm-slim AS runtime
 #   semgrep     1.78.0
 #   gitleaks    8.18.4
 #   osv-scanner 1.8.1
-#   OWASP ZAP   2.15.0
+#   OWASP ZAP   2.17.0
 #   nuclei      3.2.9
 ENV SEMGREP_VERSION=1.78.0 \
     GITLEAKS_VERSION=8.18.4 \
     OSV_SCANNER_VERSION=1.8.1 \
-    ZAP_VERSION=2.15.0 \
+    ZAP_VERSION=2.17.0 \
     NUCLEI_VERSION=3.2.9
 
 # System deps for scanners
