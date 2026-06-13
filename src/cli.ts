@@ -21,7 +21,11 @@ import {
   buildPrevFingerprintMap,
 } from './report/trend.js';
 import { withWorkspaceLock, WorkspaceLockedError } from './report/lock.js';
-import type { ScannerStatusEntry, RunTarget, FailureEntry } from './schemas/report.js';
+import { buildPack } from './fix/pack.js';
+import { fileFixRequest, MissingFixTokenError } from './fix/github.js';
+import type { GitHubHttpClient, EnvReader } from './fix/github.js';
+import { readFixesFile, upsertFix } from './fix/status.js';
+import type { RunReport, ScannerStatusEntry, RunTarget, FailureEntry } from './schemas/report.js';
 import type { Finding } from './schemas/finding.js';
 import type { AllowedTarget } from './live/gate.js';
 import type { Session } from './live/auth.js';
@@ -39,6 +43,40 @@ export type LiveScanDeps = {
   runProbes: (target: AllowedTarget, rps: number) => Promise<Finding[]>;
   runZapScanner: typeof runZap;
   runNucleiScanner: typeof runNuclei;
+};
+
+// ---------------------------------------------------------------------------
+// P8-4 named error
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a display-id prefix (`f-<16hex>`) matches more than one finding
+ * in the selected report. Lists the matching full fingerprints so the caller
+ * can disambiguate.
+ */
+export class AmbiguousFindingIdError extends Error {
+  readonly kind = 'AmbiguousFindingIdError' as const;
+  readonly matches: string[];
+  constructor(ref: string, matches: string[]) {
+    super(
+      `Ambiguous finding ref "${ref}" — matches ${matches.length} findings:\n` +
+        matches.map((fp) => `  ${fp}`).join('\n'),
+    );
+    this.name = 'AmbiguousFindingIdError';
+    this.matches = matches;
+  }
+}
+
+/** Injectable dependencies for `doFix` — enables unit testing without network or disk. */
+export type FixDeps = {
+  /** Override the report source. Defaults to `findLatestReport()`. */
+  getReport?: () => RunReport | null;
+  /** Override the GitHub HTTP client (passed to `fileFixRequest`). */
+  githubClient?: GitHubHttpClient;
+  /** Override the env reader (passed to `fileFixRequest`). */
+  env?: EnvReader;
+  /** Override the fixes.json path (passed to `upsertFix`). */
+  fixesPath?: string;
 };
 
 const COMMANDS = ['scan-source', 'scan-live', 'run', 'report', 'ui', 'fix'] as const;
@@ -743,9 +781,145 @@ function doUi(args: UiArgs): void {
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function doFix(_args: FixArgs): void {
-  process.stdout.write('[fix] not yet implemented (P8)\n');
+const SEVERITY_ORDER_FIX: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+/**
+ * Resolve a `<finding-ref>` (full 64-hex fingerprint OR display-id `f-<16hex>`)
+ * to exactly one finding in the report. Throws `AmbiguousFindingIdError` when
+ * a display-id prefix matches more than one finding.
+ */
+function resolveFindingRef(ref: string, findings: Finding[]): Finding {
+  // Full 64-hex fingerprint: exact match
+  if (/^[0-9a-f]{64}$/.test(ref)) {
+    const match = findings.find((f) => f.fingerprint === ref);
+    if (match === undefined) {
+      process.stderr.write(`Error: No finding with fingerprint "${ref}" in the last report.\n`);
+      process.exit(1);
+    }
+    return match;
+  }
+
+  // Display-id form: f-<16hex>
+  if (/^f-[0-9a-f]{16}$/.test(ref)) {
+    const matches = findings.filter((f) => f.id === ref);
+    if (matches.length === 0) {
+      process.stderr.write(`Error: No finding with id "${ref}" in the last report.\n`);
+      process.exit(1);
+    }
+    if (matches.length > 1) {
+      throw new AmbiguousFindingIdError(ref, matches.map((f) => f.fingerprint));
+    }
+    return matches[0]!;
+  }
+
+  process.stderr.write(
+    `Error: Invalid finding ref "${ref}". Must be a 64-hex fingerprint or display id (f-<16hex>).\n`,
+  );
+  process.exit(1);
+}
+
+/**
+ * Determine the git URL for a finding's target repo from the registry.
+ * Returns null for live findings (no repo URL on staging targets).
+ */
+function repoUrlForFinding(
+  finding: Finding,
+  registry: ReturnType<typeof loadConfig>['registry'],
+): string | null {
+  if (finding.target.kind !== 'repo') return null;
+  const repoEntry = registry.repos.find((r) => r.name === finding.target.name);
+  return repoEntry?.gitUrl ?? null;
+}
+
+export async function doFix(args: FixArgs, config: ReturnType<typeof loadConfig>, deps?: FixDeps): Promise<void> {
+  const getReport = deps?.getReport ?? findLatestReport;
+  const report = getReport();
+  if (report === null) {
+    process.stderr.write('No runs found. Run `audit run` first.\n');
+    process.exit(1);
+  }
+
+  const fixesPath = deps?.fixesPath;
+  const fixes = readFixesFile(fixesPath);
+
+  let findingsToFix: Finding[];
+
+  if (args.findingRef !== undefined) {
+    // Single-finding mode: resolve the ref to exactly one finding
+    const finding = resolveFindingRef(args.findingRef, report.findings);
+    findingsToFix = [finding];
+  } else {
+    // Bulk mode: --min-severity <s>
+    const minSev = args.minSeverity!;
+    const threshold = SEVERITY_ORDER_FIX[minSev];
+    if (threshold === undefined) {
+      process.stderr.write(
+        `Error: --min-severity must be one of: critical, high, medium, low\n`,
+      );
+      process.exit(1);
+    }
+    findingsToFix = report.findings.filter((f) => {
+      // Exclude suppressed findings (§5.1: never bulk-file suppressed)
+      if (f.suppressed) return false;
+      // At or above severity threshold
+      const sev = SEVERITY_ORDER_FIX[f.severity] ?? 99;
+      if (sev > threshold) return false;
+      // Not-yet-filed: no entry in fixes.json for this fingerprint
+      if (Object.prototype.hasOwnProperty.call(fixes, f.fingerprint)) return false;
+      return true;
+    });
+  }
+
+  if (findingsToFix.length === 0) {
+    process.stdout.write('No findings to fix.\n');
+    return;
+  }
+
+  for (const finding of findingsToFix) {
+    const pack = buildPack(finding);
+
+    if (args.dryRun) {
+      process.stdout.write(
+        `[dry-run] Would file fix request for ${finding.id} (${finding.fingerprint})\n`,
+      );
+      process.stdout.write(pack.markdown + '\n');
+      continue;
+    }
+
+    const repoUrl = repoUrlForFinding(finding, config.registry);
+    if (repoUrl === null) {
+      process.stderr.write(
+        `Error: Cannot file fix request for live finding ${finding.id} — no repo URL available.\n`,
+      );
+      continue;
+    }
+
+    const result = await fileFixRequest(finding, pack, repoUrl, {
+      client: deps?.githubClient,
+      env: deps?.env,
+    });
+
+    await upsertFix(
+      finding.fingerprint,
+      (existing) => ({
+        fingerprint: finding.fingerprint,
+        ruleId: finding.ruleId,
+        status: 'requested',
+        issueUrl: result.issueUrl,
+        filedAt: existing?.filedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      fixesPath !== undefined ? { fixesPath } : undefined,
+    );
+
+    const verb = result.reused ? 'Reused existing issue' : 'Filed issue';
+    process.stdout.write(`${verb}: ${result.issueUrl} (${finding.id})\n`);
+  }
 }
 
 /**
@@ -817,7 +991,18 @@ export function main(argv: string[]): void {
     }
     case 'fix': {
       const args = parseFix(rest);
-      doFix(args);
+      const config = loadConfigOrExit();
+      doFix(args, config).catch((err: unknown) => {
+        if (err instanceof AmbiguousFindingIdError) {
+          process.stderr.write(`Error: ${err.message}\n`);
+          process.exit(1);
+        }
+        if (err instanceof MissingFixTokenError) {
+          process.stderr.write(`Error: ${err.message}\n`);
+          process.exit(1);
+        }
+        throw err;
+      });
       break;
     }
   }

@@ -82,6 +82,39 @@ vi.mock('./correlate/correlate.js', () => ({
   correlate: vi.fn((findings: unknown[]) => findings),
 }));
 
+// ── Mock fix modules — prevent real GitHub/disk calls in CLI unit tests ────
+vi.mock('./fix/pack.js', () => ({
+  buildPack: vi.fn((finding: { id: string; fingerprint: string }) => ({
+    json: { fingerprint: finding.fingerprint, id: finding.id, ruleId: 'TEST-001' },
+    markdown: `# Pack for ${finding.id}`,
+    prompt: `Fix ${finding.id}`,
+  })),
+}));
+
+vi.mock('./fix/github.js', () => {
+  const MissingFixTokenError = class MissingFixTokenError extends Error {
+    readonly kind = 'MissingFixTokenError' as const;
+    constructor() {
+      super(
+        'AUDIT_GITHUB_FIX_TOKEN is not set. Configure a fine-grained PAT with issues:write + issues:read + pull_requests:read and set the environment variable to enable fix-request filing.',
+      );
+      this.name = 'MissingFixTokenError';
+    }
+  };
+  return {
+    MissingFixTokenError,
+    fileFixRequest: vi.fn(() =>
+      Promise.resolve({ issueUrl: 'https://github.com/owner/repo/issues/1', issueNumber: 1, reused: false }),
+    ),
+  };
+});
+
+vi.mock('./fix/status.js', () => ({
+  readFixesFile: vi.fn(() => ({})),
+  upsertFix: vi.fn(() => Promise.resolve()),
+  DEFAULT_FIXES_PATH: '/tmp/fixes.json',
+}));
+
 // ── Mock ui server — prevents real network bind in CLI unit tests ──────────
 vi.mock('./ui/server.js', () => ({
   startServer: vi.fn(() =>
@@ -107,11 +140,15 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { readdirSync } from 'node:fs';
-import { main } from './cli.js';
+import { main, AmbiguousFindingIdError, doFix } from './cli.js';
+import type { FixDeps } from './cli.js';
+import type { RunReport } from './schemas/report.js';
 import { ConfigError, loadAllowlist, loadTargets } from './config/load.js';
 import { scanRepos } from './static/orchestrator.js';
 import { dryRun } from './live/preflight.js';
 import { toHtml } from './report/html.js';
+import { fileFixRequest, MissingFixTokenError } from './fix/github.js';
+import { readFixesFile, upsertFix } from './fix/status.js';
 
 // ── ExitSignal ─────────────────────────────────────────────────────────────
 
@@ -420,6 +457,312 @@ describe('CLI — P1-4 + P5-6', () => {
     it('audit ui --port 0 does not emit stub text', () => {
       const { stdout } = capture(['ui', '--port', '0']);
       expect(stdout).not.toMatch(/not yet implemented/);
+    });
+  });
+
+  // ── P8-4 — `audit fix` command wiring ────────────────────────────────────
+
+  // Minimal Finding shape required for ref-resolution and bulk tests.
+  // Two findings that share the first 16 hex chars (same display-id) for
+  // the ambiguous-prefix test.  Their full 64-hex fingerprints differ.
+  const FP_A = 'aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222'; // 64 hex
+  const FP_B = 'aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111cccc3333'; // same first 16 hex as FP_A → same id
+  const FP_C = 'cccc2222dddd3333eeee4444ffff5555aaaa6666bbbb7777cccc2222dddd3333'; // unique id
+  const FP_D = 'dddd4444eeee5555ffff6666aaaa7777bbbb8888cccc9999dddd4444eeee5555'; // unique id, suppressed
+
+  // Both FP_A and FP_B have id = "f-" + first 16 hex = "f-aaaa1111bbbb2222"
+  const ID_AB = 'f-aaaa1111bbbb2222';
+  const ID_C = 'f-cccc2222dddd3333';
+
+  function makeFinding(fp: string, id: string, severity: string, suppressed = false): Record<string, unknown> {
+    return {
+      id,
+      fingerprint: fp,
+      ruleId: 'TEST-001',
+      source: 'ast',
+      surface: 'static',
+      vulnClass: 'injection',
+      severity,
+      baseSeverity: severity,
+      confidence: 'probable',
+      target: { kind: 'repo', name: 'test-repo' },
+      location: { path: 'src/a.ts', symbol: 'GET /api/test', startLine: 10 },
+      evidence: { snippet: 'code', cvss: null, raw: {} },
+      reachability: 'unknown',
+      correlatedWith: [],
+      docs: 'docs/rules/TEST-001.md',
+      externalRefs: [],
+      firstSeen: '2026-06-13T00:00:00Z',
+      suppressed,
+      suppression: null,
+      note: null,
+    };
+  }
+
+  const fakeFindings = [
+    makeFinding(FP_A, ID_AB, 'high'),
+    makeFinding(FP_B, ID_AB, 'high'),
+    makeFinding(FP_C, ID_C, 'high'),
+    makeFinding(FP_D, 'f-dddd4444eeee5555', 'high', true), // suppressed
+  ];
+
+  const fakeReport = {
+    runId: 'test-run',
+    date: '2026-06-13',
+    findings: fakeFindings,
+    targets: [],
+    meta: {
+      status: 'success',
+      failures: [],
+      scannerStatus: [],
+      startedAt: '2026-06-13T00:00:00.000Z',
+      finishedAt: '2026-06-13T00:00:01.000Z',
+      toolVersion: 'audit-tool/1.0.0',
+    },
+  };
+
+  const fakeConfig = {
+    allowlist: { hosts: [] } as unknown as ReturnType<typeof loadAllowlist>,
+    registry: {
+      repos: [{ name: 'test-repo', gitUrl: 'https://github.com/owner/test-repo.git', enabled: true }],
+      stagingTargets: [],
+    },
+    baseline: { entries: [] },
+  };
+
+  // Factory helpers — avoids @typescript-eslint/no-unused-vars on `_name` params
+  const envWithToken = (token: string): import('./fix/github.js').EnvReader =>
+    () => token;
+  const envNoToken = (): import('./fix/github.js').EnvReader =>
+    () => undefined;
+
+  /** Capture stdout/stderr around an async doFix call. */
+  async function captureAsync(fn: () => Promise<void>): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    let exitCode = 0;
+
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: Uint8Array | string) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: Uint8Array | string) => {
+      stderrChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number | string | null) => {
+      exitCode = typeof code === 'number' ? code : 0;
+      throw new ExitSignal(exitCode);
+    });
+
+    try {
+      await fn();
+    } catch (err) {
+      if (!(err instanceof ExitSignal)) {
+        stdoutSpy.mockRestore();
+        stderrSpy.mockRestore();
+        exitSpy.mockRestore();
+        throw err;
+      }
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    return { stdout: stdoutChunks.join(''), stderr: stderrChunks.join(''), exitCode };
+  }
+
+  describe('P8-4 — audit fix ref resolution', () => {
+    beforeEach(() => {
+      vi.mocked(readFixesFile).mockReturnValue({});
+      vi.mocked(upsertFix).mockResolvedValue(undefined);
+      vi.mocked(fileFixRequest).mockResolvedValue({
+        issueUrl: 'https://github.com/owner/test-repo/issues/1',
+        issueNumber: 1,
+        reused: false,
+      });
+    });
+
+    it('full fingerprint resolves to exactly one finding and files it', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      const { stdout } = await captureAsync(() =>
+        doFix({ findingRef: FP_C, minSeverity: undefined, dryRun: false }, fakeConfig, depsWithReport),
+      );
+
+      // Should output "Filed issue" for FP_C
+      expect(stdout).toMatch(/Filed issue/);
+      // GitHub filing was called once
+      expect(vi.mocked(fileFixRequest)).toHaveBeenCalledOnce();
+      // upsertFix was called once with FP_C
+      expect(vi.mocked(upsertFix)).toHaveBeenCalledWith(FP_C, expect.any(Function), undefined);
+    });
+
+    it('ambiguous display-id prefix throws AmbiguousFindingIdError listing both full fingerprints', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      // FP_A and FP_B share id ID_AB — using it should throw
+      await expect(
+        doFix({ findingRef: ID_AB, minSeverity: undefined, dryRun: false }, fakeConfig, depsWithReport),
+      ).rejects.toThrow(AmbiguousFindingIdError);
+
+      // No GitHub calls on ambiguous ref
+      expect(vi.mocked(fileFixRequest)).not.toHaveBeenCalled();
+    });
+
+    it('AmbiguousFindingIdError message lists both matching full fingerprints', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      let caughtError: unknown;
+      try {
+        await doFix({ findingRef: ID_AB, minSeverity: undefined, dryRun: false }, fakeConfig, depsWithReport);
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeInstanceOf(AmbiguousFindingIdError);
+      const err = caughtError as AmbiguousFindingIdError;
+      expect(err.matches).toContain(FP_A);
+      expect(err.matches).toContain(FP_B);
+      expect(err.message).toMatch(new RegExp(FP_A.slice(0, 16)));
+    });
+  });
+
+  describe('P8-4 — audit fix --min-severity bulk mode', () => {
+    beforeEach(() => {
+      vi.mocked(readFixesFile).mockReturnValue({});
+      vi.mocked(upsertFix).mockResolvedValue(undefined);
+      vi.mocked(fileFixRequest).mockResolvedValue({
+        issueUrl: 'https://github.com/owner/test-repo/issues/2',
+        issueNumber: 2,
+        reused: false,
+      });
+    });
+
+    it('bulk files all non-suppressed findings at or above high and SKIPS suppressed', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      const { stdout } = await captureAsync(() =>
+        doFix({ findingRef: undefined, minSeverity: 'high', dryRun: false }, fakeConfig, depsWithReport),
+      );
+
+      // FP_D is suppressed — must NOT appear in output
+      expect(stdout).not.toMatch(new RegExp('f-dddd4444eeee5555'));
+      // 3 non-suppressed high findings (FP_A, FP_B, FP_C) → 3 GitHub calls
+      expect(vi.mocked(fileFixRequest)).toHaveBeenCalledTimes(3);
+    });
+
+    it('suppressed findings are excluded from bulk filing', async () => {
+      // Verify: if only suppressed findings exist at the threshold, nothing is filed
+      const suppressedOnlyReport = {
+        ...fakeReport,
+        findings: [makeFinding(FP_D, 'f-dddd4444eeee5555', 'high', true)],
+      };
+      const depsWithReport: FixDeps = {
+        getReport: () => suppressedOnlyReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      const { stdout } = await captureAsync(() =>
+        doFix({ findingRef: undefined, minSeverity: 'high', dryRun: false }, fakeConfig, depsWithReport),
+      );
+
+      expect(stdout).toMatch(/No findings to fix/);
+      expect(vi.mocked(fileFixRequest)).not.toHaveBeenCalled();
+    });
+
+    it('already-filed findings are excluded from bulk mode', async () => {
+      // Mark FP_C as already filed
+      vi.mocked(readFixesFile).mockReturnValue({
+        [FP_C]: { fingerprint: FP_C, ruleId: 'TEST-001', status: 'requested' },
+      });
+
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      await captureAsync(() =>
+        doFix({ findingRef: undefined, minSeverity: 'high', dryRun: false }, fakeConfig, depsWithReport),
+      );
+
+      // Only FP_A and FP_B filed (FP_C already in fixes.json, FP_D suppressed)
+      expect(vi.mocked(fileFixRequest)).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('P8-4 — audit fix --dry-run', () => {
+    beforeEach(() => {
+      vi.mocked(readFixesFile).mockReturnValue({});
+      vi.mocked(fileFixRequest).mockResolvedValue({
+        issueUrl: 'https://github.com/owner/test-repo/issues/3',
+        issueNumber: 3,
+        reused: false,
+      });
+    });
+
+    it('--dry-run prints the pack and makes ZERO GitHub calls', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      const { stdout } = await captureAsync(() =>
+        doFix({ findingRef: FP_C, minSeverity: undefined, dryRun: true }, fakeConfig, depsWithReport),
+      );
+
+      // Dry-run prints the pack markdown
+      expect(stdout).toMatch(/dry-run/);
+      expect(stdout).toMatch(new RegExp(ID_C));
+      // No GitHub calls
+      expect(vi.mocked(fileFixRequest)).not.toHaveBeenCalled();
+      // No fixes.json writes
+      expect(vi.mocked(upsertFix)).not.toHaveBeenCalled();
+    });
+
+    it('--dry-run with --min-severity bulk prints all packs and files nothing', async () => {
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envWithToken('test-token-abc123'),
+      };
+
+      const { stdout } = await captureAsync(() =>
+        doFix({ findingRef: undefined, minSeverity: 'high', dryRun: true }, fakeConfig, depsWithReport),
+      );
+
+      // Should mention 3 non-suppressed high findings
+      expect(stdout).toMatch(/dry-run/);
+      expect(vi.mocked(fileFixRequest)).not.toHaveBeenCalled();
+      expect(vi.mocked(upsertFix)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('P8-4 — audit fix missing token → named error', () => {
+    it('throws MissingFixTokenError when AUDIT_GITHUB_FIX_TOKEN is not set', async () => {
+      vi.mocked(readFixesFile).mockReturnValue({});
+      vi.mocked(fileFixRequest).mockRejectedValue(new MissingFixTokenError());
+
+      const depsWithReport: FixDeps = {
+        getReport: () => fakeReport as unknown as RunReport,
+        env: envNoToken(),
+      };
+
+      await expect(
+        doFix({ findingRef: FP_C, minSeverity: undefined, dryRun: false }, fakeConfig, depsWithReport),
+      ).rejects.toThrow(MissingFixTokenError);
     });
   });
 
