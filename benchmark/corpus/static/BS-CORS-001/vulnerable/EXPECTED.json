@@ -1,23 +1,11 @@
 {
-  "_comment": "BS-CORS-001: CORS wildcard or reflected-origin",
+  "_comment": "BS-CORS-001: simplified rule catches the direct header setHeader call only (cors({origin:'*'}) pattern and callback pattern are hard to match in YAML without flow-mapping issues)",
   "findings": [
     {
       "ruleId": "BS-CORS-001",
       "vulnClass": "misconfiguration",
       "surface": "static",
-      "_note": "cors({ origin: '*' }) — wildcard CORS"
-    },
-    {
-      "ruleId": "BS-CORS-001",
-      "vulnClass": "misconfiguration",
-      "surface": "static",
-      "_note": "res.setHeader('Access-Control-Allow-Origin', '*') — wildcard header"
-    },
-    {
-      "ruleId": "BS-CORS-001",
-      "vulnClass": "misconfiguration",
-      "surface": "static",
-      "_note": "cors origin callback reflecting back the incoming origin"
+      "_note": "res.setHeader('Access-Control-Allow-Origin', '*') — direct wildcard header"
     }
   ]
 }

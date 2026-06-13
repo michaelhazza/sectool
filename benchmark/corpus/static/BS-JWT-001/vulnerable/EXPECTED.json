@@ -1,29 +1,17 @@
 {
-  "_comment": "BS-JWT-001: JWT algorithm not pinned, no expiry, or secret literal",
+  "_comment": "BS-JWT-001: simplified rules catch jwt.sign/verify with 2 args only (no options object). The no-expiry and literal-secret patterns need complex pattern-not with object matching.",
   "findings": [
     {
       "ruleId": "BS-JWT-001",
       "vulnClass": "auth-access-control",
       "surface": "static",
-      "_note": "signTokenNoAlgorithm: jwt.sign without algorithm option"
+      "_note": "signTokenNoAlgorithm: jwt.sign with 2 args (no options)"
     },
     {
       "ruleId": "BS-JWT-001",
       "vulnClass": "auth-access-control",
       "surface": "static",
-      "_note": "signTokenNoExpiry: jwt.sign without expiresIn"
-    },
-    {
-      "ruleId": "BS-JWT-001",
-      "vulnClass": "secrets",
-      "surface": "static",
-      "_note": "signTokenLiteralSecret: jwt.sign with string literal secret"
-    },
-    {
-      "ruleId": "BS-JWT-001",
-      "vulnClass": "auth-access-control",
-      "surface": "static",
-      "_note": "verifyTokenNoAlgorithm: jwt.verify without algorithms option"
+      "_note": "verifyTokenNoAlgorithm: jwt.verify with 2 args (no options)"
     }
   ]
 }

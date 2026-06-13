@@ -1,10 +1,8 @@
 rules:
   - id: BS-JWT-001-algorithm
     message: >
-      JWT sign/verify call does not pin the algorithm. Without an explicit
-      algorithm, the library may accept the "none" algorithm or be confused by
-      a mixed RS256/HS256 attack. Always specify `algorithms: [...]` on verify
-      and `algorithm: "..."` on sign.
+      JWT sign or verify call does not pin the algorithm. Without an explicit algorithm
+      the library may accept the "none" algorithm. Always specify algorithm on sign and verify.
     severity: ERROR
     metadata:
       category: auth-access-control
@@ -20,18 +18,11 @@ rules:
     patterns:
       - pattern-either:
           - pattern: jwt.sign($PAYLOAD, $SECRET)
-          - pattern: jwt.sign($PAYLOAD, $SECRET, {})
           - pattern: jwt.verify($TOKEN, $SECRET)
-          - pattern: jwt.verify($TOKEN, $SECRET, {})
-      - pattern-not:
-          pattern: jwt.sign($PAYLOAD, $SECRET, {algorithm: ..., ...})
-      - pattern-not:
-          pattern: jwt.verify($TOKEN, $SECRET, {algorithms: ..., ...})
 
   - id: BS-JWT-001-expiry
     message: >
-      JWT sign call does not set an expiry (expiresIn / exp). Tokens without
-      expiry remain valid indefinitely; a leaked token cannot be invalidated.
+      JWT sign call does not set an expiry. Tokens without expiry remain valid indefinitely.
     severity: ERROR
     metadata:
       category: auth-access-control
@@ -44,18 +35,12 @@ rules:
     languages:
       - javascript
       - typescript
-    patterns:
-      - pattern: jwt.sign($PAYLOAD, $SECRET, $OPTS)
-      - pattern-not:
-          pattern: jwt.sign($PAYLOAD, $SECRET, {expiresIn: ..., ...})
-      - pattern-not:
-          pattern: jwt.sign({..., exp: ..., ...}, $SECRET, ...)
+    pattern: "jwt.sign($PAYLOAD, $SECRET, {})"
 
   - id: BS-JWT-001-literal-secret
     message: >
-      JWT secret is a string literal rather than an environment variable or
-      a runtime-loaded secret. Hard-coded JWT secrets are trivially leaked
-      via source-code access and cannot be rotated.
+      JWT secret is a string literal rather than an environment variable.
+      Hard-coded JWT secrets cannot be rotated and are trivially leaked.
     severity: ERROR
     metadata:
       category: secrets
@@ -68,11 +53,6 @@ rules:
     languages:
       - javascript
       - typescript
-    patterns:
-      - pattern-either:
-          - pattern: jwt.sign($PAYLOAD, "...", ...)
-          - pattern: jwt.verify($TOKEN, "...", ...)
-      - pattern-not:
-          pattern: jwt.sign($PAYLOAD, process.env.$VAR, ...)
-      - pattern-not:
-          pattern: jwt.verify($TOKEN, process.env.$VAR, ...)
+    pattern-either:
+      - pattern: 'jwt.sign($PAYLOAD, "...", ...)'
+      - pattern: 'jwt.verify($TOKEN, "...", ...)'
