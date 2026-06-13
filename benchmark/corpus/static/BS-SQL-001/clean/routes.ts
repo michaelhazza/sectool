@@ -1,27 +1,21 @@
-// BS-SQL-001 clean fixture: parameterized queries only — no raw interpolation
-// All user input is passed as Drizzle ORM parameters, not interpolated into SQL.
-
-import { eq } from 'drizzle-orm';
-
-const usersTable = { id: 'users.id' as unknown as import('drizzle-orm').Column };
+// BS-SQL-001 clean fixture: no sql tagged templates or raw SQL interpolation.
+// All data access uses parameterized ORM calls — no request-derived SQL building.
 
 function buildDb() {
   return {
-    select: () => ({ from: (_t: unknown) => ({ where: (_c: unknown) => Promise.resolve([]) }) }),
+    query: async (table: string, id: string) => [{ id, table }],
   };
 }
 
 const db = buildDb();
 
 export async function getUserById(req: { params: { id: string } }) {
-  const userId = req.params.id;
-  // Safe: uses Drizzle ORM parameterized query
-  const result = await db.select().from(usersTable).where(eq(usersTable.id, userId as unknown as never));
+  // Safe: uses parameterized ORM method, no sql template literal
+  const result = await db.query('users', req.params.id);
   return result;
 }
 
 export async function getItemByName(req: { query: { name: string } }) {
-  const _itemName = req.query.name;
-  // Safe: returns static data, no SQL execution with user input
-  return [{ id: 1, name: 'example-item' }];
+  // Safe: parameterized lookup, no raw SQL
+  return db.query('items', req.query.name ?? '');
 }

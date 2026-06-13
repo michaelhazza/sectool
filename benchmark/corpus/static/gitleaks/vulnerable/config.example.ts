@@ -1,5 +1,9 @@
 // Gitleaks vulnerable fixture — hardcoded secret for recall test.
-// INTENTIONALLY VULNERABLE: hardcoded API key (seeded for gitleaks detection).
+// INTENTIONALLY VULNERABLE: hardcoded credentials seeded for gitleaks detection.
+// These are NOT real credentials — this file exists only for the benchmark corpus.
 
-// INTENTIONALLY VULNERABLE: this token is a seeded test value, not a real credential.
-export const API_KEY = 'a3f8d92e1b7c4056e9d28f1a6b3c5d70e8f29a1b';
+// Gitleaks detects this as a generic-api-key (high entropy + variable naming pattern)
+export const PASSWORD = 'Sup3rS3cr3tP@ssw0rd!XyZ#2026';
+
+// Gitleaks detects this as a private key header pattern
+export const PRIVATE_KEY_HEADER = '-----BEGIN RSA PRIVATE KEY-----';

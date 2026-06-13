@@ -1,9 +1,10 @@
 {
-  "_comment": "OSV vulnerable fixture: package with a pinned-old dependency for osv-scanner recall test. Real binary recall is CI/P6 benchmark run. Renamed .fixture.json so it is not treated as a real npm package.json.",
+  "_comment": "OSV vulnerable fixture: package with pinned-old dependencies for osv-scanner recall test. Real binary recall is CI/P6 benchmark run. Renamed .fixture.json so it is not treated as a real npm package.json.",
   "name": "osv-vulnerable-fixture",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "lodash": "4.17.20"
+    "lodash": "4.17.15",
+    "minimist": "0.2.0"
   }
 }

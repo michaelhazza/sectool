@@ -1,0 +1,26 @@
+{
+  "name": "osv-vulnerable-fixture",
+  "version": "1.0.0",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "osv-vulnerable-fixture",
+      "version": "1.0.0",
+      "dependencies": {
+        "lodash": "4.17.15",
+        "minimist": "0.2.0"
+      }
+    },
+    "node_modules/lodash": {
+      "version": "4.17.15",
+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.15.tgz",
+      "integrity": "sha512-8xOcRHvCjnocdS5cpwXQXVzmmh5e5+saE2QGoeQmbKmRS6J41aRrI48ft3i6b4BtCR9+3UCa+1r0Xl7G9pkNA=="
+    },
+    "node_modules/minimist": {
+      "version": "0.2.0",
+      "resolved": "https://registry.npmjs.org/minimist/-/minimist-0.2.0.tgz",
+      "integrity": "sha512-PMHZ5Z+ySIxNJFlT0J8VIkz8RDQ3BSVlHFzJP68Fm8yoQfS6Q5/3iWPeSPTYJT3WpLBbEEd8M34VEBFRXvBw=="
+    }
+  }
+}

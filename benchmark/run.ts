@@ -521,7 +521,11 @@ const TSMORPH_RULES: ReadonlyMap<string, (repoDir: string, targetName: string) =
   ['BS-RLS-001', ruleBsRls001.run],
   ['BS-SQL-001', ruleBsSql001.run],
   ['BS-SQL-002', ruleBsSql002.run],
-  ['BS-AUTH-001', (dir: string, name: string) => ruleBsAuth001.run(dir, name)],
+  // BS-AUTH-001: pass the login route as a publicRoute so the clean-fixture's
+  // /api/auth/login (legitimately middleware-free per spec) is not flagged.
+  ['BS-AUTH-001', (dir: string, name: string) => ruleBsAuth001.run(dir, name, {
+    publicRoutes: ['POST /api/auth/login'],
+  })],
   ['BS-XSS-001', ruleBsXss001.run],
   ['BS-WS-001', ruleBsWs001.run],
   ['BS-VAL-001', ruleBsVal001.run],
@@ -532,13 +536,13 @@ const TSMORPH_RULES: ReadonlyMap<string, (repoDir: string, targetName: string) =
  * Only `name` and `localPath` are used by the scanners; the rest are required
  * by the schema but not exercised in the benchmark path.
  */
-function corpusTarget(ruleId: string, dir: string): RepoTarget {
+function corpusTarget(ruleId: string, dir: string, publicRoutes: string[] = []): RepoTarget {
   return {
     name: ruleId,
     gitUrl: 'https://benchmark.local',
     localPath: dir,
     stackTags: [],
-    publicRoutes: [],
+    publicRoutes,
     enabled: true,
   };
 }
@@ -553,13 +557,23 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
     return (dir: string) => inject(dir, ['--config', yamlPath]);
   }
   return async (dir: string) => {
-    const result = await execFileAsync('semgrep', [
-      '--json',
-      '--config', yamlPath,
-      '--no-git-ignore',
-      dir,
-    ]);
-    return { stdout: result.stdout, stderr: result.stderr };
+    // Semgrep exits 1 when findings are present — catch that and return stdout.
+    // Exit 2+ is a genuine error (misconfig / binary failure).
+    try {
+      const result = await execFileAsync('semgrep', [
+        '--json',
+        '--config', yamlPath,
+        '--no-git-ignore',
+        dir,
+      ]);
+      return { stdout: result.stdout, stderr: result.stderr };
+    } catch (err) {
+      const e = err as { code?: number; stdout?: string; stderr?: string };
+      if (e.code === 1 && typeof e.stdout === 'string') {
+        return { stdout: e.stdout, stderr: e.stderr ?? '' };
+      }
+      throw err;
+    }
   };
 }
 
@@ -656,15 +670,29 @@ export async function runDetectors(
   // -------------------------------------------------------------------------
   // Wrapped scanner family: semgrep (full run: p/owasp-top-ten + rules/semgrep/)
   // Normalize all findings to ruleId 'semgrep' for family-level accounting.
+  // Semgrep exits 1 when it finds issues — handle that in the family exec.
   // -------------------------------------------------------------------------
   {
     const familyId = 'semgrep';
     const vulnDir = join(corpusStaticDir, familyId, 'vulnerable');
     const cleanDir = join(corpusStaticDir, familyId, 'clean');
+    // Build an exec that tolerates semgrep's exit-1-on-findings behaviour.
+    const semgrepFamilyExec: ExecSemgrep = injections.execSemgrep ?? (async (dir, ruleArgs) => {
+      try {
+        const r = await execFileAsync('semgrep', ['--json', ...ruleArgs, '--no-git-ignore', dir]);
+        return { stdout: r.stdout, stderr: r.stderr };
+      } catch (err) {
+        const e = err as { code?: number; stdout?: string; stderr?: string };
+        if (e.code === 1 && typeof e.stdout === 'string') {
+          return { stdout: e.stdout, stderr: e.stderr ?? '' };
+        }
+        throw err;
+      }
+    });
 
     if (existsSync(vulnDir)) {
       try {
-        const findings = await runSemgrep(corpusTarget(familyId, vulnDir), vulnDir, injections.execSemgrep);
+        const findings = await runSemgrep(corpusTarget(familyId, vulnDir), vulnDir, semgrepFamilyExec);
         scanResults.push(...findings.map(() => ({ ruleId: familyId })));
       } catch {
         // Binary absent.
@@ -673,7 +701,7 @@ export async function runDetectors(
 
     if (existsSync(cleanDir)) {
       try {
-        const findings = await runSemgrep(corpusTarget(familyId, cleanDir), cleanDir, injections.execSemgrep);
+        const findings = await runSemgrep(corpusTarget(familyId, cleanDir), cleanDir, semgrepFamilyExec);
         cleanResults.push(...findings.map(() => ({ ruleId: familyId })));
       } catch {
         // No findings from error.
@@ -732,6 +760,11 @@ export async function runDetectors(
       try {
         tmpDir = mkdtempSync(join(tmpdir(), 'audit-bench-osv-'));
         copyFileSync(fixtureFile, join(tmpDir, 'package.json'));
+        // Also copy the lockfile if present (osv-scanner uses it for resolved versions)
+        const lockFile = join(sourceDir, 'package-lock.fixture.json');
+        if (existsSync(lockFile)) {
+          copyFileSync(lockFile, join(tmpDir, 'package-lock.json'));
+        }
         const target = corpusTarget(familyId, tmpDir);
         const findings = await runOsv(target, tmpDir, injections.execOsv);
         resultsBucket.push(...findings.map(() => ({ ruleId: familyId })));
