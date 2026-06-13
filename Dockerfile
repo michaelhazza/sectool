@@ -98,6 +98,15 @@ COPY package.json ./
 COPY config/ config/
 COPY rules/ rules/
 
+# The benchmark runs via `tsx benchmark/run.ts`, which imports the TS sources
+# under src/ (resolved .js -> .ts by tsx), so both must be present in the image.
+# The self-scan (`audit run --repo audit-tool`) also scans src/ and honours the
+# scanner ignore files.
+COPY tsconfig.json tsconfig.build.json ./
+COPY --from=builder /app/src/ src/
+COPY benchmark/ benchmark/
+COPY .semgrepignore .gitleaksignore ./
+
 # Exec-wrapper entrypoint: lets `docker run img npm run benchmark` pass through
 # directly while `docker run img run --repo foo` prepends `node dist/cli.js`.
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
