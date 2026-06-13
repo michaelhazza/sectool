@@ -372,12 +372,24 @@ repo.
    referencing the issue. The repo's own gates + human review own merge.
    (Target-repo onboarding = installing the standard action + label; one-time,
    documented in `docs/fix-workflow.md`.)
-4. **Verification.** The next `audit run` re-scans: if the fingerprint no
-   longer fires, the fix request transitions to `verified-fixed` (and the
-   trend `fixed` accounting picks it up per §6.5's completed-family rule); if
-   it still fires after the PR merged, the request transitions to `reopened`
-   and the issue gets a comment. A fix is only ever "done" when the scanner
-   that found it can no longer find it.
+4. **Verification.** The next `audit run` re-scans. The `verified-fixed`
+   transition is **fenced by scanner-family completion, exactly as §6.5 fences
+   trend `fixed`**: a `merged-awaiting-verification` request transitions to
+   `verified-fixed` ONLY when the fingerprint no longer fires AND the
+   `(target × scannerFamily §6.8)` that originally produced the finding ran to
+   **`complete`** in this run (per `meta.scannerStatus`, §6.9). If that family
+   **failed, timed out, or was skipped** (`state ∈ {failed, skipped}`) in this
+   run, the absence of the fingerprint is NOT evidence of a fix — the request
+   stays `merged-awaiting-verification` and waits for a run in which the
+   responsible family completes. This closes the partial-run masquerade for the
+   fix machine: a scanner failure can never silently graduate a fix to
+   `verified-fixed`, matching §6.5's "a finding can only transition to `fixed`
+   when the scanner family that previously produced it ran to completion" rule.
+   If the fingerprint still fires after the PR merged (in a run where its family
+   completed), the request transitions to `reopened` and the issue gets a
+   comment. A fix is only ever "done" when the scanner that found it ran to
+   completion and can no longer find it. [Family-completion fence on
+   `verified-fixed` per chatgpt-spec-review round 2 OAI-SPEC-006.]
 
 **Fix-request state machine** (closed set, §14 rules apply):
 `requested → in-progress → awaiting-review → merged-awaiting-verification →
@@ -392,8 +404,11 @@ EITHER: the issue is assigned, OR a **draft** PR references the issue (GitHub
 deliberately NOT used so the fix token stays minimal-scope per the §5.3 token
 scope below); `awaiting-review` = a non-draft PR referencing the issue is open
 and awaiting human merge; `merged-awaiting-verification` = that PR is merged,
-next scan pending; `verified-fixed` = the next `audit run` no longer fires the
-fingerprint; `reopened` = the fingerprint still fires after the PR merged.
+next scan pending; `verified-fixed` = a subsequent `audit run` no longer fires the
+fingerprint **in a run where the finding's originating `(target × scannerFamily)`
+completed** (§6.8 fence, step 4 — a partial run whose responsible family failed
+does NOT graduate the fix); `reopened` = the fingerprint still fires after the PR
+merged (in a run where that family completed).
 `reopened` is **not terminal** — it re-enters the loop via the same derivation:
 a new/updated non-draft PR referencing the issue moves it back to
 `awaiting-review` → `merged-awaiting-verification`, and a clean re-scan reaches
@@ -447,6 +462,7 @@ All schemas are Zod (`src/schemas/`), each exporting a generated JSON Schema
   "externalRefs": [],                      // fix-request issue URLs (§5.3); derived on report build via fingerprint join to reports/fixes.json, not persisted on the finding
   "firstSeen": "2026-06-12T00:00:00Z",
   "suppressed": false,                     // true only when matched by a live (unexpired) baseline entry
+  "suppression": null,                     // report-stage-derived; when suppressed===true, the matched baseline entry's justification + approvedBy + expiry, copied onto the finding so the report is self-contained (§6.10 SARIF reads it from here, not from mutable config). null when suppressed===false
   "note": null                             // optional; set to "baseline expired <date>" on expired-baseline re-alert (§6.4), else null
 }
 ```
@@ -468,12 +484,18 @@ and `audit fix` operate from the report file alone, with no recomputation from
 display fields. [Per chatgpt-spec-review OAI-SPEC-001.]
 
 **Field lifecycle (raw scan finding vs report finding — one schema, two
-stages).** `Finding` is a single Zod type used at both stages; three fields are
+stages).** `Finding` is a single Zod type used at both stages; these fields are
 **report-stage-derived**, not produced by scanners: `severity` (computed §8),
 `correlatedWith` (§9), `externalRefs` (joined from `fixes.json` on report build,
-§5.3), and `note` (set on expired-baseline re-alert §6.4). At the raw-scanner
+§5.3), `suppressed` + `suppression` (set when a live unexpired baseline entry
+matches, §6.4 — `suppression` copies the matched entry's `justification`,
+`approvedBy`, and `expiry` onto the finding so the **archived report alone**
+satisfies the §6.10 SARIF suppression projection without re-reading mutable
+`config/baseline.json`, preserving §6.9 source-of-truth + §6.10 determinism),
+and `note` (set on expired-baseline re-alert §6.4). At the raw-scanner
 stage these carry their empty defaults (`severity` = `baseSeverity`,
-`correlatedWith` = `[]`, `externalRefs` = `[]`, `note` = `null`); the report
+`correlatedWith` = `[]`, `externalRefs` = `[]`, `suppressed` = `false`,
+`suppression` = `null`, `note` = `null`); the report
 builder (`src/report/json.ts`) populates them. The schema does not split into
 two types — the empty defaults make a raw finding a valid `Finding` — but
 implementers must treat these four fields as derived-on-report-build, never
@@ -584,7 +606,8 @@ Shipped EMPTY (`"hosts": []`). Consumer: `src/live/gate.ts` only.
 
 ```jsonc
 { "entries": [ {
-    "findingId": "f-3f9a1c2b8d4e0a17",
+    "fingerprint": "3f9a1c2b8d4e0a17…",                              // required — FULL 64-hex sha256 (§6.6); the canonical suppression match key
+    "findingId": "f-3f9a1c2b8d4e0a17",                               // optional — display echo only (`"f-" + fingerprint.slice(0,16)`); NEVER a match key
     "ruleId": "BS-SQL-001",                                          // required — must match
     "target": { "kind": "repo", "name": "automation-v1" },           // required — kind + name (repo) or host (staging)
     "locationKey": "GET /api/users/:id",                             // optional — symbol (static) / normalizedUrlPath (live)
@@ -595,11 +618,21 @@ Shipped EMPTY (`"hosts": []`). Consumer: `src/live/gate.ts` only.
 ```
 
 **Scoped suppression.** A baseline entry suppresses a finding only when ALL of
-its fields match: `findingId` AND `ruleId` AND `target` (kind + name/host),
-plus `locationKey` when present. `findingId` alone is insufficient — ids are
-truncated hashes and suppression is security-sensitive, so it is scoped
-defensively. A benchmark test asserts an entry scoped to one target cannot
-suppress the same findingId on another target. [Per operator review MEDIUM-1.]
+its fields match: the full `fingerprint` AND `ruleId` AND `target` (kind +
+name/host), plus `locationKey` when present. **The match key is the full 64-hex
+`fingerprint` (§6.6), NOT the truncated `findingId`** — consistent with §6.1's
+canonical-key rule (the truncated `id`/`findingId` is display-only and is never
+an idempotency or join key, because its truncation makes collisions possible,
+and suppression is security-sensitive: a truncated-id match could silently
+suppress a *different* finding that collides on the 16-hex prefix). `findingId`
+is retained as an optional human-readable echo only; config-load validates that
+when both are present `findingId === "f-" + fingerprint.slice(0,16)`, and an
+entry carrying only a truncated `findingId` with no `fingerprint` fails config
+load. A benchmark test asserts (a) an entry scoped to one target cannot suppress
+the same finding on another target, and (b) two findings sharing a 16-hex `id`
+prefix but differing in full `fingerprint` are suppressed independently. [Per
+operator review MEDIUM-1; full-fingerprint match key reconciled to §6.1 per
+chatgpt-spec-review round 2 OAI-SPEC-001.]
 
 Expired entries stop suppressing and the finding re-alerts at full severity
 with `note: "baseline expired <date>"` in the report. Malformed entries
@@ -609,7 +642,8 @@ with `note: "baseline expired <date>"` in the report. Malformed entries
 
 ```jsonc
 { "runId": "2026-06-12T03-00-00Z-7f3a", "date": "2026-06-12",
-  "targets": { "automation-v1": { "new": 2, "fixed": 1, "persisting": 7,
+  "targets": { "automation-v1": { "status": "complete",   // "complete" | "unknown" — "unknown" on partial runs per the rule below; the Trends screen (§5.2) renders it explicitly
+               "new": 2, "fixed": 1, "persisting": 7,
                "bySeverity": { "critical": 0, "high": 3, "medium": 4, "low": 2 } } } }
 ```
 
@@ -675,7 +709,8 @@ YAML → `semgrep`; `LIVE-*` direct probes → `probe`; `ZAP-*` → `zap`; `NUCL
 target exited successfully within its timeout. `fixed` is only ever computed
 for `complete` families (§6.5). Closed set; adding a family requires a spec
 amendment. Producer: `meta.scannerStatus` (§6.9). Consumer: trend (§6.5),
-report status (§14).
+report status (§14), and the fix-request `verified-fixed` fence (§5.3 step 4 —
+a merged fix graduates only when its originating family completed).
 
 ### 6.9 `RunReport` (`reports/<runId>/report.json` — the canonical run artifact)
 
@@ -706,10 +741,13 @@ Nullability/defaults: `meta.failures` is `[]` on a `success` run; every
 `state ∈ {complete, failed, skipped}`; `coverageGaps` is `[]` when none. The
 run-level fields referenced elsewhere in the spec live on this report, NOT on
 `Finding`: scanner-family status → `meta.scannerStatus`; failure metadata →
-`meta.failures`; per-target coverage gaps → `targets[].coverageGaps`. The two
-that DO live on a finding — `note` (expired-baseline re-alert, §6.4) and
-multiple `occurrences` (fingerprint collision merge, §6.6) — are optional
-fields on `Finding` (`note?: string`, `evidence.raw.occurrences?: Location[]`).
+`meta.failures`; per-target coverage gaps → `targets[].coverageGaps`. The
+fields that DO live on a finding — `note` (expired-baseline re-alert, §6.4),
+`suppression` (matched-baseline justification/approvedBy/expiry copied on report
+build for the §6.10 SARIF projection, §6.1), and multiple `occurrences`
+(fingerprint collision merge, §6.6) — are optional/nullable fields on `Finding`
+(`note?: string`, `suppression?: { justification: string; approvedBy: string;
+expiry: string } | null`, `evidence.raw.occurrences?: Location[]`).
 Producer: `src/report/json.ts`. Consumer: UI, trend, SARIF/MD/HTML, fix
 verification. Zod schema: `src/schemas/report.ts` (added to file inventory §11).
 
@@ -735,9 +773,12 @@ implementations agree:
   `logicalLocation.fullyQualifiedName` = `location.symbol`; live →
   `logicalLocation` only (the `url` + `method`), since there is no source file.
 - **Suppression.** `suppressed: true` findings emit a `result.suppressions[]`
-  entry (`kind: "external"`, `justification` = the baseline entry's
-  `justification`); expired baselines do NOT suppress (the finding re-alerts,
-  §6.4).
+  entry (`kind: "external"`, `justification` = the finding's report-stage
+  `suppression.justification` field, §6.1 — read from the archived `RunReport`,
+  NOT from current `config/baseline.json`, so a re-emit from an old report is
+  deterministic and self-contained per §6.9); expired baselines do NOT suppress
+  (the finding re-alerts, §6.4). [SARIF reads justification from the report per
+  chatgpt-spec-review round 2 OAI-SPEC-002.]
 - **Correlation + refs.** Live-correlated evidence (§9) is attached as
   `relatedLocations`; `externalRefs` (§5.3) map to
   `result.workItemUris`.
@@ -886,7 +927,10 @@ benchmark/
     finding from that scanner family must NOT be counted `fixed`, the target's
     trend status records `unknown`, and the run reports `partial` (§6.5).
   - *Scoped suppression:* a baseline entry scoped to one target must not
-    suppress the same `findingId` on another target (§6.4).
+    suppress the same finding on another target, and two findings sharing a
+    16-hex `id` prefix but differing in full `fingerprint` are suppressed
+    independently — suppression matches on the full 64-hex `fingerprint`, never
+    the truncated `findingId` (§6.4). [Full-fingerprint match per OAI-SPEC-001.]
   - *Active-scan cred failure:* an `activeScan: true` target with missing
     creds must produce a `failed` run, not a passive scan (§6.2).
   - *HTML evidence inert-text matrix:* malicious evidence values containing
@@ -895,7 +939,10 @@ benchmark/
     `display:none`/`visibility:hidden`/`aria-hidden`/off-viewport subtrees, and a
     literal `</script>` must appear in the HTML export ONLY as escaped text in
     the visible evidence container — never as parsed DOM or executable script
-    (§5.2). [OAI-SPEC-007.]
+    (§5.2). [OAI-SPEC-007.] **This guardrail ships with the HTML exporter it
+    tests as `src/report/html.test.ts` in P7 (§12), not in the P6 engine
+    benchmark batch — it is a final-ship requirement.** [P7 ownership per
+    chatgpt-spec-review round 2 OAI-SPEC-003.]
   - *Allowlist IP-literal rejection:* the production `assertAllowlisted` rejects
     IP-literal URLs before any network I/O — `https://127.0.0.1/`, a
     numeric/octal/hex IPv4 variant Node's `URL` accepts, `https://[::1]/`, and
@@ -955,8 +1002,8 @@ RLS appears only as the SUBJECT of rules.
 | P3 | custom rule pack (11 rules) + their corpus fixtures (test-first, enforced by the P1 harness) | P1, P2 (semgrep runner) |
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
 | P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend | P2–P4 |
-| P6 | benchmark completion (live-fixture integration, guardrail tests §10) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
-| P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
+| P6 | benchmark completion (live-fixture integration, **engine-available §10 guardrail tests only** — partial-run trend, scoped suppression, active-scan cred failure, allowlist IP-literal rejection, carrier-aware login success; the §10 *HTML evidence inert-text matrix* guardrail is NOT a P6 deliverable because it targets the P7 HTML exporter — see P7) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
+| P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. **`src/report/html.test.ts` owns the §10 HTML evidence inert-text matrix guardrail** (it ships with the exporter it tests; required before final v1 ship). All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
 | P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
 
 No backward references: each phase consumes only earlier phases' outputs.
