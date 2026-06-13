@@ -1,0 +1,15 @@
+{
+  "_comment": "Live fixture expected check coverage (P4-7). Full live-fixture recall integration is P6-1.",
+  "checks": [
+    "LIVE-TLS-001",
+    "LIVE-HDR-001",
+    "LIVE-COOKIE-001",
+    "LIVE-EXPOSE-001",
+    "LIVE-LEAK-001",
+    "LIVE-IDOR-001",
+    "LIVE-SESSION-001",
+    "ZAP-P-*",
+    "ZAP-A-*",
+    "NUCLEI-*"
+  ]
+}
