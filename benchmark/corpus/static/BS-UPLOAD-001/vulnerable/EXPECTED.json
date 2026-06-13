@@ -1,0 +1,17 @@
+{
+  "_comment": "BS-UPLOAD-001: multer route without file-size limit or type filter",
+  "findings": [
+    {
+      "ruleId": "BS-UPLOAD-001",
+      "vulnClass": "misconfiguration",
+      "surface": "static",
+      "_note": "uploadNoLimits: multer with no limits and no fileFilter"
+    },
+    {
+      "ruleId": "BS-UPLOAD-001",
+      "vulnClass": "misconfiguration",
+      "surface": "static",
+      "_note": "uploadNoTypeFilter: multer with limits but no fileFilter"
+    }
+  ]
+}

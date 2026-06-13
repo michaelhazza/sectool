@@ -1,0 +1,38 @@
+rules:
+  - id: BS-AUTH-002
+    message: >
+      Auth endpoint ($ROUTE) does not have a rate-limit middleware applied before
+      the handler. Authentication endpoints without rate limiting are vulnerable
+      to brute-force and credential-stuffing attacks.
+    severity: WARNING
+    metadata:
+      category: auth-access-control
+      confidence: MEDIUM
+      bs-rule-id: BS-AUTH-002
+      bs-vuln-class: auth-access-control
+      bs-base-severity: medium
+      references:
+        - https://owasp.org/www-project-top-ten/2017/A2_2017-Broken_Authentication
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern-either:
+          - pattern: $ROUTER.$METHOD("/login", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/register", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/reset", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/forgot-password", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/auth/login", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/auth/register", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/auth/reset", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/api/auth/login", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/api/auth/register", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/api/auth/reset", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/api/login", ..., $HANDLER)
+          - pattern: $ROUTER.$METHOD("/api/register", ..., $HANDLER)
+      - pattern-not:
+          pattern: $ROUTER.$METHOD($ROUTE, ..., $RATELIMIT, ..., $HANDLER)
+          where:
+            - metavariable-regex:
+                metavariable: $RATELIMIT
+                regex: (rateLimit|rateLimiter|limiter|apiLimiter|authLimiter|loginLimiter|throttle|slowDown)

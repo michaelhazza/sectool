@@ -1,0 +1,56 @@
+rules:
+  - id: BS-CORS-001-wildcard
+    message: >
+      CORS is configured with a wildcard origin (`*`). A wildcard CORS policy
+      allows any origin to make credentialed cross-site requests, potentially
+      exposing sensitive API responses to attacker-controlled pages.
+    severity: ERROR
+    metadata:
+      category: misconfiguration
+      confidence: HIGH
+      bs-rule-id: BS-CORS-001
+      bs-vuln-class: misconfiguration
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-community/attacks/CORS_OriginHeaderScrutiny
+    languages:
+      - javascript
+      - typescript
+    pattern-either:
+      - pattern: cors({origin: "*", ...})
+      - pattern: cors("*")
+      - pattern: |
+          $RES.header("Access-Control-Allow-Origin", "*")
+      - pattern: |
+          $RES.setHeader("Access-Control-Allow-Origin", "*")
+      - pattern: |
+          $RES.set("Access-Control-Allow-Origin", "*")
+
+  - id: BS-CORS-001-reflected-origin
+    message: >
+      CORS origin is set by directly reflecting the incoming `Origin` request
+      header back in `Access-Control-Allow-Origin`. This effectively grants
+      every origin access and is equivalent to a wildcard.
+    severity: ERROR
+    metadata:
+      category: misconfiguration
+      confidence: MEDIUM
+      bs-rule-id: BS-CORS-001
+      bs-vuln-class: misconfiguration
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-community/attacks/CORS_OriginHeaderScrutiny
+    languages:
+      - javascript
+      - typescript
+    pattern-either:
+      - pattern: |
+          $RES.header("Access-Control-Allow-Origin", $REQ.headers.origin)
+      - pattern: |
+          $RES.setHeader("Access-Control-Allow-Origin", $REQ.headers.origin)
+      - pattern: |
+          $RES.set("Access-Control-Allow-Origin", $REQ.headers.origin)
+      - pattern: |
+          cors({origin: (origin, $CB) => { ...; $CB(null, origin); ... }})
+      - pattern: |
+          cors({origin: (origin, $CB) => $CB(null, origin)})

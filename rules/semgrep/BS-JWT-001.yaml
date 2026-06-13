@@ -1,0 +1,78 @@
+rules:
+  - id: BS-JWT-001-algorithm
+    message: >
+      JWT sign/verify call does not pin the algorithm. Without an explicit
+      algorithm, the library may accept the "none" algorithm or be confused by
+      a mixed RS256/HS256 attack. Always specify `algorithms: [...]` on verify
+      and `algorithm: "..."` on sign.
+    severity: ERROR
+    metadata:
+      category: auth-access-control
+      confidence: MEDIUM
+      bs-rule-id: BS-JWT-001
+      bs-vuln-class: auth-access-control
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-project-top-ten/2017/A2_2017-Broken_Authentication
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern-either:
+          - pattern: jwt.sign($PAYLOAD, $SECRET)
+          - pattern: jwt.sign($PAYLOAD, $SECRET, {})
+          - pattern: jwt.verify($TOKEN, $SECRET)
+          - pattern: jwt.verify($TOKEN, $SECRET, {})
+      - pattern-not:
+          pattern: jwt.sign($PAYLOAD, $SECRET, {algorithm: ..., ...})
+      - pattern-not:
+          pattern: jwt.verify($TOKEN, $SECRET, {algorithms: ..., ...})
+
+  - id: BS-JWT-001-expiry
+    message: >
+      JWT sign call does not set an expiry (expiresIn / exp). Tokens without
+      expiry remain valid indefinitely; a leaked token cannot be invalidated.
+    severity: ERROR
+    metadata:
+      category: auth-access-control
+      confidence: MEDIUM
+      bs-rule-id: BS-JWT-001
+      bs-vuln-class: auth-access-control
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-project-top-ten/2017/A2_2017-Broken_Authentication
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern: jwt.sign($PAYLOAD, $SECRET, $OPTS)
+      - pattern-not:
+          pattern: jwt.sign($PAYLOAD, $SECRET, {expiresIn: ..., ...})
+      - pattern-not:
+          pattern: jwt.sign({..., exp: ..., ...}, $SECRET, ...)
+
+  - id: BS-JWT-001-literal-secret
+    message: >
+      JWT secret is a string literal rather than an environment variable or
+      a runtime-loaded secret. Hard-coded JWT secrets are trivially leaked
+      via source-code access and cannot be rotated.
+    severity: ERROR
+    metadata:
+      category: secrets
+      confidence: HIGH
+      bs-rule-id: BS-JWT-001
+      bs-vuln-class: secrets
+      bs-base-severity: high
+      references:
+        - https://owasp.org/www-community/vulnerabilities/Use_of_hard-coded_credentials
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern-either:
+          - pattern: jwt.sign($PAYLOAD, "...", ...)
+          - pattern: jwt.verify($TOKEN, "...", ...)
+      - pattern-not:
+          pattern: jwt.sign($PAYLOAD, process.env.$VAR, ...)
+      - pattern-not:
+          pattern: jwt.verify($TOKEN, process.env.$VAR, ...)

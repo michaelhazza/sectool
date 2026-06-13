@@ -1,0 +1,23 @@
+{
+  "_comment": "BS-AUTH-002: auth endpoints without rate-limit middleware",
+  "findings": [
+    {
+      "ruleId": "BS-AUTH-002",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "POST /login — no rate-limit middleware"
+    },
+    {
+      "ruleId": "BS-AUTH-002",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "POST /register — no rate-limit middleware"
+    },
+    {
+      "ruleId": "BS-AUTH-002",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "POST /api/auth/reset — no rate-limit middleware"
+    }
+  ]
+}

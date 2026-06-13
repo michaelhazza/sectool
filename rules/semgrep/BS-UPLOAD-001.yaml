@@ -1,0 +1,46 @@
+rules:
+  - id: BS-UPLOAD-001-no-size-limit
+    message: >
+      multer upload route ($ROUTE) has no file-size limit configured. Without
+      `limits.fileSize`, an attacker can upload arbitrarily large files,
+      exhausting disk space or memory.
+    severity: WARNING
+    metadata:
+      category: misconfiguration
+      confidence: MEDIUM
+      bs-rule-id: BS-UPLOAD-001
+      bs-vuln-class: misconfiguration
+      bs-base-severity: medium
+      references:
+        - https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern: multer({...})
+      - pattern-not:
+          pattern: multer({limits: {fileSize: ..., ...}, ...})
+      - pattern-not:
+          pattern: multer({limits: {...}, ...})
+
+  - id: BS-UPLOAD-001-no-type-filter
+    message: >
+      multer upload route has no file-type filter (fileFilter or
+      allowedMimeTypes). Without type validation, any file type — including
+      server-side scripts — may be uploaded.
+    severity: WARNING
+    metadata:
+      category: misconfiguration
+      confidence: MEDIUM
+      bs-rule-id: BS-UPLOAD-001
+      bs-vuln-class: misconfiguration
+      bs-base-severity: medium
+      references:
+        - https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload
+    languages:
+      - javascript
+      - typescript
+    patterns:
+      - pattern: multer({...})
+      - pattern-not:
+          pattern: multer({fileFilter: ..., ...})

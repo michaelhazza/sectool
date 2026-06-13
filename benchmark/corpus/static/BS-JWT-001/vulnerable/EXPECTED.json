@@ -1,0 +1,29 @@
+{
+  "_comment": "BS-JWT-001: JWT algorithm not pinned, no expiry, or secret literal",
+  "findings": [
+    {
+      "ruleId": "BS-JWT-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "signTokenNoAlgorithm: jwt.sign without algorithm option"
+    },
+    {
+      "ruleId": "BS-JWT-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "signTokenNoExpiry: jwt.sign without expiresIn"
+    },
+    {
+      "ruleId": "BS-JWT-001",
+      "vulnClass": "secrets",
+      "surface": "static",
+      "_note": "signTokenLiteralSecret: jwt.sign with string literal secret"
+    },
+    {
+      "ruleId": "BS-JWT-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "verifyTokenNoAlgorithm: jwt.verify without algorithms option"
+    }
+  ]
+}
