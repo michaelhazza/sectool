@@ -723,9 +723,24 @@ function doReport(args: ReportArgs): void {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function doUi(_args: UiArgs): void {
-  process.stdout.write('[ui] not yet implemented (P7)\n');
+function doUi(args: UiArgs): void {
+  import('./ui/server.js').then(({ startServer }) => {
+    startServer(args.port).then((srv) => {
+      process.stdout.write(`audit ui: listening on http://127.0.0.1:${srv.port}\n`);
+      // Keep the process alive; stop only on SIGINT/SIGTERM
+      const shutdown = (): void => {
+        srv.stop().then(() => process.exit(0)).catch(() => process.exit(1));
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    }).catch((err: unknown) => {
+      process.stderr.write(`audit ui: failed to start server: ${String(err)}\n`);
+      process.exit(1);
+    });
+  }).catch((err: unknown) => {
+    process.stderr.write(`audit ui: failed to load server module: ${String(err)}\n`);
+    process.exit(1);
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

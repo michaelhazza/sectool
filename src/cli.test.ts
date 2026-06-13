@@ -78,6 +78,18 @@ vi.mock('./correlate/correlate.js', () => ({
   correlate: vi.fn((findings: unknown[]) => findings),
 }));
 
+// ── Mock ui server — prevents real network bind in CLI unit tests ──────────
+vi.mock('./ui/server.js', () => ({
+  startServer: vi.fn(() =>
+    Promise.resolve({
+      server: { address: () => ({ address: '127.0.0.1', port: 4173 }) },
+      port: 4173,
+      stop: vi.fn(() => Promise.resolve()),
+    }),
+  ),
+  CSRF_NONCE: 'mock-nonce',
+}));
+
 // ── Mock fs for report command ─────────────────────────────────────────────
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -387,6 +399,21 @@ describe('CLI — P1-4 + P5-6', () => {
       const { stdout, stderr } = capture(['report']);
       expect(stdout).not.toMatch(/not yet implemented \(P5\)/);
       expect(stderr).not.toMatch(/not yet implemented \(P5\)/);
+    });
+  });
+
+  // ── P7-1 CLI wiring — audit ui starts the server ────────────────────────
+
+  describe('P7-1 CLI wiring — audit ui', () => {
+    it('audit ui does not print the P7 stub message', () => {
+      const { stdout, stderr } = capture(['ui']);
+      expect(stdout).not.toMatch(/not yet implemented \(P7\)/);
+      expect(stderr).not.toMatch(/not yet implemented \(P7\)/);
+    });
+
+    it('audit ui --port 0 does not emit stub text', () => {
+      const { stdout } = capture(['ui', '--port', '0']);
+      expect(stdout).not.toMatch(/not yet implemented/);
     });
   });
 });
