@@ -4,6 +4,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
+import { loadAllowlist, loadTargets } from '../config/load.js';
+import type { RunReport } from '../schemas/report.js';
+import { buildPack } from '../fix/pack.js';
+import { fileFixRequest, MissingFixTokenError } from '../fix/github.js';
+import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
+import { upsertFix } from '../fix/status.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -41,6 +47,17 @@ export const CSRF_NONCE: string = (() => {
 })();
 
 // ---------------------------------------------------------------------------
+// Injectable fix handler (for testability — production calls fix modules directly)
+// ---------------------------------------------------------------------------
+
+/**
+ * Injectable fix handler type.
+ * The real implementation calls buildPack + fileFixRequest + upsertFix.
+ * Tests inject a spy to assert the 403-before-github short-circuit.
+ */
+export type FixHandler = (fingerprint: string) => Promise<{ issueUrl: string }>;
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -57,6 +74,82 @@ function jsonResponse(res: ServerResponse, status: number, body: unknown): void 
 function readJsonFile(path: string): unknown {
   const raw = readFileSync(path, 'utf8');
   return JSON.parse(raw) as unknown;
+}
+
+/** Read the full request body as a UTF-8 string. */
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((res, rej) => {
+    let data = '';
+    req.on('data', (chunk: Buffer | string) => { data += chunk.toString(); });
+    req.on('end', () => res(data));
+    req.on('error', rej);
+  });
+}
+
+/**
+ * Production fix handler: builds the remediation pack and files the GitHub
+ * fix-request issue for the given fingerprint.
+ * Loads the latest report from disk to locate the finding.
+ */
+function makeProductionFixHandler(opts?: { client?: GitHubHttpClient; env?: EnvReader }): FixHandler {
+  return async (fingerprint: string) => {
+    // Load config to get the target registry (for repoUrl resolution)
+    const allowlist = loadAllowlist();
+    const registry = loadTargets(allowlist);
+
+    // Find the finding in the latest report
+    let report: RunReport | null = null;
+    try {
+      const entries = readdirSync(REPORTS_DIR);
+      const runs = entries
+        .filter((e) => { try { return statSync(resolve(REPORTS_DIR, e)).isDirectory(); } catch { return false; } })
+        .sort()
+        .reverse();
+      for (const runId of runs) {
+        try {
+          const data = readJsonFile(resolve(REPORTS_DIR, runId, 'report.json'));
+          report = data as RunReport;
+          break;
+        } catch { /* try next */ }
+      }
+    } catch { /* reports dir absent */ }
+
+    if (report === null) {
+      throw new Error('No runs found. Run `audit run` first.');
+    }
+
+    const finding = report.findings.find((f) => f.fingerprint === fingerprint);
+    if (finding === undefined) {
+      throw new Error(`Finding not found: ${fingerprint}`);
+    }
+
+    // Resolve repoUrl from the registry (static findings only)
+    if (finding.surface !== 'static') {
+      throw new Error(`Cannot file fix request for live finding ${fingerprint} — no repo URL available.`);
+    }
+    const repoEntry = registry.repos.find((r) => r.name === finding.target.name);
+    if (repoEntry === undefined) {
+      throw new Error(`Target repo not found in registry: ${finding.target.name}`);
+    }
+    const repoUrl = repoEntry.gitUrl;
+
+    const pack = buildPack(finding);
+    const result = await fileFixRequest(finding, pack, repoUrl, { client: opts?.client, env: opts?.env });
+
+    await upsertFix(
+      finding.fingerprint,
+      (existing) => ({
+        fingerprint: finding.fingerprint,
+        ruleId: finding.ruleId,
+        status: 'requested',
+        issueUrl: result.issueUrl,
+        filedAt: existing?.filedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+
+    return { issueUrl: result.issueUrl };
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +268,77 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
 }
 
 // ---------------------------------------------------------------------------
+// Mutating POST /api/fix — CSRF/origin-gated (§5.2 hardening contract)
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle POST /api/fix.
+ *
+ * Rejects HTTP 403 — WITHOUT calling the fix handler — when:
+ *   (a) X-Audit-CSRF header is missing or does not match CSRF_NONCE, OR
+ *   (b) Origin header is not exactly http://127.0.0.1:<port>
+ *
+ * The server never emits Access-Control-Allow-Origin: * on this route.
+ * Loopback binding alone is NOT sufficient (§5.2: a page in the operator's
+ * browser can drive a cross-origin POST to 127.0.0.1).
+ */
+async function handleFixPost(
+  req: IncomingMessage,
+  res: ServerResponse,
+  port: number,
+  fixHandler: FixHandler,
+): Promise<void> {
+  const csrfHeader = req.headers['x-audit-csrf'];
+  const originHeader = req.headers['origin'];
+  const expectedOrigin = `http://127.0.0.1:${port}`;
+
+  // §5.2: reject BEFORE any fix logic when nonce or origin is wrong
+  if (typeof csrfHeader !== 'string' || csrfHeader !== CSRF_NONCE) {
+    jsonResponse(res, 403, { error: 'Forbidden: missing or invalid X-Audit-CSRF nonce' });
+    return;
+  }
+  if (typeof originHeader !== 'string' || originHeader !== expectedOrigin) {
+    jsonResponse(res, 403, { error: 'Forbidden: Origin not allowed' });
+    return;
+  }
+
+  // Guards passed — read and parse body
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+    return;
+  }
+
+  let fingerprint: string;
+  try {
+    const parsed = JSON.parse(body) as { fingerprint?: unknown };
+    if (typeof parsed.fingerprint !== 'string' || parsed.fingerprint.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: fingerprint required' });
+      return;
+    }
+    fingerprint = parsed.fingerprint;
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: invalid JSON' });
+    return;
+  }
+
+  try {
+    const result = await fixHandler(fingerprint);
+    jsonResponse(res, 200, { issueUrl: result.issueUrl });
+  } catch (err) {
+    if (err instanceof MissingFixTokenError) {
+      // §5.3: plain-English "fix-sending not configured"
+      jsonResponse(res, 503, { error: 'Fix-sending not configured. Set AUDIT_GITHUB_FIX_TOKEN to enable.' });
+      return;
+    }
+    const message = err instanceof Error ? err.message : 'Internal error';
+    jsonResponse(res, 500, { error: message });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Static SPA asset serving (graceful when ui/dist not built yet)
 // ---------------------------------------------------------------------------
 
@@ -229,7 +393,12 @@ function handleStatic(req: IncomingMessage, res: ServerResponse, url: URL): bool
 // Request handler
 // ---------------------------------------------------------------------------
 
-function handleRequest(req: IncomingMessage, res: ServerResponse, port: number): void {
+function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  port: number,
+  fixHandler: FixHandler,
+): void {
   const raw = req.url ?? '/';
   let url: URL;
   try {
@@ -239,7 +408,17 @@ function handleRequest(req: IncomingMessage, res: ServerResponse, port: number):
     return;
   }
 
-  // API routes
+  // Mutating POST /api/fix (CSRF/origin-gated)
+  if (req.method === 'POST' && url.pathname === '/api/fix') {
+    handleFixPost(req, res, port, fixHandler).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
+  // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
     if (!handleApi(req, res, url)) {
       jsonResponse(res, 404, { error: 'Not found' });
@@ -265,12 +444,15 @@ export interface AuditServer {
 
 /**
  * Start the audit UI server, bound to 127.0.0.1 ONLY (never 0.0.0.0).
- * @param port - TCP port (0 = OS-assigned ephemeral port for tests)
+ * @param port      - TCP port (0 = OS-assigned ephemeral port for tests)
+ * @param fixHandler - Injectable fix handler; defaults to the production implementation.
+ *                    Inject a spy in tests to assert the CSRF/origin 403 short-circuit.
  */
-export function startServer(port: number): Promise<AuditServer> {
+export function startServer(port: number, fixHandler?: FixHandler): Promise<AuditServer> {
+  const handler = fixHandler ?? makeProductionFixHandler();
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
-      handleRequest(req, res, listenPort);
+      handleRequest(req, res, listenPort, handler);
     });
 
     let listenPort = port;

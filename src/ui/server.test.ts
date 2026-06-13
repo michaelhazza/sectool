@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { request as httpRequest } from 'node:http';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { startServer, CSRF_NONCE, type AuditServer } from './server.js';
+import { startServer, CSRF_NONCE, type AuditServer, type FixHandler } from './server.js';
 
 // ---------------------------------------------------------------------------
-// Helper: make a GET request to the test server
+// Helpers: make GET / POST requests to the test server
 // ---------------------------------------------------------------------------
 
 function get(port: number, path: string): Promise<{ status: number; headers: import('node:http').IncomingHttpHeaders; body: string }> {
@@ -24,6 +24,43 @@ function get(port: number, path: string): Promise<{ status: number; headers: imp
     });
     req.on('error', rej);
     req.end();
+  });
+}
+
+function post(
+  port: number,
+  path: string,
+  body: string,
+  extraHeaders?: Record<string, string>,
+): Promise<{ status: number; headers: import('node:http').IncomingHttpHeaders; body: string }> {
+  return new Promise((res, rej) => {
+    const bodyBuf = Buffer.from(body, 'utf8');
+    const req = httpRequest(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': bodyBuf.byteLength,
+          ...extraHeaders,
+        },
+      },
+      (response) => {
+        let data = '';
+        response.on('data', (chunk: Buffer | string) => { data += chunk.toString(); });
+        response.on('end', () => {
+          res({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: data,
+          });
+        });
+      },
+    );
+    req.on('error', rej);
+    req.end(bodyBuf);
   });
 }
 
@@ -196,24 +233,123 @@ describe('unknown routes', () => {
 });
 
 // ---------------------------------------------------------------------------
-// No mutating route (P8 scope)
+// §10 UI fix-endpoint CSRF/origin guardrail (P8-5)
 // ---------------------------------------------------------------------------
 
-describe('no mutating route in P7', () => {
-  it('POST /api/fix returns 404 (route not wired yet)', async () => {
-    const result = await new Promise<{ status: number }>((res2, rej) => {
-      const req = httpRequest(
-        { hostname: '127.0.0.1', port: srv.port, path: '/api/fix', method: 'POST' },
-        (response) => {
-          response.resume();
-          res2({ status: response.statusCode ?? 0 });
-        },
-      );
-      req.on('error', rej);
-      req.end();
-    });
-    // No mutating route exists in P7 — must be 404 (not 200 or 500)
-    expect(result.status).toBe(404);
+describe('POST /api/fix — CSRF/origin guardrail (§10)', () => {
+  // Plain spy: records whether the fix handler was called (no vi.fn — avoids no-unsafe-call)
+  let fixSrv: AuditServer;
+  let fixHandlerCalled: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const fixSpy: FixHandler = (_fp: string) => {
+    fixHandlerCalled = true;
+    return Promise.resolve({ issueUrl: 'https://github.com/test/repo/issues/1' });
+  };
+
+  beforeAll(async () => {
+    fixHandlerCalled = false;
+    fixSrv = await startServer(0, fixSpy);
+  });
+
+  afterAll(async () => {
+    await fixSrv.stop();
+  });
+
+  beforeEach(() => {
+    fixHandlerCalled = false;
+  });
+
+  const validBody = JSON.stringify({ fingerprint: 'a'.repeat(64) });
+
+  it('returns 403 when X-Audit-CSRF header is missing', async () => {
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      { 'Origin': `http://127.0.0.1:${fixSrv.port}` },
+    );
+    expect(status).toBe(403);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('returns 403 when X-Audit-CSRF header is wrong', async () => {
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      {
+        'Origin': `http://127.0.0.1:${fixSrv.port}`,
+        'X-Audit-CSRF': 'wrong-nonce-value',
+      },
+    );
+    expect(status).toBe(403);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('returns 403 when Origin header is missing', async () => {
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      { 'X-Audit-CSRF': CSRF_NONCE },
+    );
+    expect(status).toBe(403);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('returns 403 when Origin is a foreign host', async () => {
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': 'http://evil.example.com',
+      },
+    );
+    expect(status).toBe(403);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('returns 403 when Origin is correct host but wrong port', async () => {
+    const wrongPort = fixSrv.port + 1;
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': `http://127.0.0.1:${wrongPort}`,
+      },
+    );
+    expect(status).toBe(403);
+    expect(fixHandlerCalled).toBe(false);
+  });
+
+  it('reaches the fix handler on valid same-origin + correct nonce', async () => {
+    const { status } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': `http://127.0.0.1:${fixSrv.port}`,
+      },
+    );
+    // fix handler is called (spy returns a mock issueUrl → 200)
+    expect(status).toBe(200);
+    expect(fixHandlerCalled).toBe(true);
+  });
+
+  it('POST /api/fix never emits Access-Control-Allow-Origin: *', async () => {
+    // Even a 403 response must not have the wildcard CORS header
+    const { headers } = await post(
+      fixSrv.port,
+      '/api/fix',
+      validBody,
+      { 'Origin': 'http://evil.example.com' },
+    );
+    expect(headers['access-control-allow-origin']).not.toBe('*');
   });
 });
 

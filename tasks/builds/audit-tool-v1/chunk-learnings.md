@@ -234,3 +234,52 @@ would be preferable for interactive/incremental use but is not our primary use c
   path to use forward slashes in the URL (replace `\\` with `/`).
 - `beforeAll` timeout for the bare-repo fixture setup should be ≥ 60_000ms (git clone + commit
   + push can be slow on Windows under CI conditions).
+
+## P8-2 — GitHub fix-request integration (2026-06-13)
+
+**What worked:**
+- Injectable `GitHubHttpClient` type (`(req: GitHubRequest) => Promise<GitHubResponse>` — NOT async) + injectable `EnvReader` type (`(name: string) => string | undefined`) keep all tests network-free and avoid `@typescript-eslint/require-await` on test stubs that don't actually await.
+- Reusable `envWithToken(token)` / `envNoToken()` factory functions at the top of the test file avoid inline `(_name: string) => ...` lambdas — these trigger `@typescript-eslint/no-unused-vars` even with the `_` prefix. The factory pattern is cleaner than per-call `eslint-disable-next-line` comments.
+- `makeRecordingClient(handler)` helper with a typed `calls` array makes per-request assertions straightforward without `vi.fn()` mock chaining.
+- GitHub search API returns `{ items: [] }` (not `[]`) for the search endpoint — ensure mock search responses use `{ items: [...] }` shape, not a bare array.
+- Comment pagination: the `commentMarkerExists` loop checks `comments.length < 100` to detect the last page. Test stubs that return an empty array `[]` terminate on the first page (length 0 < 100).
+- `void req` in a non-async client stub suppresses the `no-unused-vars` lint on the `req` parameter when the stub ignores the request details.
+
+**Watch-out for future chunks:**
+- `fileFixRequest` takes a `repoUrl` parameter (the GitHub HTTPS or SSH URL of the target repo). P8-4 (`audit fix` CLI wiring) must pass the repo's `gitUrl` from the target registry entry when calling this function — it is NOT derived from `Finding.target` directly (which only carries `name`, not the full URL).
+- `commentOnIssue` is exported and called by P8-3 (fix-status `reopened` transition comments). P8-3 must pass the correct `reason` string (e.g. `'reopened'`) to ensure the deterministic marker `<!-- audit-fix:<fp>:reopened -->` is written and the search-before-comment can find it on retry.
+- The `GitHubApiError` class carries a `status: number` field — P8-3 callers should check this to distinguish 4xx (configuration/token issues) from 5xx (transient GitHub errors) for retry/logging purposes.
+- The `reused: boolean` field on `FileFixRequestResult` is useful for P8-4 CLI output (e.g. printing "Reused existing issue #42" vs "Created issue #7").
+- Token scope: the implementation only ever sends the token in `Authorization: Bearer <token>` headers on github.com API calls. It never writes the token value into issue bodies, URLs, or comments — this is the §5.3 "token value never logged/persisted" guarantee. P8-5 (UI endpoint) must ensure the token is not exposed in server logs either.
+
+## P8-4 — `audit fix` CLI wiring (2026-06-13)
+
+**What worked:**
+- Exporting `doFix` as an async function with an optional `FixDeps` parameter enables clean unit-test injection of report source, GitHub client, and env reader without going through `main()` + `capture()`.
+- `AmbiguousFindingIdError` is exported from `cli.ts` so both the dispatch error-handler and tests can reference it by name.
+- The `envWithToken(token)` / `envNoToken()` factory functions at the test file level avoid `@typescript-eslint/no-unused-vars` on `_name` parameters (same lesson from P8-2).
+- `Object.prototype.hasOwnProperty.call(fixes, fingerprint)` is the safe way to check membership in a Zod-parsed `FixesFile` (plain record) without triggering `@typescript-eslint/no-unsafe-call` or `prefer-object-has-own` lint errors.
+- `captureAsync` wrapper in tests: same pattern as `capture()` but awaits an async function, catches `ExitSignal` thrown by `process.exit` spy.
+- `as unknown as RunReport` is the correct cast for minimal fake report objects that don't have all `RunReport` fields populated.
+- The display-id regex `/^f-[0-9a-f]{16}$/` and full-fingerprint regex `/^[0-9a-f]{64}$/` are sufficient to distinguish the two ref forms; any other input is an early stderr + exit.
+
+**Watch-out for future chunks:**
+- `doFix` skips live findings (staging surface) with a `continue` — those have no `gitUrl` in the target registry. P8-5 (UI Send-for-fixing) may need to handle this case differently if live findings can be queued for fixing via a staging-target-to-repo mapping in the registry.
+- `readFixesFile` is called once at the start of `doFix` to get the snapshot for the "not-yet-filed" filter. Concurrent calls to `doFix` (e.g. from P8-5 UI endpoint) should not race on this snapshot — the `upsertFix` at write-time is under the workspace lock, so duplicate files are caught by the P8-2 GitHub search-before-create, but the "already filed" filter in bulk mode could miss a concurrent filing. Acceptable in v1 (single operator, idempotent at GitHub level).
+- The `FixDeps.fixesPath` override is threaded through to `upsertFix` as `{ fixesPath }`. P8-5 tests that need a custom fixes.json path can use this injection point.
+
+## P8-5 — Wire UI: Send-for-fixing endpoint (CSRF/origin-gated) + live Fixes screen (2026-06-13)
+
+**What worked:**
+- Injectable `FixHandler` type exported from `server.ts` (`(fingerprint: string) => Promise<{ issueUrl: string }>` — NOT async) allows tests to pass a plain spy function without triggering `@typescript-eslint/require-await`. No `vi.fn()` needed — a plain arrow function returning `Promise.resolve(...)` suffices.
+- `beforeEach(() => { fixHandlerCalled = false; })` resets the spy flag between tests without any vitest mock infrastructure, which avoids `@typescript-eslint/no-unsafe-call` on `vi.clearAllMocks()`.
+- The CSRF/origin check must happen before `readBody()` is called — the guard short-circuits to 403 before any body reading or fix-handler call. This ensures the test assertion `expect(fixHandlerCalled).toBe(false)` is unconditionally true on a bad nonce/origin.
+- `eslint-disable-next-line @typescript-eslint/no-unused-vars` on the `_fp` parameter of the spy is required; the underscore prefix alone is not enough with `typescript-eslint/no-unused-vars`.
+- The `makeProductionFixHandler()` returns a closure so the fix handler captures no state at startup — it loads config lazily per-request. This avoids a startup config error when the server boots before config files exist.
+- SPA: `sendForFixing()` in `api.ts` fetches the CSRF token from `/api/csrf` first, then POSTs with the nonce in `X-Audit-CSRF`. Browsers automatically include `Origin` on same-origin `fetch()` calls — no manual Origin header needed.
+- `ui/**` is ESLint-ignored; use `npx tsc --noEmit -p ui/tsconfig.json` + `npm run build:client` as the SPA acceptance gate.
+
+**Watch-out for future chunks:**
+- The `makeProductionFixHandler` loads `loadAllowlist()` + `loadTargets()` on every fix request. This is correct (config is file-based and can change between requests) but means a config error at request time returns HTTP 500. If config is pre-validated at server startup, this could be a server-startup error instead.
+- The production fix handler only supports static findings (`finding.surface === 'static'`). Live findings cannot be filed for fixing via the UI (no `gitUrl` in the live target registry entry). P8-6 doc should note this limitation.
+- `upsertFix` holds the workspace lock. Concurrent UI fix requests will serialize at the lock. Single-operator localhost use makes this acceptable in v1.

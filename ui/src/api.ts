@@ -51,3 +51,36 @@ export async function fetchBaselineConfig(): Promise<BaselineConfig> {
 export async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);
 }
+
+/**
+ * Fetch the per-process CSRF nonce from the server.
+ * The nonce is used to protect the mutating POST /api/fix endpoint (§5.2).
+ */
+export async function fetchCsrfToken(): Promise<string> {
+  const data = await fetchJson<{ csrfToken: string }>('/api/csrf');
+  return data.csrfToken;
+}
+
+/**
+ * Send a finding for fixing — files a fix-request GitHub issue via the
+ * CSRF/origin-gated POST /api/fix endpoint (§5.2).
+ *
+ * Fetches the CSRF nonce first, then POSTs with the nonce + same-origin
+ * headers. Returns the issue URL on success.
+ */
+export async function sendForFixing(fingerprint: string): Promise<{ issueUrl: string }> {
+  const csrfToken = await fetchCsrfToken();
+  const res = await fetch('/api/fix', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Audit-CSRF': csrfToken,
+    },
+    body: JSON.stringify({ fingerprint }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ issueUrl: string }>;
+}

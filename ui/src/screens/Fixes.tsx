@@ -49,25 +49,6 @@ export function Fixes() {
       </div>
       <div className="page-body">
 
-        {/* P8 affordance notice */}
-        <div className="card mb-20" style={{ background: 'rgba(107,140,255,0.05)', borderColor: 'rgba(107,140,255,0.2)' }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-            <svg viewBox="0 0 20 20" fill="#6b8cff" width="18" height="18" style={{ flexShrink: 0, marginTop: 2 }}>
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-            </svg>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#6b8cff', marginBottom: 3 }}>
-                Fix-sending will be wired in P8
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                The "Send for fixing" button is available on each finding detail page.
-                Fix requests will be filed as GitHub issues when P8 is complete.
-                Use "Copy fix instructions" on the finding detail screen to fix manually in the meantime.
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Empty state */}
         {entries.length === 0 && (
           <div className="card" style={{ textAlign: 'center', padding: '48px 32px' }}>

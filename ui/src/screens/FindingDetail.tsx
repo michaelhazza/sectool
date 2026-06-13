@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { Finding, RunReport } from '../types.js';
-import { fetchReport, fetchReportList, copyToClipboard } from '../api.js';
+import { fetchReport, fetchReportList, copyToClipboard, sendForFixing } from '../api.js';
 import { SEVERITY_LABELS, SURFACE_LABELS, BASELINE_LABELS } from '../vocabulary.js';
 import { SeverityChip, SurfaceChip, FixStatusChip } from '../components/Chips.js';
 
@@ -16,6 +16,9 @@ export function FindingDetail({ fingerprint, onBack }: FindingDetailProps) {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [copiedBaseline, setCopiedBaseline] = useState(false);
   const [copiedInstructions, setCopiedInstructions] = useState(false);
+  const [sendingFix, setSendingFix] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
+  const [fixIssueUrl, setFixIssueUrl] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -87,6 +90,19 @@ The fix is verified when this fingerprint no longer fires on re-scan.`;
     await copyToClipboard(fixInstructions);
     setCopiedInstructions(true);
     setTimeout(() => setCopiedInstructions(false), 2000);
+  }
+
+  async function handleSendForFixing(fingerprint: string) {
+    setSendingFix(true);
+    setFixError(null);
+    try {
+      const result = await sendForFixing(fingerprint);
+      setFixIssueUrl(result.issueUrl);
+    } catch (e) {
+      setFixError(e instanceof Error ? e.message : 'Failed to send for fixing');
+    } finally {
+      setSendingFix(false);
+    }
   }
 
   const correlated = finding.correlatedWith && finding.correlatedWith.length > 0;
@@ -233,12 +249,12 @@ The fix is verified when this fingerprint no longer fires on re-scan.`;
                 <hr className="divider" />
                 <div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                    Send for fixing — files a fix request in the target repo (wired in P8)
+                    Send for fixing — files a fix request as a GitHub issue in the target repo
                   </div>
-                  {fixRef ? (
+                  {(fixRef ?? (fixIssueUrl !== null ? { url: fixIssueUrl, status: 'requested' as const } : null)) ? (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <FixStatusChip status={fixRef.status} />
-                      <a href={fixRef.url} target="_blank" rel="noreferrer" className="btn btn-ghost" style={{ fontSize: 11 }}>
+                      <FixStatusChip status={(fixRef ?? { url: fixIssueUrl!, status: 'requested' as const }).status} />
+                      <a href={(fixRef ?? { url: fixIssueUrl!, status: 'requested' as const }).url} target="_blank" rel="noreferrer" className="btn btn-ghost" style={{ fontSize: 11 }}>
                         View issue ↗
                       </a>
                     </div>
@@ -246,15 +262,14 @@ The fix is verified when this fingerprint no longer fires on re-scan.`;
                     <div>
                       <button
                         className="btn btn-fix"
-                        disabled
-                        aria-disabled="true"
-                        title="Fix-sending will be enabled in P8"
+                        disabled={sendingFix}
+                        onClick={() => { void handleSendForFixing(finding.fingerprint); }}
                       >
-                        Send for fixing
+                        {sendingFix ? 'Sending…' : 'Send for fixing'}
                       </button>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
-                        Fix-sending will be wired in P8. Use "Copy fix instructions" to fix manually.
-                      </div>
+                      {fixError !== null && (
+                        <div style={{ fontSize: 11, color: 'var(--sev-critical)', marginTop: 6 }}>{fixError}</div>
+                      )}
                     </div>
                   )}
                 </div>
