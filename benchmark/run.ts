@@ -740,17 +740,17 @@ export async function runDetectors(
         ], { cwd: dir });  // cwd=dir prevents finding /app/.gitleaksignore
         let out = '';
         try { out = readFileSync(reportPath, 'utf8'); } catch { /* clean scan = no report file */ }
-        try { unlinkSync(reportPath); } catch { /* ignore */ }
+        try { rmSync(reportPath, { force: true }); } catch { /* ignore */ }
         return { stdout: out, exitCode: 0 };
       } catch (err) {
         const e = err as { code?: number };
         if (e.code === 1) {
           let out = '';
           try { out = readFileSync(reportPath, 'utf8'); } catch { /* ignore */ }
-          try { unlinkSync(reportPath); } catch { /* ignore */ }
+          try { rmSync(reportPath, { force: true }); } catch { /* ignore */ }
           return { stdout: out, exitCode: 1 };
         }
-        try { unlinkSync(reportPath); } catch { /* ignore */ }
+        try { rmSync(reportPath, { force: true }); } catch { /* ignore */ }
         throw err;
       }
     });
