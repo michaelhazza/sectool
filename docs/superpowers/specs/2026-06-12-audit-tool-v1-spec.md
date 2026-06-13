@@ -1,8 +1,8 @@
 # Spec — audit-tool v1: internal security audit tool (SAST + staging-only DAST)
 
-**Status:** accepted
+**Status:** accepted (amended 2026-06-12: operator-directed UI addendum, §5.2 dashboard + HTML export, P7; amended 2026-06-13: operator-directed remediation workflow §5.3 + P8 and plain-language-first UI vocabulary §5.2; screen shapes approved via the mockup loop — CLEAN after 3 rounds, locked in `prototypes/audit-tool-v1/`)
 **Spec date:** 2026-06-12
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-13
 **Author:** claude (spec-coordinator, autonomous session; operator: michaelhazza)
 **Build slug:** audit-tool-v1
 
@@ -10,10 +10,10 @@
 
 | Field | Value |
 |---|---|
-| Capability cluster | Static Scanning, Live Scanning, Correlation & Reporting, Target Registry & Safety, Benchmark & Quality |
+| Capability cluster | Static Scanning, Live Scanning, Correlation & Reporting, Report UI, Remediation Orchestration, Target Registry & Safety, Benchmark & Quality |
 | Capability owner | michaelhazza |
 | Lifecycle state on launch | Inception |
-| Risk surface | Controlled live HTTP traffic to Breakout-owned staging hosts (allowlist-gated, §4); read-only access to source repos; CI artifacts containing security findings. |
+| Risk surface | Controlled live HTTP traffic to Breakout-owned staging hosts (allowlist-gated, §4); read-only access to source repos; CI artifacts containing security findings; localhost-bound dashboard serving findings data (127.0.0.1 only, §5.2); GitHub `issues:write` to Breakout-owned target repos for fix requests (fine-grained token, never code-write, §5.3). |
 | Review cadence | quarterly (plus the post-v1 "what classes are we not scanning for" human review from the brief) |
 
 > Risk-surface note: the §7.1.1 vocabulary enumerates target-app surfaces that
@@ -27,7 +27,7 @@
 | Dimension | Sizing | Notes |
 |---|---|---|
 | Acquire | L | Commercial portfolio SAST+DAST (e.g. Snyk + Burp Enterprise) is expensive and still wouldn't know our RLS/scoped-helper conventions — the custom rule pack is the differentiator. |
-| Build | L | Five subsystems + benchmark corpus + safety contract; the corpus (one bad + one good fixture per rule/check) is the dominant cost. |
+| Build | L | Six subsystems (incl. dashboard UI, §5.2) + benchmark corpus + safety contract; the corpus (one bad + one good fixture per rule/check) is the dominant cost. |
 | Carry | M | Pinned scanner versions need periodic bumps; rules need upkeep as target-app conventions evolve; weekly CI runs to babysit. |
 | decommission | S | Self-contained repo + CI workflows; delete the repo and the GHCR image, revoke the read-only token. |
 
@@ -50,14 +50,34 @@
 5. **World-class table stakes** — stable fingerprints, SARIF, exploitability-
    aware severity, static↔live correlation, suppressions with justification +
    expiry, trend history, self-scan gate, per-rule docs.
+6. **World-class report UI** — `audit ui` serves a local-first dashboard
+   (charts, trends, per-run drill-down to finding detail with evidence and fix
+   guidance) over the same report files, plus a self-contained HTML report
+   export for sharing CI artifacts. Localhost-bound; plain-language-first for
+   a non-technical operator (§5.2). [Operator amendment 2026-06-12.]
+7. **Close the loop on fixes** — every finding carries a one-click path from
+   "found" to "verifiably fixed": the tool generates a remediation pack and
+   files it as a fix request in the target repo, repo-local Claude Code
+   implements it behind that repo's tests and PR review, and the next scan
+   verifies the fix by fingerprint (§5.3). The audit tool orchestrates fixes;
+   it never edits target-repo code itself. [Operator amendment 2026-06-13.]
 
 ## 2. Non-goals
 
 - Generic SAST/DAST product. Internal use against Breakout-owned assets only.
 - Scanning production — ever. No code path exists for it (§4).
-- Auto-remediation, PR generation, GitHub issue creation (schema reserves room
-  for issue-sync later — `Finding.externalRefs`).
-- SaaS dashboard. Report files are the product.
+- Direct code edits or PR generation by the audit tool against target repos.
+  The tool stays read-only on code; remediation is orchestrated via fix-request
+  issues executed by repo-local Claude Code (§5.3). [Amended 2026-06-13: the
+  original blanket "no auto-remediation, no issue creation" non-goal is
+  rescoped — fix-request issue creation + fix tracking are now in scope (v1
+  uses `Finding.externalRefs` as designed); code-writing by this tool remains
+  out of scope.]
+- Hosted / multi-user SaaS dashboard. The v1 UI is a local-first, read-only
+  dashboard (`audit ui`, §5.2) rendering the same file-based state; report
+  files remain the canonical artifacts. [Amended 2026-06-12 — the prior
+  blanket "no dashboard" non-goal was reversed by operator direction; the
+  non-goal now scopes to *hosted/multi-user* only.]
 - Replacing per-repo CI gates (boundary mapped in
   `tasks/builds/audit-tool-v1/intent.md § automation-v1 overlap map`).
 
@@ -72,8 +92,11 @@
   benchmark corpus IS the quality gate; this deviates deliberately from the
   framework's static-gates-primary default and is pinned in spec-context.
 - Stack decisions from the brief are final (Node 20+/TS/ESM/npm, ts-morph,
-  Semgrep YAML, Zod, Vitest, pinned binaries in Dockerfile).
-- Mobile capability: **N/A — pure backend/CLI, no UI surface.**
+  Semgrep YAML, Zod, Vitest, pinned binaries in Dockerfile). UI addendum
+  stack: React 18 + Vite + TypeScript SPA, Recharts for charts (§5.2).
+- Mobile capability: **responsive web UI, desktop-first dashboard; every
+  screen usable at 375px** per `docs/mobile-capability-principles.md`.
+  [Amended 2026-06-12 — was "N/A, no UI surface" before the UI addendum.]
 
 ## 4. Staging-only safety contract (NON-NEGOTIABLE)
 
@@ -88,10 +111,15 @@ structurally impossible, not merely forbidden:
    function is callable with a raw URL/string.
 2. **Allowlist semantics.** `config/allowed-staging-hosts.json` is a checked-in
    array of exact hostnames (no wildcards, no CIDR, no ports-only entries in
-   v1). A URL is allowed iff `new URL(u).hostname` exactly matches an enabled
-   entry. Anything else throws `AllowlistViolationError` **before any network
-   I/O** — a hard abort, not a warning. An empty allowlist (the shipped
-   default) means the live path can scan nothing.
+   v1). A URL is allowed iff ALL of: (a) `new URL(u).protocol === "https:"`
+   (plaintext `http:` and every other scheme are rejected — staging is
+   TLS-only); (b) `new URL(u).hostname` exactly matches an enabled entry; and
+   (c) the URL targets the default https port — `new URL(u).port` is empty or
+   `"443"` (a non-default port denotes a different service on the same host and
+   is rejected in v1; per-entry non-default ports are a deferred item, §13).
+   Anything else throws `AllowlistViolationError` **before any network I/O** —
+   a hard abort, not a warning. An empty allowlist (the shipped default) means
+   the live path can scan nothing.
 3. **No override.** There is no CLI flag, env var, or config field that skips
    or extends the gate at runtime. Changing the allowlist requires a commit
    (PR-reviewed; CODEOWNERS: michaelhazza).
@@ -135,34 +163,200 @@ structurally impossible, not merely forbidden:
     the benchmark path structurally cannot allowlist a non-loopback host.
     [Per operator review, non-blocking note — strengthens §4.9.]
 
-## 5. Architecture (4 layers)
+## 5. Architecture (6 layers)
 
 ```
-CLI (src/cli.ts: scan-source | scan-live | run | report)
+CLI (src/cli.ts: scan-source | scan-live | run | report | ui | fix)
  │
  ├── Layer 1 Scanner orchestration  src/static/   src/live/scanners/
  │     shell out to pinned binaries; parse native JSON output; normalize → Finding
  ├── Layer 2 Custom rule pack       src/static/rules/ (ts-morph)  rules/semgrep/*.yaml
  ├── Layer 3 Live scan engine       src/live/ (gate → preflight → probes/ZAP/Nuclei → normalize)
- └── Layer 4 Correlation + report   src/correlate/  src/report/
-       fingerprint · severity · static↔live correlation · baseline · trend · JSON/MD/SARIF
+ ├── Layer 4 Correlation + report   src/correlate/  src/report/
+ │     fingerprint · severity · static↔live correlation · baseline · trend · JSON/MD/SARIF/HTML
+ ├── Layer 5 Report dashboard UI    src/ui/ (localhost server)  ui/ (React SPA)
+ │     renderer over reports/ + history/trend.jsonl + config/ + reports/fixes.json (§5.2)
+ └── Layer 6 Remediation orchestration  src/fix/
+       remediation pack · fix-request issue (GitHub) · status tracking · re-scan verification (§5.3)
 ```
 
 Execution model: **inline/synchronous CLI process**. Scanner subprocesses run
 concurrently per target (bounded pool, default 2 targets × N scanners), each
 with a hard timeout (default 15 min/scanner, configurable). No queue, no DB —
 all state is files. Reports are written atomically (write tmp + rename).
+Exception: `audit ui` is a long-running localhost server process (§5.2); it
+reads scan state and config read-only and cannot initiate scans. Its one
+non-read action is the §5.3 "Send for fixing" fix-request issue (which also
+appends to `reports/fixes.json`); it writes no scan results, no config, and no
+target-repo code. The §4 safety contract is anchored on the no-live-engine-
+import + `issues:write`-only properties (§5.2), not on a blanket no-write rule.
 
 ### 5.1 CLI surface
 
 | Command | Behaviour |
 |---|---|
 | `audit scan-source [--repo <name>]` | Static scan of one or all registered repos → raw findings file per repo |
-| `audit scan-live --url <staging-url> [--dry-run]` | Preflight (always); then passive + (if target opted in) active scan |
+| `audit scan-live --url <staging-url> [--dry-run]` | Preflight (always); then passive + (if target opted in) active scan. **Target resolution:** the URL's host must pass the §4 allowlist gate AND match an `enabled: true` `stagingTargets[]` entry (§6.2) by host; that entry supplies `activeScan`/`auth`/`repo`/`rateLimitRps`. A URL whose host is allowlisted but has no enabled registry entry runs **passive-unauthenticated only** (no `activeScan`, no auth, default rate limit) and the report records a coverage gap; a URL that fails the allowlist gate is a hard `AllowlistViolationError` (§4.2). |
 | `audit run [--repo <name>] [--url <staging-url>]` | scan-source + scan-live + correlate + report |
-| `audit report [--format json\|md\|sarif]` | Re-emit report from the last run's findings (no scanning) |
+| `audit report [--format json\|md\|sarif\|html]` | Re-emit report from the last run's findings (no scanning); `html` is the self-contained single-file export (§5.2) |
+| `audit ui [--port <n>]` | Serve the local dashboard on `127.0.0.1` (default port 4173); no scan capability; sole outward action is the §5.3 fix request |
+| `audit fix <finding-id> [--severity <s>] [--dry-run]` | Generate remediation pack(s) and file fix-request issue(s) in the target repo (§5.3); `--dry-run` prints the pack without filing |
 
 CLI plumbing: `node:util` `parseArgs` (dependency-light per brief).
+
+### 5.2 Report dashboard UI (operator amendment 2026-06-12)
+
+The dashboard is a **renderer, not a controller**: it visualizes what the CLI
+produced and holds no state of its own.
+
+**Primary persona: non-technical operator (founder/CEO).** Plain English is
+the PRIMARY vocabulary on every surface; technical identifiers (rule IDs,
+enum values, fingerprints, scanner names) are secondary text or tooltips,
+never the headline. Every screen leads with "what does this mean and what
+should I do", not "what did the scanner emit". Severity reads as plain risk
+language ("Fix now" / "Fix soon" / "Plan it" / "Low risk" alongside the
+critical…low tokens). [Operator amendment 2026-06-13 — supersedes the earlier
+engineer-audience assumption.]
+
+- **Process + binding.** `audit ui` serves a pre-built React 18 + Vite +
+  TypeScript SPA (source in `ui/`, built assets shipped with the package) from
+  a dependency-light `node:http` server (`src/ui/server.ts`) bound to
+  `127.0.0.1` only — never `0.0.0.0`, no remote or multi-user mode in v1
+  (non-goal, §2). The server exposes read-only JSON endpoints over the same
+  file state the CLI writes: `reports/` (run reports), `history/trend.jsonl`,
+  and the `config/` trio.
+- **Read-only on scan state and config; ONE outward action.** The UI triggers
+  no scans and edits no config or code. Config changes and baseline approvals
+  remain PR-reviewed (§4.3, §6.4); the finding-detail screen offers a "copy
+  baseline entry JSON" affordance instead of in-app editing. The §4 safety
+  contract is structurally unaffected: no UI code path imports the live
+  engine. The sole outward *network* action is **"Send for fixing"** on a
+  finding, which invokes the same code path as `audit fix` (§5.3) — it files a
+  fix-request issue (GitHub `issues:write`); it cannot write code. The other
+  UI affordances ("copy baseline entry JSON", "copy fix instructions") are
+  local clipboard writes only — they reach no network and no live engine. The
+  §4 contract is therefore anchored on the no-live-engine-import +
+  `issues:write`-only (never `contents:write`) properties, not on action count.
+  [Amended 2026-06-13; was fully read-only.]
+- **Charts:** Recharts. **Visual language:** one consistent set of severity
+  color tokens (critical/high/medium/low) and run-status tokens
+  (success/partial/failed) across every screen and the HTML export; partial
+  runs are never visually conflated with success (§6.5 masquerade rule applies
+  to pixels, not just counts).
+- **HTML export.** `audit report --format html` (`src/report/html.ts`) emits a
+  self-contained single-file report — inline CSS/JS/SVG charts, zero network
+  dependencies — with the same visual language, so CI artifacts are shareable
+  without running the dashboard.
+- **Mobile:** responsive, desktop-first; all screens usable at 375px (§3).
+
+**Screens (6).** Final shapes are the **approved prototypes** in
+`prototypes/audit-tool-v1/` (mockup loop returned CLEAN after 3 rounds — see
+`tasks/builds/audit-tool-v1/mockup-log.md` and the round-1..3 review logs in
+the same directory). The build implements these shapes in React; the
+prototypes are the reference rendering and the plain-language source of truth:
+
+| Screen | Prototype file | Renders |
+|---|---|---|
+| Portfolio overview | `index.html` | Latest-run status banner (success/partial/failed with named failures per §14), severity totals, per-target health cards, new/fixed/persisting deltas, trend sparkline |
+| Run report | `run-report.html` | Findings table in §8.1 report order with filters (severity, vulnClass, target, surface, confidence, suppressed); severity/class/target distribution charts; run metadata |
+| Finding detail | `finding-detail.html` | Plain-English problem statement first; evidence snippet(s) (collapsed by default), correlated static+live evidence pair (§9), severity computation breakdown (base + each §8.1 modifier applied), fix guidance from the rule doc (§11), fingerprint/firstSeen, baseline-draft copy affordance, **"Send for fixing" action + fix status** (§5.3) |
+| Fixes | `fixes.html` | Remediation pipeline from `reports/fixes.json` (§5.3): every fix request with status (requested → in progress → awaiting review → merged, awaiting verification → verified fixed / reopened), links to the repo issue/PR, verified-fix count over time |
+| Trends | `trends.html` | Time series from `trend.jsonl` (new/fixed/persisting and severity mix over time, per target), run history list, explicit `unknown` rendering for incomplete scanner-family dims (§6.5) |
+| Targets & safety | `targets.html` | Read-only registry view (repos, staging targets, activeScan flags), allowlist contents incl. empty-state, baseline entries with expiry countdowns and expired re-alert state (§6.4) |
+
+`prototypes/audit-tool-v1/mobile-preview.html` is a desktop-only design utility
+(phone-frame gallery for reviewing the responsive shapes side by side), not a
+product screen and not part of the build.
+
+**Plain-language vocabulary (normative).** The build matches these operator-facing
+labels in all default-visible copy; the prototypes are the reference rendering:
+
+| Internal term | Operator-facing label |
+|---|---|
+| static / SAST surface | "In the code" |
+| live / DAST surface | "On the live test site" |
+| severity critical / high / medium / low | "Fix now" / "Fix soon" / "Plan it" / "Low risk" (technical word kept as a sub-label) |
+| baseline entry / suppressed finding | "Acknowledged risk" / "accepted risk" |
+| allowlist | "Approved test sites" |
+| partial run | "Some checks did not finish" (plain headline; failed scanner names in the detail line) |
+| rule IDs, fingerprints, scanner names (Semgrep / ZAP / Nuclei / osv-scanner / gitleaks) | secondary monospace sub-line or collapsible "Technical details" — never a headline |
+
+Screen titles use operator language: "Portfolio Overview", "What Needs Fixing"
+(Run report), "Fix Progress" (Fixes), "Progress Over Time" (Trends), "Sites and
+Safety" (Targets & safety). Finding titles lead with the business consequence,
+not the rule name. Raw code/evidence blocks default collapsed.
+
+### 5.3 Remediation workflow (operator amendment 2026-06-13)
+
+**Decision: detect here, fix there.** The audit tool orchestrates remediation
+but never edits target-repo code. Actual fixes are implemented by **Claude
+Code running in the target repo** (every Breakout repo carries the claude
+framework), behind that repo's own tests, CI gates, and human PR review.
+Rationale, pinned: (1) correct fixes need repo-local context — conventions,
+scoped helpers, test suites — that a portfolio scanner doesn't have; (2) the
+tool's read-only-on-code posture is a safety property worth keeping (a scanner
+with push access to every repo is a single point of compromise); (3) the human
+merge gate stays where the code review culture already lives, in the target
+repo.
+
+**Mechanism (the fix loop):**
+
+1. **Remediation pack.** For any finding, `src/fix/pack.ts` renders a
+   machine-readable + Markdown pack: plain-English problem statement, affected
+   file/symbol/route, recommended fix pattern with code example (sourced from
+   the rule doc, §11), severity + why, and **acceptance criteria** — the rule
+   ID + fingerprint that must no longer fire on re-scan.
+2. **Fix request.** `audit fix <finding-id>` (or the dashboard's "Send for
+   fixing" button — same code path) files the pack as a GitHub issue in the
+   target repo, labelled `audit-fix`, carrying the fingerprint as a stable
+   marker. The issue URL is persisted in `reports/fixes.json`
+   (fingerprint-keyed) — the authoritative store. `Finding.externalRefs` is
+   NOT persisted on the finding; it is repopulated on every report build by
+   joining the freshly-derived finding's fingerprint to `fixes.json`, so links
+   survive the next `audit run` that re-derives findings from scratch (same
+   source-of-truth precedence as §6.5: scan re-derives, persisted store
+   rehydrates). Idempotent: filing is keyed on fingerprint — an open
+   `audit-fix` issue with the same fingerprint marker is reused, never
+   duplicated (re-filing comments instead).
+3. **Repo-local execution.** The target repo's Claude Code GitHub Action picks
+   up `audit-fix` issues, implements the fix on a branch, and opens a PR
+   referencing the issue. The repo's own gates + human review own merge.
+   (Target-repo onboarding = installing the standard action + label; one-time,
+   documented in `docs/fix-workflow.md`.)
+4. **Verification.** The next `audit run` re-scans: if the fingerprint no
+   longer fires, the fix request transitions to `verified-fixed` (and the
+   trend `fixed` accounting picks it up per §6.5's completed-family rule); if
+   it still fires after the PR merged, the request transitions to `reopened`
+   and the issue gets a comment. A fix is only ever "done" when the scanner
+   that found it can no longer find it.
+
+**Fix-request state machine** (closed set, §14 rules apply):
+`requested → in-progress → awaiting-review → merged-awaiting-verification →
+verified-fixed | reopened` (6 states). Derivation from GitHub issue/PR + scan
+state — derived using ONLY the token's read scopes (`issues:read`,
+`pull_requests:read`), no local progress flags: `requested` = `audit-fix` issue
+filed (open), no PR references it and it is unassigned; `in-progress` = an
+observable signal that work has started but no non-draft PR yet, defined as
+ANY of: the issue is assigned, OR a **draft** PR references the issue (GitHub
+`Closes #/references` link), OR a branch named `audit-fix/<fingerprint>` exists
+on the repo — whichever the read scopes surface first; `awaiting-review` = a
+non-draft PR referencing the issue is open and awaiting human merge;
+`merged-awaiting-verification` = that PR is merged, next scan pending; `verified-fixed` = the next `audit run` no longer
+fires the fingerprint; `reopened` = the fingerprint still fires after the PR
+merged. `reports/fixes.json` (Zod schema `src/schemas/fix.ts`) is the local
+record; its status enum is exactly these six tokens. The dashboard Fixes
+screen (§5.2) and the `finding-detail.html` fix pipeline each render one pill
+per state (6 states = 6 pills).
+
+**Token scope.** `AUDIT_GITHUB_FIX_TOKEN` is a fine-grained PAT with
+`issues:write` (+ `issues:read`, `pull_requests:read` for status) on
+Breakout-owned repos only. The tool never holds `contents:write`. Missing
+token: `audit fix` fails with a named error; the dashboard's "Send for
+fixing" explains in plain English that fix-sending is not configured.
+
+**Manual fallback.** Every remediation pack is also copyable from the
+dashboard as a ready-to-paste Claude Code prompt, for repos without the
+action or for ad-hoc local fixing.
 
 ## 6. Contracts
 
@@ -193,9 +387,10 @@ All schemas are Zod (`src/schemas/`), each exporting a generated JSON Schema
   "reachability": "unauthenticated",       // "unauthenticated" | "authenticated" | "admin" | "unknown"
   "correlatedWith": [],                    // finding ids merged by §9
   "docs": "docs/rules/BS-SQL-001.md",
-  "externalRefs": [],                      // reserved for issue-sync (post-v1)
+  "externalRefs": [],                      // fix-request issue URLs (§5.3); derived on report build via fingerprint join to reports/fixes.json, not persisted on the finding
   "firstSeen": "2026-06-12T00:00:00Z",
-  "suppressed": false                      // true only when matched by a live (unexpired) baseline entry
+  "suppressed": false,                     // true only when matched by a live (unexpired) baseline entry
+  "note": null                             // optional; set to "baseline expired <date>" on expired-baseline re-alert (§6.4), else null
 }
 ```
 
@@ -221,6 +416,12 @@ fields are surface-specific (static vs live shapes are a discriminated union on
     "repo": "automation-v1",               // link for static↔live correlation (§9)
     "activeScan": false,                   // default false — passive + non-intrusive only
     "auth": { "kind": "form", "loginPath": "/api/auth/login",
+              "method": "POST",            // login request verb (default POST)
+              "userField": "email",        // request field name for the username/email
+              "passField": "password",     // request field name for the password
+              "bodyType": "json",          // "json" | "form-urlencoded" — login request encoding
+              "sessionCarrier": "cookie",  // "cookie" | "bearer" — how the authenticated session is carried on subsequent requests
+              "successCheck": { "statusIn": [200, 204], "jsonHasKey": "token" }, // login is "succeeded" iff status ∈ statusIn AND (jsonHasKey present in body OR a Set-Cookie was issued)
               "testUsers": [               // env NAMES, never values
                 { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_A", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_A" },
                 { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_B", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_B" }
@@ -233,6 +434,19 @@ fields are surface-specific (static vs live shapes are a discriminated union on
 
 Producer: operator (PR-reviewed). Consumer: CLI + both scan engines.
 
+**Repo acquisition contract.** When `localPath` is set the scanner reads that
+working tree as-is (operator-managed checkout). When `localPath` is null the
+orchestrator (`src/static/orchestrator.ts`) does a **shallow clone (`--depth 1`,
+single branch)** of the repo's **default branch HEAD** into a fresh temp dir
+per run, using the read-only `AUDIT_GITHUB_READ_TOKEN` (a fine-grained
+`contents:read` PAT, distinct from the §5.3 fix token). The scanned commit SHA
+is recorded in every finding's `target.commit` (§6.1) and in
+`RunReport.targets[].commit` (§6.9), so a scheduled run is reproducible and
+fingerprints (§6.6) are stable for a given commit. v1 scope: single-repo,
+default-branch only — **submodules are not initialised and monorepo
+sub-package selection is not supported** (the whole default-branch tree is
+scanned); both are deferred (§13).
+
 **Allowlist cross-check (enabled targets only).** An `enabled: true` staging
 target's URL host MUST be on the allowlist — validated at config load;
 violation is a config error (not a scan-time skip). Disabled targets MAY exist
@@ -242,8 +456,17 @@ already be allowlisted. [Per operator review HIGH-1.]
 
 **Auth schema.** `auth.kind ∈ { "form" }` in v1 — closed set, same closure
 rule as `vulnClass` (§6.7): adding a kind requires a spec amendment. [Per
-claude-spec-review CR-003.] `auth.testUsers` is a closed array of env-var-name
-pairs: when `auth` is present the schema requires ≥ 1 entry (authenticated
+claude-spec-review CR-003.] A `form` auth block fully specifies the login
+exchange so ZAP/Nuclei/session/IDOR crawls (§7.3) are reproducible: `method` +
+`loginPath` + `bodyType` define the request; `userField`/`passField` name the
+credential fields; `sessionCarrier` says whether the post-login session rides
+in a cookie or a bearer token; and `successCheck` defines login success
+(`status ∈ statusIn` AND (`jsonHasKey` present OR a `Set-Cookie` issued)) — a
+login that does not satisfy `successCheck` counts as a login failure for the
+§6.2 failure-pinning rule below. CSRF tokens (if the login form issues one) are
+captured from the pre-login `GET loginPath` response and replayed on the login
+POST; this is the only CSRF handling in v1 (deeper anti-CSRF flows are out of
+scope). `auth.testUsers` is a closed array of env-var-name pairs: when `auth` is present the schema requires ≥ 1 entry (authenticated
 passive crawl); when `activeScan: true` it requires **exactly 2** entries —
 the IDOR/access-control cross-access checks (§7.3) need two distinct
 identities. Failure behaviour is pinned: if `activeScan: true` and required
@@ -319,7 +542,13 @@ id     = "f-" + first 16 hex chars
 
 - `normalizedPath`: repo-relative, posix separators.
 - `symbol`: route signature (`GET /api/users/:id`) or enclosing
-  function/class name — survives line drift and re-ordering.
+  function/class name — survives line drift and re-ordering. For schema-level
+  rules that have neither a route nor an enclosing function (e.g. BS-RLS-001 /
+  BS-SQL-002 firing on a Drizzle table declaration), `symbol` is the normalized
+  table name from the `pgTable('<name>', …)` literal (e.g. `subscriptions`).
+  This single value feeds both the fingerprint and `locationKey` baseline
+  scoping (§6.4), so RLS-class findings fingerprint stably and are suppressible
+  deterministically.
 - `normalizedSnippet`: matched code with whitespace collapsed — survives
   reformatting. Line numbers and request ordering are EXCLUDED by design.
 - `normalizedUrlPath`: path with numeric/uuid segments → `{id}` so volatile
@@ -334,6 +563,59 @@ misconfiguration · xss · csrf · open-redirect · info-disclosure · tls ·
 session-management`
 
 Adding a value requires a spec amendment (closed-set rule, checklist §10.7).
+
+### 6.8 `scannerFamily` closed enum (partial-run accounting axis)
+
+The unit of completion for partial-run accounting (§6.5, §14) is the **scanner
+family** — equal to the `source` axis of §6.1:
+
+`ast · semgrep · gitleaks · osv · zap · nuclei · probe`
+
+Mapping: each `Finding.source` value IS its family; each `ruleId`/`checkId`
+belongs to exactly one family (BS-* AST rules → `ast`; custom + curated Semgrep
+YAML → `semgrep`; `LIVE-*` direct probes → `probe`; `ZAP-*` → `zap`; `NUCLEI-*`
+→ `nuclei`). Family completion is tracked per (target × family): a family is
+`complete` for a target iff every scanner invocation in that family for that
+target exited successfully within its timeout. `fixed` is only ever computed
+for `complete` families (§6.5). Closed set; adding a family requires a spec
+amendment. Producer: `meta.scannerStatus` (§6.9). Consumer: trend (§6.5),
+report status (§14).
+
+### 6.9 `RunReport` (`reports/<runId>/report.json` — the canonical run artifact)
+
+The artifact every output (UI §5.2, trend §6.5, MD/SARIF/HTML §5.1, fix
+verification §5.3) reads. It is the source of truth for findings (§6.5).
+
+```jsonc
+{
+  "runId": "2026-06-12T03-00-00Z-7f3a",       // timestamp + 4-hex suffix
+  "date": "2026-06-12",
+  "findings": [ /* Finding[] §6.1, already correlated/severity-computed/sorted §8.1 */ ],
+  "targets": [ { "kind": "repo", "name": "automation-v1", "commit": "abc123…",
+                 "coverageGaps": ["unauthenticated-only: no creds for activeScan"] } ],
+  "meta": {
+    "status": "partial",                       // "success" | "partial" | "failed" (§14)
+    "failures": [ { "target": "automation-v1-staging", "family": "zap",
+                    "reason": "timeout after 900s" } ],  // [] when status=success
+    "scannerStatus": [ { "target": "automation-v1", "family": "ast",
+                         "state": "complete" } ],          // per (target × family §6.8)
+    "startedAt": "2026-06-12T03:00:00Z", "finishedAt": "2026-06-12T03:08:11Z",
+    "toolVersion": "audit-tool/1.0.0"
+  }
+}
+```
+
+Nullability/defaults: `meta.failures` is `[]` on a `success` run; every
+(target × family) in scope appears in `meta.scannerStatus` with
+`state ∈ {complete, failed, skipped}`; `coverageGaps` is `[]` when none. The
+run-level fields referenced elsewhere in the spec live on this report, NOT on
+`Finding`: scanner-family status → `meta.scannerStatus`; failure metadata →
+`meta.failures`; per-target coverage gaps → `targets[].coverageGaps`. The two
+that DO live on a finding — `note` (expired-baseline re-alert, §6.4) and
+multiple `occurrences` (fingerprint collision merge, §6.6) — are optional
+fields on `Finding` (`note?: string`, `evidence.raw.occurrences?: Location[]`).
+Producer: `src/report/json.ts`. Consumer: UI, trend, SARIF/MD/HTML, fix
+verification. Zod schema: `src/schemas/report.ts` (added to file inventory §11).
 
 ## 7. Rule and check inventory (v1)
 
@@ -406,6 +688,21 @@ Report ordering: severity desc → confidence (confirmed > probable > tentative)
 → vulnClass criticality (tenant-isolation first) → target name. CVSS from
 upstream scanners is carried in `evidence.cvss` as metadata only.
 
+**Reachability inputs (how the modifier operands are set).** `reachability`
+(§6.1) is set at normalization, not inferred dynamically: a static rule fires
+on a route already known to be in the per-repo `publicRoutes` allowlist (§6.2)
+→ `unauthenticated`; a route behind auth/permission middleware (the same chain
+BS-AUTH-001 walks) → `authenticated`, and behind an admin/permission guard →
+`admin`; a finding with no route context (schema-level rules, secrets, CVEs)
+or where the chain can't be resolved → **`unknown`**. `unknown` is the default
+and is **neutral** — it triggers neither the bump (modifier 2) nor the
+demotion (modifier 3); only the explicit `unauthenticated`/`admin` values move
+severity. **Confidence inputs:** live findings from an active probe that
+demonstrated the issue are `confirmed`; passive-only observations are
+`probable`; static-only findings are `probable` unless live-correlated
+(modifier 1 promotes them to `confirmed`). A live finding is therefore NOT
+unconditionally `confirmed` — passive evidence is `probable`.
+
 ## 9. Static↔live correlation
 
 Two findings correlate when ALL of:
@@ -466,7 +763,7 @@ benchmark/
 | Path | Purpose |
 |---|---|
 | `src/cli.ts` | entry; parseArgs; subcommands §5.1 |
-| `src/schemas/finding.ts`, `targets.ts`, `allowlist.ts`, `baseline.ts`, `trend.ts` | Zod contracts §6 |
+| `src/schemas/finding.ts`, `targets.ts`, `allowlist.ts`, `baseline.ts`, `trend.ts`, `report.ts` | Zod contracts §6 (`report.ts` = `RunReport` §6.9) |
 | `src/schemas/generate.ts` | `npm run schemas` → `schemas/*.schema.json` |
 | `src/config/load.ts` | load + validate config trio; cross-checks §6.2 constraint |
 | `src/static/orchestrator.ts` | repo acquisition (localPath/clone), scanner fan-out |
@@ -477,7 +774,12 @@ benchmark/
 | `src/live/preflight.ts` | dry-run + mandatory preflight |
 | `src/live/scanners/{zap,nuclei}.ts`, `src/live/probes/{tls,headers,cookies,exposure}.ts` | live engine |
 | `src/correlate/{fingerprint,severity,correlate}.ts` | layer 4 core |
-| `src/report/{json,markdown,sarif,trend,baseline}.ts` | outputs |
+| `src/report/{json,markdown,sarif,html,trend,baseline}.ts` | outputs (`html.ts` = self-contained export, §5.2) |
+| `src/ui/server.ts` | `audit ui` localhost server: static assets + read-only JSON endpoints (P7); the single §5.3 fix-request action endpoint is wired in P8 (depends on `src/fix/*`) (§5.2) |
+| `ui/**` | React 18 + Vite SPA — 6 screens per §5.2, plain-language-first |
+| `src/fix/{pack,github,status}.ts` | remediation packs, fix-request issue filing (idempotent by fingerprint), status derivation (§5.3) |
+| `src/schemas/fix.ts` | Zod schema for `reports/fixes.json` (§5.3 state machine) |
+| `docs/fix-workflow.md` | target-repo onboarding for the Claude Code fix action (§5.3) |
 | `config/{targets,allowed-staging-hosts,baseline}.json` | checked-in registries (shipped: 1 repo enabled, 0 staging enabled, empty allowlist, empty baseline) |
 | `history/trend.jsonl` | committed trend lines §6.5 |
 | `benchmark/**` | §10 |
@@ -501,8 +803,17 @@ RLS appears only as the SUBJECT of rules.
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
 | P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend | P2–P4 |
 | P6 | benchmark completion (live-fixture integration, guardrail tests §10) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
+| P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
+| P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
 
 No backward references: each phase consumes only earlier phases' outputs.
+(P7 was added by the 2026-06-12 UI addendum and P8 by the 2026-06-13
+remediation addendum; both depend only on earlier phases' outputs and neither
+gates the P6 exit loop — the v1 exit loop may run after P6 with P7/P8 in
+flight. v1 does not SHIP without P7 AND P8: remediation is a v1 goal (§1.7), so
+the ship criteria include P8's gates — `audit fix` idempotency, the fix-request
+state-machine derivation (§5.3), and the §10 guardrail tests — and `docs/fix-
+workflow.md`, on the same footing as P7's UI screens.)
 The v1 exit loop (post-G2, per launch prompt) runs after P6: benchmark + gates
 + self-scan, max 10 iterations, stuck-rule = stop after 2 identical failures,
 exit conditions immutable.
@@ -510,11 +821,16 @@ exit conditions immutable.
 ## 13. Deferred items
 
 - **DNS-resolution / IP-pinning hardening on the allowlist gate.** v1 gates on exact hostname (§4.8). Reason: targets are our own PR-reviewed staging hosts; rebinding defense adds complexity v1 doesn't need.
-- **GitHub issue-sync.** Schema reserves `externalRefs`. Reason: brief defers to post-v1.
+- ~~GitHub issue-sync~~ **Promoted into v1 scope** by the 2026-06-13 remediation amendment (§5.3) — `externalRefs` now carries fix-request issue URLs.
+- **Direct code-patch PRs from the audit tool** (even for mechanical fix classes). Reason: §5.3's detect-here-fix-there decision; revisit only if the issue-based loop proves too slow in practice.
+- **Submodule init + monorepo sub-package selection for static scans.** v1 shallow-clones the default-branch tree only (§6.2). Reason: target repos are single-package at v1; added when a monorepo or submodule-bearing target is registered.
 - **Wildcard/CIDR allowlist entries.** Exact hostnames only in v1. Reason: keeps the gate trivially auditable.
+- **Per-entry non-default ports / non-https schemes in the allowlist gate.** v1 requires https + default port 443 (§4.2). Reason: staging is TLS-only and a non-default port denotes a different service; per-entry port pinning is added only if a real staging target needs it.
 - **Stored-XSS deep flows in live fixture.** v1 fixture seeds reflected XSS + a simple stored case; complex multi-step stored flows deferred. Reason: corpus cost; recall target applies to seeded cases.
 - **Scan-record cleanup automation for staging.** v1: owner-attested cleanup per `activeScan` opt-in (grill Q8). Reason: cleanup is target-app-specific.
 - **Per-rule semgrep→ts-morph migrations** where Semgrep proves too coarse. Reason: post-v1 experiment-runner loops own precision tuning.
+- **UI write actions (config/baseline editing) + scan launching from the dashboard.** The v1 UI's only non-read action is the §5.3 "Send for fixing" fix-request issue; it does not edit config/baseline and cannot launch scans (§5.2). Reason: baseline approval stays PR-reviewed (§6.4); scan invocation stays CLI/CI; keeps the §4 safety contract trivially auditable (no UI→live-engine path).
+- **Hosted / multi-user dashboard with authn.** Reason: localhost single-operator covers v1; hosting findings data is a new risk surface needing its own spec.
 
 ## 14. Execution-safety contracts
 
@@ -522,6 +838,18 @@ exit conditions immutable.
   output file; re-running a scan overwrites deterministically (sorted
   findings, stable fingerprints). Trend append is key-based on `runId`
   (re-running the same runId replaces the line, no duplicates).
+- **`reports/fixes.json` writes:** the same atomic tmp+rename discipline as
+  report outputs, plus the `reports/.lock` (above) serialises ALL writers of
+  `fixes.json` — `audit fix`, the dashboard "Send for fixing" endpoint, and the
+  rehydrate-on-report-build step (§5.3). Each write is read-modify-write under
+  the lock: load → upsert the fingerprint-keyed entry → atomic rename. Keyed on
+  fingerprint, so two writers targeting the same finding converge (last-writer
+  wins on the status field, which is itself derived from GitHub state and so
+  idempotent). `audit run`'s rehydrate step only READS `fixes.json` to populate
+  `externalRefs` (§5.3) and never races a status write because it too takes the
+  lock. Conflict/precedence: `fixes.json` is authoritative for issue URLs;
+  GitHub-derived status is recomputed on read, so a stale local status is
+  self-healing on the next derivation.
 - **Retry classification:** scanner subprocesses are `safe` to retry (read-only
   against repos; live scans re-send traffic but only to allowlisted staging —
   acceptable by contract). Git clone is `safe` (fresh temp dir per attempt).
@@ -542,16 +870,23 @@ exit conditions immutable.
   Forbidden: any transition into `passive`/`active` not from
   `gated(allowed)` — unrepresentable via the `AllowedTarget` brand (§4.1).
   Status set is closed; additions require spec amendment.
-- No DB, no HTTP writes to external systems (checklist §10.6/§10.8 N/A — no
-  unique constraints, no DB-then-HTTP flows).
+- **Fix-request writes (§5.3):** the ONLY HTTP writes to an external system
+  are GitHub issue create/comment calls, idempotent by fingerprint marker
+  (search-before-create; re-running `audit fix` reuses the open issue). Retry
+  classification: `idempotent`. No other HTTP writes exist; no DB (checklist
+  §10.6 N/A — no unique constraints).
 
 ## 15. Self-consistency + count reconciliation
 
 - 11 custom rules (§7.1) = 7 ts-morph + 4 semgrep = file inventory rows (§11). ✓
 - 3 wrapped static scanners (§7.2) = 3 wrapper files (§11). ✓
-- 4 CLI commands (§5.1) = brief's operating model. ✓
+- 6 CLI commands (§5.1) = brief's 4 + `ui` (2026-06-12 addendum) + `fix` (2026-06-13 addendum). ✓
 - 3 checked-in config files (§6.2–6.4) = inventory row. ✓
-- 6 build phases (§12); 2 CI workflows (§11). ✓
+- 6 Zod contract schemas (§6) = `finding`, `targets`, `allowlist`, `baseline`, `trend`, `report` (`report.ts` = `RunReport` §6.9) = inventory row (§11); `fix.ts` (§5.3) is the 7th schema file, listed separately. ✓
+- 7 scanner families (§6.8) = the 7 `Finding.source` values (§6.1: ast/semgrep/gitleaks/osv/zap/nuclei/probe). ✓
+- 8 build phases (§12); 2 CI workflows (§11). ✓
+- 6 UI screens (§5.2) = approved prototypes (`prototypes/audit-tool-v1/`, mockup loop CLEAN) = mockup scope (`tasks/builds/audit-tool-v1/mockup-log.md`); 4 report formats (json/md/sarif/html). ✓
+- Fix-request state machine (§5.3) closed set = 6 tokens (`requested`, `in-progress`, `awaiting-review`, `merged-awaiting-verification`, `verified-fixed`, `reopened`) = Fixes screen statuses (§5.2) = `fixes.html` / `finding-detail.html` rendered pills = `src/schemas/fix.ts` enum. ✓
 - Goals ↔ implementation: every §1 goal maps to §5–§10 sections; safety
   contract (§4) enforced by named mechanisms (brand type, single chokepoint,
   empty-allowlist default, abort test). Every "must" has a mechanism.
@@ -565,5 +900,6 @@ exit conditions immutable.
 ---
 
 *Authoring rubric: `docs/spec-authoring-checklist.md` (sections 0–13 applied;
-§0 N/A — greenfield; §4 RLS N/A — no DB; §13 mobile N/A — no UI). Framing per
-`docs/spec-context.md` (runtime_primary, e2e benchmark as primary gate).*
+§0 N/A — greenfield; §4 RLS N/A — no DB; §13 mobile applies as of the
+2026-06-12 UI addendum — responsive desktop-first dashboard, §3/§5.2). Framing
+per `docs/spec-context.md` (runtime_primary, e2e benchmark as primary gate).*
