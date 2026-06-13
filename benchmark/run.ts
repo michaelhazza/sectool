@@ -565,12 +565,10 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
       const result = await execFileAsync('semgrep', [
         '--json', '--metrics=off', '--config', yamlPath, dir,
       ], { cwd: dir });
-      process.stderr.write(`[semgrep-exec] code=0 results=${String(result.stdout).slice(0,120)}\n`);
       return { stdout: result.stdout, stderr: result.stderr };
     } catch (err) {
       const e = err as { code?: number; stdout?: string; stderr?: string };
       const out = e.stdout ?? '';
-      process.stderr.write(`[semgrep-exec] code=${String(e.code)} stdout=${out.slice(0, 120)}\n`);
       // Use JSON output regardless of exit code (semgrep exit codes vary by version)
       if (out.trimStart().startsWith('{')) {
         return { stdout: out, stderr: e.stderr ?? '' };
@@ -613,9 +611,6 @@ export async function runDetectors(
     if (existsSync(vulnDir)) {
       try {
         const findings = runFn(vulnDir, ruleId);
-        if (findings.length > 0) {
-          process.stderr.write(`[benchmark] ${ruleId} vuln: ${findings.length} findings\n`);
-        }
         for (const f of findings) {
           scanResults.push({ ruleId: f.ruleId });
         }
@@ -627,9 +622,6 @@ export async function runDetectors(
     if (existsSync(cleanDir)) {
       try {
         const findings = runFn(cleanDir, ruleId);
-        if (findings.length > 0) {
-          process.stderr.write(`[benchmark] ${ruleId} CLEAN FP: ${findings.length} findings\n`);
-        }
         for (const f of findings) {
           cleanResults.push({ ruleId: f.ruleId });
         }
@@ -652,7 +644,6 @@ export async function runDetectors(
     if (existsSync(vulnDir)) {
       try {
         const findings = await runSemgrep(target, vulnDir, ruleExec);
-        process.stderr.write(`[benchmark] semgrep ${ruleId} vuln: ${findings.length} findings\n`);
         for (const f of findings) {
           // Normalize sub-rule and namespace-prefixed ids:
           // 'BS-CORS-001-wildcard-header' → 'BS-CORS-001' (startsWith)
@@ -661,8 +652,8 @@ export async function runDetectors(
           const normalizedId = lastSegment.startsWith(ruleId) ? ruleId : f.ruleId;
           scanResults.push({ ruleId: normalizedId });
         }
-      } catch (err) {
-        process.stderr.write(`[benchmark] ${ruleId} semgrep error: ${String(err)}\n`);
+      } catch {
+        // Scanner error on a corpus dir counts as 0 findings for that rule.
       }
     }
 
@@ -698,12 +689,10 @@ export async function runDetectors(
       try {
         // cwd: dir — same .semgrepignore bypass as the YAML-rule exec above
         const r = await execFileAsync('semgrep', ['--json', '--metrics=off', '--config', localRulesDir, dir], { cwd: dir });
-        process.stderr.write(`[semgrep-family] code=0 stdout=${r.stdout.slice(0,120)}\n`);
         return { stdout: r.stdout, stderr: r.stderr };
       } catch (err) {
         const e = err as { code?: number; stdout?: string; stderr?: string };
         const out = e.stdout ?? '';
-        process.stderr.write(`[semgrep-family] code=${String(e.code)} stdout=${out.slice(0,120)}\n`);
         if (out.trimStart().startsWith('{')) {
           return { stdout: out, stderr: e.stderr ?? '' };
         }
@@ -773,10 +762,9 @@ export async function runDetectors(
     if (existsSync(vulnDir)) {
       try {
         const findings = await runGitleaks(corpusTarget(familyId, vulnDir), vulnDir, gitleaksExec);
-        process.stderr.write(`[benchmark] gitleaks vuln: ${findings.length} findings\n`);
         scanResults.push(...findings.map(() => ({ ruleId: familyId })));
-      } catch (err) {
-        process.stderr.write(`[benchmark] gitleaks error: ${String(err)}\n`);
+      } catch {
+        // Binary absent.
       }
     }
 
@@ -828,10 +816,9 @@ export async function runDetectors(
         // any packages from the container's working directory.
         const target = corpusTarget(familyId, tmpDir);
         const findings = await runOsv(target, tmpDir, injections.execOsv);
-        process.stderr.write(`[benchmark] osv ${resultsBucket === scanResults ? 'vuln' : 'clean'}: ${findings.length} findings\n`);
         resultsBucket.push(...findings.map(() => ({ ruleId: familyId })));
-      } catch (err) {
-        process.stderr.write(`[benchmark] osv error: ${String(err)}\n`);
+      } catch {
+        // Scanner error counts as 0 findings.
       } finally {
         if (tmpDir !== undefined) {
           try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -848,20 +835,6 @@ export async function runDetectors(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // Diagnostic: verify scanner binaries are present and functional
-  for (const bin of ['semgrep', 'gitleaks', 'osv-scanner']) {
-    try {
-      const r = await execFileAsync(bin, ['--version']);
-      const ver = (r.stdout + r.stderr).split('\n')[0]?.slice(0, 60) ?? '';
-      process.stderr.write(`[benchmark] ${bin}: OK (${ver})\n`);
-    } catch (err) {
-      const e = err as { code?: string | number; stderr?: string; message?: string };
-      const detail = `code=${String(e.code)} stderr=${String(e.stderr ?? '').slice(0, 80)}`;
-      process.stderr.write(`[benchmark] ${bin}: FAIL ${detail}\n`);
-    }
-  }
-  // Log environment for debugging
-  process.stderr.write(`[benchmark] HOME=${process.env['HOME'] ?? 'unset'} PATH contains /usr/local/bin=${process.env['PATH']?.includes('/usr/local/bin') ?? false}\n`);
   const { scanResults, cleanResults } = await runDetectors();
   const result = runBenchmark(scanResults, cleanResults);
 
