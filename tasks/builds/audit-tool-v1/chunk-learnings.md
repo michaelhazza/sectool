@@ -31,6 +31,21 @@
 - `validateConfigOrExit()` runs AFTER arg parsing in every subcommand — this means `--help` always exits before config validation, which is intentional. P5-6 must preserve this ordering.
 - The `main()` export is used by tests; the `process.argv.slice(2)` call at module level is guarded by `NODE_ENV !== 'test'`. Any refactoring of the module-level guard must keep this.
 
+## P2-3 — Wrapped static scanners + normalizers (2026-06-13)
+
+**What worked:**
+- Injectable `exec` parameter pattern (each scanner takes an optional `ExecXxx` function): the `ExecSemgrep / ExecGitleaks / ExecOsv` types return `Promise<T>` (not declared `async`), so test stubs can be plain arrow functions returning `Promise.resolve(...)` — this avoids the `@typescript-eslint/require-await` error that fires when an `async` function has no `await`.
+- For gitleaks: the `Secret` field is the raw credential; passing it through `redactString()` at normalization time ensures it never appears on any `Finding` field. The `Match` field often contains the secret value too, so it must also be individually redacted before landing in `evidence.raw`.
+- For semgrep vulnClass mapping: checking `result.extra.metadata.category` first, then falling back to token-matching on the rule id, gives reasonable coverage without needing a full lookup table per upstream check id.
+- For osv: the `groups[].max_severity` field (populated by osv-scanner) is the most reliable severity source; fallback to the first CVSS numeric score from `severity[]` handles cases where the group is absent.
+- `normalizeSemgrepResult` uses the `check_id` as both `ruleId` and `symbol` — semgrep rules don't have a meaningful route/function context at this normalization layer; P3-3 custom YAML rules will refine this when they arrive.
+
+**Watch-out for future chunks:**
+- The `ExecSemgrep` type takes `(dir, ruleArgs)` — the default implementation passes `--config p/owasp-top-ten` and `--config rules/semgrep/`. P3-3 custom YAML rules live in `rules/semgrep/` and will be picked up automatically by the default exec; no changes to `semgrep.ts` are needed.
+- Gitleaks exits 1 when it finds leaks (normal) and 0 when clean — the `defaultExecGitleaks` implementation wraps `execFile` in a try/catch to distinguish exit 1 (leaks found, not an error) from exit 2+ (tool error, rethrow). P6 benchmark/Docker tests should verify this exit-code handling against a real binary.
+- `FingerprintInput` for gitleaks uses `Description` (not `Secret`) as the snippet preimage so the fingerprint is stable after redaction. The `Secret` value would fork fingerprints if it changed (e.g. key rotation), whereas the `Description` (rule description) is stable.
+- The `ExecOsv` injectable type for `runOsv` does not expose an exit code — osv-scanner exits 1 when vulnerabilities are found (same pattern as gitleaks). The real `defaultExecOsv` does not catch non-zero exits; if the real binary exits 1 on findings, `execFileAsync` will throw and bubble up to the orchestrator as a family failure. This needs to be fixed before P6 real-binary runs. Consider the same try/catch pattern used in gitleaks.
+
 ## P1-2 — Config loader + cross-checks (2026-06-13)
 
 **What worked:**

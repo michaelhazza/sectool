@@ -218,6 +218,12 @@ async function scanSingleRepo(
 
     // Stamp commit SHA onto each static finding's target
     const findings = raceResult.value;
+    if (findings === undefined) {
+      return {
+        findings: [] as Finding[],
+        status: { target: target.name, family, state: 'failed' as const },
+      };
+    }
     const stamped = findings.map((f): Finding => {
       if (f.surface === 'static' && commit !== undefined) {
         return { ...f, target: { ...f.target, commit } };

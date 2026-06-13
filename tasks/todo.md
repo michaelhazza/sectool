@@ -36,6 +36,13 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: all 5 context packs reference `architecture.md` anchors; the doc doesn't exist yet (fresh adoption).
   - Approach: author after audit-tool v1 lands its real architecture; anchor IDs per framework convention.
 
+## From builder — 2026-06-13
+
+- [ ] [origin:builder-P2-3:2026-06-13] [status:open] `osv-scanner` exits 1 when vulnerabilities are found (same as gitleaks) — `defaultExecOsv` in `src/static/scanners/osv.ts` uses `execFileAsync` directly and will throw when the binary exits 1 (findings present), which the orchestrator will record as a family `failed` rather than a successful scan with findings.
+  - Why: the real osv-scanner binary exits 1 to indicate vulnerabilities found, 0 for clean, 2+ for errors — identical behaviour to gitleaks. The current `defaultExecOsv` does not catch exit 1 as a normal outcome.
+  - Approach: apply the same try/catch pattern used in `defaultExecGitleaks` — catch the error, check `code === 1`, return `{ stdout, exitCode: 1 }` as a non-error outcome; rethrow on code 2+. Needs to land before P6 real-binary runs.
+  - Risk: medium — until fixed, real osv-scanner runs will always report as `failed` even when the scan completes successfully with findings.
+
 ## Spec Review deferred items
 
 ### audit-tool-v1 (2026-06-13)
