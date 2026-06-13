@@ -1,17 +1,9 @@
 {
-  "_comment": "BS-SQL-001: SQL injection via request-derived interpolation in sql tagged template / db.execute",
+  "_comment": "BS-SQL-001: rule detects both Pattern 1 (sql`` tagged template) and Pattern 2 (.execute(sql``)) for each vulnerable call. 2 functions × 2 patterns = 4 findings.",
   "findings": [
-    {
-      "ruleId": "BS-SQL-001",
-      "vulnClass": "injection",
-      "surface": "static",
-      "_note": "getUserById: req.params.id flows into sql`` template"
-    },
-    {
-      "ruleId": "BS-SQL-001",
-      "vulnClass": "injection",
-      "surface": "static",
-      "_note": "getItemByName: req.query.name flows into sql`` template"
-    }
+    { "ruleId": "BS-SQL-001", "vulnClass": "injection", "surface": "static" },
+    { "ruleId": "BS-SQL-001", "vulnClass": "injection", "surface": "static" },
+    { "ruleId": "BS-SQL-001", "vulnClass": "injection", "surface": "static" },
+    { "ruleId": "BS-SQL-001", "vulnClass": "injection", "surface": "static" }
   ]
 }

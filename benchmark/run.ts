@@ -557,24 +557,21 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
     return (dir: string) => inject(dir, ['--config', yamlPath]);
   }
   return async (dir: string) => {
-    // semgrep 1.x exits 0 on clean, 1 on findings (without --error flag in 1.x
-    // they exit 0; with findings the exit varies by version). Catch any non-zero
-    // exit and use the stdout if it looks like valid semgrep JSON.
+    // semgrep 1.78: --no-git-ignore triggers a metrics-consent dialog exit 2.
+    // Drop the flag; benchmark corpus dirs have no .gitignore to worry about.
     try {
       const result = await execFileAsync('semgrep', [
-        '--json',
-        '--config', yamlPath,
-        '--no-git-ignore',
-        dir,
+        '--json', '--metrics=off', '--config', yamlPath, dir,
       ]);
+      process.stderr.write(`[semgrep-exec] code=0 results=${String(result.stdout).slice(0,120)}\n`);
       return { stdout: result.stdout, stderr: result.stderr };
     } catch (err) {
       const e = err as { code?: number; stdout?: string; stderr?: string };
-      process.stderr.write(`[semgrep-exec] code=${String(e.code)} stdout_len=${String((e.stdout ?? '').length)} stderr=${String(e.stderr ?? '').slice(0, 80)}\n`);
-      // If stdout contains a JSON object (valid semgrep --json output), use it
-      // regardless of exit code. semgrep exit codes vary by version (1.x vs 0.x).
-      if (typeof e.stdout === 'string' && e.stdout.trimStart().startsWith('{')) {
-        return { stdout: e.stdout, stderr: e.stderr ?? '' };
+      const out = e.stdout ?? '';
+      process.stderr.write(`[semgrep-exec] code=${String(e.code)} stdout=${out.slice(0, 120)}\n`);
+      // Use JSON output regardless of exit code (semgrep exit codes vary by version)
+      if (out.trimStart().startsWith('{')) {
+        return { stdout: out, stderr: e.stderr ?? '' };
       }
       throw err;
     }
@@ -693,13 +690,15 @@ export async function runDetectors(
     const localRulesDir = join(_moduleDir, '..', 'rules', 'semgrep');
     const semgrepFamilyExec: ExecSemgrep = injections.execSemgrep ?? (async (dir) => {
       try {
-        const r = await execFileAsync('semgrep', ['--json', '--config', localRulesDir, '--no-git-ignore', dir]);
+        const r = await execFileAsync('semgrep', ['--json', '--metrics=off', '--config', localRulesDir, dir]);
+        process.stderr.write(`[semgrep-family] code=0 stdout=${r.stdout.slice(0,120)}\n`);
         return { stdout: r.stdout, stderr: r.stderr };
       } catch (err) {
         const e = err as { code?: number; stdout?: string; stderr?: string };
-        // Use JSON output regardless of exit code (semgrep exit codes vary by version)
-        if (typeof e.stdout === 'string' && e.stdout.trimStart().startsWith('{')) {
-          return { stdout: e.stdout, stderr: e.stderr ?? '' };
+        const out = e.stdout ?? '';
+        process.stderr.write(`[semgrep-family] code=${String(e.code)} stdout=${out.slice(0,120)}\n`);
+        if (out.trimStart().startsWith('{')) {
+          return { stdout: out, stderr: e.stderr ?? '' };
         }
         throw err;
       }
