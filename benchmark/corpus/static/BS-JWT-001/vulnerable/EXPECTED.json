@@ -1,17 +1,8 @@
 {
-  "_comment": "BS-JWT-001: simplified rules catch jwt.sign/verify with 2 args only (no options object). The no-expiry and literal-secret patterns need complex pattern-not with object matching.",
+  "_comment": "BS-JWT-001: algorithm rule finds 2 (sign+verify without algo), expiry rule finds 1 (sign with only {algorithm:...}). Literal-secret finds 0 (STATIC_SECRET is a variable, not string literal).",
   "findings": [
-    {
-      "ruleId": "BS-JWT-001",
-      "vulnClass": "auth-access-control",
-      "surface": "static",
-      "_note": "signTokenNoAlgorithm: jwt.sign with 2 args (no options)"
-    },
-    {
-      "ruleId": "BS-JWT-001",
-      "vulnClass": "auth-access-control",
-      "surface": "static",
-      "_note": "verifyTokenNoAlgorithm: jwt.verify with 2 args (no options)"
-    }
+    { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" },
+    { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" },
+    { "ruleId": "BS-JWT-001", "vulnClass": "auth-access-control", "surface": "static" }
   ]
 }

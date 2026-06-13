@@ -654,8 +654,11 @@ export async function runDetectors(
         const findings = await runSemgrep(target, vulnDir, ruleExec);
         process.stderr.write(`[benchmark] semgrep ${ruleId} vuln: ${findings.length} findings\n`);
         for (const f of findings) {
-          // Normalize sub-rule ids (BS-JWT-001-algorithm → BS-JWT-001)
-          const normalizedId = f.ruleId.startsWith(ruleId) ? ruleId : f.ruleId;
+          // Normalize sub-rule and namespace-prefixed ids:
+          // 'BS-CORS-001-wildcard-header' → 'BS-CORS-001' (startsWith)
+          // 'rules.semgrep.BS-AUTH-002' → 'BS-AUTH-002' (take last dot-segment, then startsWith)
+          const lastSegment = f.ruleId.split('.').pop() ?? f.ruleId;
+          const normalizedId = lastSegment.startsWith(ruleId) ? ruleId : f.ruleId;
           scanResults.push({ ruleId: normalizedId });
         }
       } catch (err) {
@@ -668,7 +671,8 @@ export async function runDetectors(
         const cleanTarget = corpusTarget(ruleId, cleanDir);
         const findings = await runSemgrep(cleanTarget, cleanDir, ruleExec);
         for (const f of findings) {
-          const normalizedId = f.ruleId.startsWith(ruleId) ? ruleId : f.ruleId;
+          const lastSeg = f.ruleId.split('.').pop() ?? f.ruleId;
+          const normalizedId = lastSeg.startsWith(ruleId) ? ruleId : f.ruleId;
           cleanResults.push({ ruleId: normalizedId });
         }
       } catch {

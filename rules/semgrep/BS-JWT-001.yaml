@@ -1,8 +1,9 @@
 rules:
   - id: BS-JWT-001-algorithm
     message: >
-      JWT sign or verify call does not pin the algorithm. Without an explicit algorithm
-      the library may accept the "none" algorithm. Always specify algorithm on sign and verify.
+      JWT sign or verify call does not pin the algorithm. Without an explicit
+      algorithm the library may accept the "none" algorithm. Always specify
+      algorithm on sign and verify.
     severity: ERROR
     metadata:
       category: auth-access-control
@@ -15,14 +16,14 @@ rules:
     languages:
       - javascript
       - typescript
-    patterns:
-      - pattern-either:
-          - pattern: jwt.sign($PAYLOAD, $SECRET)
-          - pattern: jwt.verify($TOKEN, $SECRET)
+    pattern-either:
+      - pattern: jwt.sign($PAYLOAD, $SECRET)
+      - pattern: jwt.verify($TOKEN, $SECRET)
 
   - id: BS-JWT-001-expiry
     message: >
-      JWT sign call does not set an expiry. Tokens without expiry remain valid indefinitely.
+      JWT sign call sets algorithm but no expiry. Tokens without expiry remain
+      valid indefinitely and cannot be invalidated after a compromise.
     severity: ERROR
     metadata:
       category: auth-access-control
@@ -35,12 +36,16 @@ rules:
     languages:
       - javascript
       - typescript
-    pattern: "jwt.sign($PAYLOAD, $SECRET, {})"
+    # Block scalar: {algorithm: $ALG} without ... matches EXACTLY objects with only
+    # the algorithm key — catches sign calls that set algorithm but not expiresIn.
+    # Exact-object match means {algorithm:'HS256', expiresIn:'15m'} does NOT match.
+    pattern: |
+      jwt.sign($PAYLOAD, $SECRET, {algorithm: $ALG})
 
   - id: BS-JWT-001-literal-secret
     message: >
       JWT secret is a string literal rather than an environment variable.
-      Hard-coded JWT secrets cannot be rotated and are trivially leaked.
+      Hard-coded secrets cannot be rotated and are trivially leaked.
     severity: ERROR
     metadata:
       category: secrets
