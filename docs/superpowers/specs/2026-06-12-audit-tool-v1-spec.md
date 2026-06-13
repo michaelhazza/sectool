@@ -144,13 +144,29 @@ structurally impossible, not merely forbidden:
    followed; discovered off-host links are recorded as
    `scope-excluded` metadata, never fetched.
 5. **Rate-limited + identifiable.** Default 10 req/s/host (configurable lower
-   per target, never higher than 25 — clamped in the Zod schema). The auditor
-   User-Agent (above) is set on ZAP, Nuclei, and direct probes.
-6. **Preflight / dry-run.** `audit scan-live --url <u> --dry-run` resolves the
-   host, prints allowlist verdict + the check families that would run, and
-   sends zero scan traffic. The non-dry-run path executes the same preflight
-   function first; scan phases are unreachable unless preflight returned an
-   `AllowedTarget`.
+   per target, never higher than 25 — clamped in the Zod schema). The limit is
+   **aggregate per host across ALL live scanner families**, not per family.
+   Because scanner subprocesses can run concurrently (§5), the live engine
+   serializes request-generating families against any single host — no two of
+   {ZAP, Nuclei, direct probes} hit the same host at once — and passes the
+   per-host rate to each, so the host never observes more than `rateLimitRps`
+   in aggregate. (Distinct hosts may still be scanned in parallel; the limit is
+   strictly per host.) The auditor User-Agent (above) is set on ZAP, Nuclei,
+   and direct probes. Acceptance: a guardrail test with two fake scanner
+   families against one host asserts the combined observed request rate never
+   exceeds the host limit. [Aggregate-per-host invariant pinned per external
+   review HIGH-2.]
+6. **Preflight / dry-run.** `audit scan-live --url <u> --dry-run` parses the
+   URL and calls `assertAllowlisted()` FIRST — before any DNS resolution or
+   other network operation — then prints the allowlist verdict + the check
+   families that would run, and sends zero scan traffic. A denied host prints
+   its deny verdict with NO DNS lookup: denial is a pure parse/string decision
+   (§4.2, §4.8 gates on hostname, never a resolved IP), never a network
+   round-trip. The non-dry-run path executes the same preflight function first;
+   the scan phases — and the registry/DNS resolution they need — are
+   unreachable unless preflight returned an `AllowedTarget`. Acceptance: a
+   denied-host dry-run asserts zero DNS resolver calls and zero HTTP requests.
+   [Preflight-before-DNS ordering pinned per external review HIGH-1.]
 7. **Tested.** The benchmark suite asserts that a scan against a
    non-allowlisted host (a local server on a non-allowlisted hostname) aborts
    with `AllowlistViolationError` and that **zero** HTTP requests reached the
@@ -215,12 +231,12 @@ import + `issues:write`-only properties (§5.2), not on a blanket no-write rule.
 
 | Command | Behaviour |
 |---|---|
-| `audit scan-source [--repo <name>]` | Static scan of one or all registered repos → raw findings file per repo |
+| `audit scan-source [--repo <name>]` | Static scan of one or all registered repos → normalized findings file per repo. The file is **redaction-passed** (§5.4): native scanner output (gitleaks/Semgrep JSON, stdout, stderr) is captured and redacted at the normalizer boundary, then written — it is never persisted verbatim. |
 | `audit scan-live --url <staging-url> [--dry-run]` | Preflight (always); then passive + (if target opted in) active scan. **Target resolution (registry-required in v1):** the URL's host must (a) pass the §4 allowlist gate AND (b) resolve by host to an `enabled: true` `stagingTargets[]` entry (§6.2), which supplies `activeScan`/`auth`/`repo`/`rateLimitRps`. Both must hold: a host that fails the allowlist gate is a hard `AllowlistViolationError` (§4.2); a host that passes the gate but has no enabled registry entry is a **named config error** (`UnregisteredTargetError`), not an ad-hoc scan — ad-hoc allowlist-only scanning of unregistered hosts is NOT a v1 feature (deferred, §13), so §7.3's "enabled staging targets" and `RunReport.targets[]` (§6.9) always have a registry-backed identity with repo linkage. |
 | `audit run [--repo <name>] [--url <staging-url>]` | scan-source + scan-live + correlate + report |
 | `audit report [--format json\|md\|sarif\|html]` | Re-emit report from the last run's findings (no scanning); `html` is the self-contained single-file export (§5.2) |
 | `audit ui [--port <n>]` | Serve the local dashboard on `127.0.0.1` (default port 4173); no scan capability; sole outward action is the §5.3 fix request |
-| `audit fix <finding-id> [--severity <s>] [--dry-run]` | Generate remediation pack(s) and file fix-request issue(s) in the target repo (§5.3); `--dry-run` prints the pack without filing |
+| `audit fix (<finding-ref> \| --min-severity <s>) [--dry-run]` | File fix-request issue(s) in the target repo (§5.3). `<finding-ref>` files exactly one finding; `--min-severity <s>` bulk-files every not-yet-filed finding at or above severity `s`. `<finding-ref>` is the full 64-hex `fingerprint` OR a display id (`f-<16hex>`) that resolves to exactly one finding in the selected report — an ambiguous prefix fails with `AmbiguousFindingIdError` listing the matching full fingerprints. All filing + idempotency key by the full `fingerprint`, never the display id (§6.6). `--dry-run` prints the pack(s) without filing. There is no per-finding severity override (severity is computed, §8). |
 
 CLI plumbing: `node:util` `parseArgs` (dependency-light per brief).
 
@@ -356,7 +372,7 @@ repo.
    file/symbol/route, recommended fix pattern with code example (sourced from
    the rule doc, §11), severity + why, and **acceptance criteria** — the rule
    ID + fingerprint that must no longer fire on re-scan.
-2. **Fix request.** `audit fix <finding-id>` (or the dashboard's "Send for
+2. **Fix request.** `audit fix <finding-ref>` (or the dashboard's "Send for
    fixing" button — same code path) files the pack as a GitHub issue in the
    target repo, labelled `audit-fix`, carrying the fingerprint as a stable
    marker. The issue URL is persisted in `reports/fixes.json`
@@ -444,11 +460,19 @@ action or for ad-hoc local fixing.
 ### 5.4 Secret redaction boundary (output safety, operator amendment 2026-06-13)
 
 The tool discovers secrets (gitleaks, §7.2) and reads live response bodies and
-headers, so every emitter MUST redact credential material before anything is
-written to disk, printed, or transmitted. `src/report/redaction.ts` is a single
-chokepoint applied to ALL outputs: `report.json`, Markdown, SARIF, the HTML
-export, stdout/log lines, remediation packs (§5.3), and the body of any GitHub
-fix-request issue. It replaces credential values — gitleaks-detected secrets,
+headers, so credential material MUST be redacted before ANYTHING is written to
+disk, printed, or transmitted — including the per-repo raw findings file (§5.1
+`scan-source`) and any intermediate artifact, not just the final report.
+`src/report/redaction.ts` is a single pure-function chokepoint applied at the
+**normalizer boundary and every emitter after it**: the static normalizers
+(Layer 1/2), the live normalizers (Layer 3), the per-repo findings file,
+`report.json`, Markdown, SARIF, the HTML export, stdout/log lines, remediation
+packs (§5.3), and the body of any GitHub fix-request issue. Native scanner
+output (gitleaks/Semgrep/ZAP/Nuclei JSON, stdout, stderr) is captured, redacted,
+then emitted or discarded — never persisted verbatim. Despite its `src/report/`
+path it is authored in **P2** (alongside the first scanner normalizer) and
+consumed by every later layer (§12); it is NOT a P5-only report-layer step. It
+replaces credential values — gitleaks-detected secrets,
 `Authorization`/bearer tokens, `Set-Cookie` and cookie values, and registry
 env-derived staging credentials — with a stable `[redacted:<8hex>]` placeholder
 (the hex is a salted digest, so the same secret reads identically across
@@ -457,10 +481,12 @@ context is retained for triage: file, line/route, rule id, and the structural
 shape of the evidence. HTML-escaping (§5.2) is anti-XSS and is NOT a substitute
 — redaction runs first, on the data, for every format, so a finding's raw
 secret value never leaves the tool (and in particular is never republished into
-an externally-filed GitHub issue). Acceptance: a redaction fixture +
-`src/report/redaction.test.ts` asserting no known-secret fixture value appears
-in any emitted format; pinned as a §10 guardrail. [Operator-approved
-2026-06-13, OAI-SPEC-005.]
+an externally-filed GitHub issue). Acceptance: a redaction fixture + `src/report/redaction.test.ts` asserting no
+known-secret fixture value appears in ANY emitted surface — the per-repo raw
+findings file, stdout/logs, `report.json`, Markdown, SARIF, HTML, remediation
+packs, and fix-issue bodies. Pinned as a §10 guardrail. [Operator-approved
+2026-06-13, OAI-SPEC-005; normalizer-boundary ordering per external review
+HIGH-3.]
 
 ## 6. Contracts
 
@@ -508,7 +534,7 @@ fields are surface-specific (static vs live shapes are a discriminated union on
 finding carries the FULL 64-hex sha256 `fingerprint` (§6.6) alongside the
 display `id` (`id === "f-" + fingerprint.slice(0,16)`). The full `fingerprint`
 is the value used as: the `reports/fixes.json` key (§5.3), the SARIF
-`auditToolFingerprintV1` (§6.10), the `audit fix <finding-id>` → fixes.json
+`auditToolFingerprintV1` (§6.10), the `audit fix <finding-ref>` → fixes.json
 join key, and the `audit-fix` GitHub issue marker (§5.3). The truncated `id`
 is for human/UI display only and is NEVER an idempotency or join key — its
 truncation makes collisions possible. `RunReport.findings[]` (§6.9) therefore
@@ -981,6 +1007,14 @@ benchmark/
     numeric/octal/hex IPv4 variant Node's `URL` accepts, `https://[::1]/`, and
     `https://[::ffff:127.0.0.1]/` — while only `loadBenchmarkAllowlist()` may
     permit loopback literals (§4.2). [OAI-SPEC-006.]
+  - *Preflight before DNS:* a `--dry-run` against a denied host asserts that
+    `assertAllowlisted()` was called and threw before any DNS resolver call or
+    HTTP request occurred (zero resolver calls, zero hits). [External review
+    HIGH-1, §4.6.]
+  - *Aggregate per-host rate limit:* two fake scanner families pointed at one
+    host assert the combined observed request rate never exceeds the host's
+    `rateLimitRps`, proving the limit is aggregate-per-host, not per-family.
+    [External review HIGH-2, §4.5.]
   - *Carrier-aware login success:* a `sessionCarrier: "bearer"` login that only
     sets a cookie, and a `sessionCarrier: "cookie"` login that only returns a
     JSON token, each count as a login *failure* and mark an `activeScan: true`
@@ -1042,10 +1076,10 @@ RLS appears only as the SUBJECT of rules.
 | Phase | Ships | Depends on |
 |---|---|---|
 | P1 | schemas + config loading + fingerprint + CLI skeleton (`--help`, config validation) + **minimal benchmark harness** (corpus walker, EXPECTED.json comparison, recall/precision accounting, non-zero exit) — so P3+ rules land test-first against a working harness | — |
-| P2 | static orchestration: clone/localPath + 3 wrapper scanners + normalizers | P1 |
+| P2 | static orchestration: clone/localPath + 3 wrapper scanners + normalizers + **secret-redaction chokepoint (`src/report/redaction.ts`) applied at the normalizer boundary so the per-repo raw findings file is redaction-passed (§5.4)** | P1 |
 | P3 | custom rule pack (11 rules) + their corpus fixtures (test-first, enforced by the P1 harness) | P1, P2 (semgrep runner) |
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
-| P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend + secret-redaction chokepoint (`src/report/redaction.ts`, applied by all emitters, §5.4) | P2–P4 |
+| P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend (every report emitter applies the §5.4 redaction chokepoint authored in P2; live response material from P4 is redacted at its normalizer too) | P2–P4 |
 | P6 | benchmark completion (live-fixture integration, **engine-available §10 guardrail tests only** — partial-run trend, scoped suppression, active-scan cred failure, allowlist IP-literal rejection, carrier-aware login success; the §10 *HTML evidence inert-text matrix* guardrail is NOT a P6 deliverable because it targets the P7 HTML exporter — see P7) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
 | P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. **`src/report/html.test.ts` owns the §10 HTML evidence inert-text matrix guardrail** (it ships with the exporter it tests; required before final v1 ship). All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
 | P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`, CSRF/origin-gated per §5.2)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
