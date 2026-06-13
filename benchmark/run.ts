@@ -648,8 +648,8 @@ export async function runDetectors(
           const normalizedId = f.ruleId.startsWith(ruleId) ? ruleId : f.ruleId;
           scanResults.push({ ruleId: normalizedId });
         }
-      } catch {
-        // Binary not present in this env — findings = 0 (CI will catch miss).
+      } catch (err) {
+        process.stderr.write(`[benchmark] ${ruleId} semgrep error: ${String(err)}\n`);
       }
     }
 
@@ -722,8 +722,8 @@ export async function runDetectors(
       try {
         const findings = await runGitleaks(corpusTarget(familyId, vulnDir), vulnDir, injections.execGitleaks);
         scanResults.push(...findings.map(() => ({ ruleId: familyId })));
-      } catch {
-        // Binary absent.
+      } catch (err) {
+        process.stderr.write(`[benchmark] gitleaks error: ${String(err)}\n`);
       }
     }
 
@@ -805,6 +805,15 @@ export async function runDetectors(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  // Diagnostic: verify scanner binaries are present
+  for (const bin of ['semgrep', 'gitleaks', 'osv-scanner']) {
+    try {
+      await execFileAsync(bin, ['--version']);
+      process.stderr.write(`[benchmark] ${bin}: OK\n`);
+    } catch (err) {
+      process.stderr.write(`[benchmark] ${bin}: MISSING or error — ${String(err)}\n`);
+    }
+  }
   const { scanResults, cleanResults } = await runDetectors();
   const result = runBenchmark(scanResults, cleanResults);
 
