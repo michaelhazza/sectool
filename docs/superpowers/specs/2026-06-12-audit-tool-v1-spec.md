@@ -109,9 +109,11 @@ structurally impossible, not merely forbidden:
    can ONLY be constructed by `assertAllowlisted`. No other module exports a
    constructor for it. TypeScript enforces at compile time that no scan
    function is callable with a raw URL/string.
-2. **Allowlist semantics.** `config/allowed-staging-hosts.json` is a checked-in
-   array of exact hostnames (no wildcards, no CIDR, no ports-only entries in
-   v1). A URL is allowed iff ALL of: (a) `new URL(u).protocol === "https:"`
+2. **Allowlist semantics.** `config/allowed-staging-hosts.json` is the checked-in
+   `Allowlist` object of §6.3 — `{ hosts: [{ host, owner, addedAt, note }] }` —
+   whose `host` values are exact hostnames (no wildcards, no CIDR, no ports-only
+   entries in v1); §6.3 is the canonical schema and `LoadedAllowlist` (§4.10)
+   brands a parse of exactly that shape. A URL is allowed iff ALL of: (a) `new URL(u).protocol === "https:"`
    (plaintext `http:` and every other scheme are rejected — staging is
    TLS-only); (b) `new URL(u).hostname` exactly matches an enabled entry; and
    (c) the URL targets the default https port — `new URL(u).port` is empty or
@@ -182,8 +184,12 @@ CLI (src/cli.ts: scan-source | scan-live | run | report | ui | fix)
 
 Execution model: **inline/synchronous CLI process**. Scanner subprocesses run
 concurrently per target (bounded pool, default 2 targets × N scanners), each
-with a hard timeout (default 15 min/scanner, configurable). No queue, no DB —
-all state is files. Reports are written atomically (write tmp + rename).
+with a hard timeout (default 15 min/scanner). These two values are surfaced as
+CLI flags on `run`/`scan-source`/`scan-live` — `--scanner-timeout <minutes>`
+(default 15) and `--max-parallel-targets <n>` (default 2) — they are NOT config
+fields and have no `config/*.json` home in v1 (operator overrides them per
+invocation; CI uses the defaults). No queue, no DB — all state is files. Reports
+are written atomically (write tmp + rename).
 Exception: `audit ui` is a long-running localhost server process (§5.2); it
 reads scan state and config read-only and cannot initiate scans. Its one
 non-read action is the §5.3 "Send for fixing" fix-request issue (which also
@@ -196,7 +202,7 @@ import + `issues:write`-only properties (§5.2), not on a blanket no-write rule.
 | Command | Behaviour |
 |---|---|
 | `audit scan-source [--repo <name>]` | Static scan of one or all registered repos → raw findings file per repo |
-| `audit scan-live --url <staging-url> [--dry-run]` | Preflight (always); then passive + (if target opted in) active scan. **Target resolution:** the URL's host must pass the §4 allowlist gate AND match an `enabled: true` `stagingTargets[]` entry (§6.2) by host; that entry supplies `activeScan`/`auth`/`repo`/`rateLimitRps`. A URL whose host is allowlisted but has no enabled registry entry runs **passive-unauthenticated only** (no `activeScan`, no auth, default rate limit) and the report records a coverage gap; a URL that fails the allowlist gate is a hard `AllowlistViolationError` (§4.2). |
+| `audit scan-live --url <staging-url> [--dry-run]` | Preflight (always); then passive + (if target opted in) active scan. **Target resolution (registry-required in v1):** the URL's host must (a) pass the §4 allowlist gate AND (b) resolve by host to an `enabled: true` `stagingTargets[]` entry (§6.2), which supplies `activeScan`/`auth`/`repo`/`rateLimitRps`. Both must hold: a host that fails the allowlist gate is a hard `AllowlistViolationError` (§4.2); a host that passes the gate but has no enabled registry entry is a **named config error** (`UnregisteredTargetError`), not an ad-hoc scan — ad-hoc allowlist-only scanning of unregistered hosts is NOT a v1 feature (deferred, §13), so §7.3's "enabled staging targets" and `RunReport.targets[]` (§6.9) always have a registry-backed identity with repo linkage. |
 | `audit run [--repo <name>] [--url <staging-url>]` | scan-source + scan-live + correlate + report |
 | `audit report [--format json\|md\|sarif\|html]` | Re-emit report from the last run's findings (no scanning); `html` is the self-contained single-file export (§5.2) |
 | `audit ui [--port <n>]` | Serve the local dashboard on `127.0.0.1` (default port 4173); no scan capability; sole outward action is the §5.3 fix request |
@@ -246,7 +252,15 @@ engineer-audience assumption.]
 - **HTML export.** `audit report --format html` (`src/report/html.ts`) emits a
   self-contained single-file report — inline CSS/JS/SVG charts, zero network
   dependencies — with the same visual language, so CI artifacts are shareable
-  without running the dashboard.
+  without running the dashboard. **Evidence-content safety:** all finding
+  evidence (source snippets, live response bodies, headers, URLs) is
+  HTML-entity-escaped and rendered as inert text — never injected as markup or
+  executed. The inline `<script>` is a fixed, build-time chart renderer that
+  consumes only a JSON data island (itself escaped via `</script>`-safe
+  encoding); there is no `eval`, no `innerHTML` of evidence, and no
+  evidence-derived script. This is a security tool emitting attacker-controlled
+  strings, so the export must not become an XSS vector in whatever browser opens
+  the artifact.
 - **Mobile:** responsive, desktop-first; all screens usable at 375px (§3).
 
 **Screens (6).** Final shapes are the **approved prototypes** in
@@ -337,13 +351,20 @@ state — derived using ONLY the token's read scopes (`issues:read`,
 `pull_requests:read`), no local progress flags: `requested` = `audit-fix` issue
 filed (open), no PR references it and it is unassigned; `in-progress` = an
 observable signal that work has started but no non-draft PR yet, defined as
-ANY of: the issue is assigned, OR a **draft** PR references the issue (GitHub
-`Closes #/references` link), OR a branch named `audit-fix/<fingerprint>` exists
-on the repo — whichever the read scopes surface first; `awaiting-review` = a
-non-draft PR referencing the issue is open and awaiting human merge;
-`merged-awaiting-verification` = that PR is merged, next scan pending; `verified-fixed` = the next `audit run` no longer
-fires the fingerprint; `reopened` = the fingerprint still fires after the PR
-merged. `reports/fixes.json` (Zod schema `src/schemas/fix.ts`) is the local
+EITHER: the issue is assigned, OR a **draft** PR references the issue (GitHub
+`Closes #/references` link) — both surfaceable from `issues:read` +
+`pull_requests:read` alone (no `contents`/metadata scope; branch enumeration is
+deliberately NOT used so the fix token stays minimal-scope per the §5.3 token
+scope below); `awaiting-review` = a non-draft PR referencing the issue is open
+and awaiting human merge; `merged-awaiting-verification` = that PR is merged,
+next scan pending; `verified-fixed` = the next `audit run` no longer fires the
+fingerprint; `reopened` = the fingerprint still fires after the PR merged.
+`reopened` is **not terminal** — it re-enters the loop via the same derivation:
+a new/updated non-draft PR referencing the issue moves it back to
+`awaiting-review` → `merged-awaiting-verification`, and a clean re-scan reaches
+`verified-fixed`. On transition to `reopened` the tool reopens the GitHub issue
+with a comment (it holds `issues:write`); no enum value is added — recovery is a
+re-traversal of the existing six states. `reports/fixes.json` (Zod schema `src/schemas/fix.ts`) is the local
 record; its status enum is exactly these six tokens. The dashboard Fixes
 screen (§5.2) and the `finding-detail.html` fix pipeline each render one pill
 per state (6 states = 6 pills).
@@ -397,6 +418,20 @@ All schemas are Zod (`src/schemas/`), each exporting a generated JSON Schema
 Nullability: `evidence.cvss` null unless upstream provides one; `location`
 fields are surface-specific (static vs live shapes are a discriminated union on
 `target.kind`). Producer: layer 1–3 normalizers. Consumer: layer 4 + report.
+
+**Field lifecycle (raw scan finding vs report finding — one schema, two
+stages).** `Finding` is a single Zod type used at both stages; three fields are
+**report-stage-derived**, not produced by scanners: `severity` (computed §8),
+`correlatedWith` (§9), `externalRefs` (joined from `fixes.json` on report build,
+§5.3), and `note` (set on expired-baseline re-alert §6.4). At the raw-scanner
+stage these carry their empty defaults (`severity` = `baseSeverity`,
+`correlatedWith` = `[]`, `externalRefs` = `[]`, `note` = `null`); the report
+builder (`src/report/json.ts`) populates them. The schema does not split into
+two types — the empty defaults make a raw finding a valid `Finding` — but
+implementers must treat these four fields as derived-on-report-build, never
+persisted from a scanner. This is the same source-of-truth precedence as §6.5:
+scans re-derive findings; persisted stores (`fixes.json`) rehydrate the derived
+references.
 
 ### 6.2 `TargetRegistry` (`config/targets.json`)
 
@@ -470,10 +505,13 @@ scope). `auth.testUsers` is a closed array of env-var-name pairs: when `auth` is
 passive crawl); when `activeScan: true` it requires **exactly 2** entries —
 the IDOR/access-control cross-access checks (§7.3) need two distinct
 identities. Failure behaviour is pinned: if `activeScan: true` and required
-creds are missing or login fails, the target's run is **failed** (named in
-`meta.failures`) — never silently downgraded to passive. If `activeScan:
-false` and creds are missing/login fails, the scan runs unauthenticated and
-the report records an explicit coverage gap. [Per operator review HIGH-3.]
+creds are missing or login fails, that **target is marked failed** (named in
+`meta.failures`) — never silently downgraded to passive — which makes the
+overall multi-target run `partial` per the §14 status-aggregation rule (or
+run-level `failed` when it is the only target / co-occurs with a run-global
+fault). If `activeScan: false` and creds are missing/login fails, the scan runs
+unauthenticated and the report records an explicit coverage gap. [Per operator
+review HIGH-3.]
 
 ### 6.3 `Allowlist` (`config/allowed-staging-hosts.json`)
 
@@ -616,6 +654,39 @@ multiple `occurrences` (fingerprint collision merge, §6.6) — are optional
 fields on `Finding` (`note?: string`, `evidence.raw.occurrences?: Location[]`).
 Producer: `src/report/json.ts`. Consumer: UI, trend, SARIF/MD/HTML, fix
 verification. Zod schema: `src/schemas/report.ts` (added to file inventory §11).
+
+### 6.10 SARIF mapping (`src/report/sarif.ts`, SARIF 2.1.0)
+
+The SARIF export is a deterministic projection of §6.9 `RunReport`, pinned so
+implementations agree:
+
+- **Run/tool.** One `runs[0]`; `tool.driver.name = "audit-tool"`,
+  `version = meta.toolVersion`. Each rule/check id is a
+  `tool.driver.rules[]` `reportingDescriptor` (`id` = `ruleId`/`checkId`,
+  `helpUri` = the `docs/rules/<id>.md` path, `shortDescription` = the rule's
+  one-line intent).
+- **Result per finding.** `result.ruleId` = `Finding.ruleId`;
+  `result.fingerprints = { "auditToolFingerprintV1": <full sha256> }` (the §6.6
+  fingerprint, not the truncated id, so SARIF dedupe is stable across runs);
+  `result.level` from severity (`critical`/`high` → `error`, `medium` →
+  `warning`, `low` → `note`) with `result.rank` carrying the ordinal severity
+  for tools that rank; `result.message.text` = the plain-English problem
+  statement.
+- **Location.** Static → `physicalLocation` (`artifactLocation.uri` =
+  `location.path`, `region.startLine` = `location.startLine`) plus a
+  `logicalLocation.fullyQualifiedName` = `location.symbol`; live →
+  `logicalLocation` only (the `url` + `method`), since there is no source file.
+- **Suppression.** `suppressed: true` findings emit a `result.suppressions[]`
+  entry (`kind: "external"`, `justification` = the baseline entry's
+  `justification`); expired baselines do NOT suppress (the finding re-alerts,
+  §6.4).
+- **Correlation + refs.** Live-correlated evidence (§9) is attached as
+  `relatedLocations`; `externalRefs` (§5.3) map to
+  `result.workItemUris`.
+
+Producer: `src/report/sarif.ts`. Consumer: external SARIF ingestors (GitHub
+code-scanning, IDEs). Determinism: results sorted by §8.1 report order so the
+SARIF byte output is stable for a given report.
 
 ## 7. Rule and check inventory (v1)
 
@@ -783,7 +854,7 @@ benchmark/
 | `config/{targets,allowed-staging-hosts,baseline}.json` | checked-in registries (shipped: 1 repo enabled, 0 staging enabled, empty allowlist, empty baseline) |
 | `history/trend.jsonl` | committed trend lines §6.5 |
 | `benchmark/**` | §10 |
-| `docs/rules/<ID>.md` (one per rule/check) | id, rationale, fix guidance + code example, fixture links |
+| `docs/rules/<ID>.md` (one per stable check id) | id, rationale, fix guidance + code example, fixture links. Granularity = one doc per stable id: the 11 custom rules (§7.1), the 3 wrapped scanners' families, and each enumerated live `checkId` family from §7.3 (`LIVE-TLS-001`, `LIVE-HDR-001`, …, and one doc per wildcard family `ZAP-P-*` / `ZAP-A-*` / `NUCLEI-*` covering that family — NOT one per individual upstream template) |
 | `Dockerfile` | pinned scanner binaries (exact versions) |
 | `.github/workflows/ci.yml` | lint, typecheck, test:unit, benchmark, self-scan on PR |
 | `.github/workflows/weekly-audit.yml` | scheduled portfolio run in the GHCR image |
@@ -808,15 +879,24 @@ RLS appears only as the SUBJECT of rules.
 
 No backward references: each phase consumes only earlier phases' outputs.
 (P7 was added by the 2026-06-12 UI addendum and P8 by the 2026-06-13
-remediation addendum; both depend only on earlier phases' outputs and neither
-gates the P6 exit loop — the v1 exit loop may run after P6 with P7/P8 in
-flight. v1 does not SHIP without P7 AND P8: remediation is a v1 goal (§1.7), so
-the ship criteria include P8's gates — `audit fix` idempotency, the fix-request
-state-machine derivation (§5.3), and the §10 guardrail tests — and `docs/fix-
-workflow.md`, on the same footing as P7's UI screens.)
-The v1 exit loop (post-G2, per launch prompt) runs after P6: benchmark + gates
-+ self-scan, max 10 iterations, stuck-rule = stop after 2 identical failures,
-exit conditions immutable.
+remediation addendum; both depend only on earlier phases' outputs.)
+
+**Two distinct gates — do not conflate them:**
+
+1. **P6 core-quality exit loop** (the "v1 exit loop", post-G2 per launch
+   prompt). Runs after P6 over the scan engine: benchmark (100% recall / 0 FP)
+   + base gates + self-scan, max 10 iterations, stuck-rule = stop after 2
+   identical failures, exit conditions immutable. This loop validates the
+   detection core and may run while P7/P8 are still in flight — it does NOT
+   itself depend on P7/P8.
+2. **Final v1 ship gate.** v1 does not SHIP until the P6 core-quality loop is
+   green AND P7 AND P8 are complete: remediation is a v1 goal (§1.7), so the
+   ship gate additionally requires P8's gates — `audit fix` idempotency, the
+   fix-request state-machine derivation (§5.3), and the §10 guardrail tests —
+   plus `docs/fix-workflow.md`, on the same footing as P7's 6 UI screens.
+
+The P6 loop is the quality gate on the engine; the ship gate is the quality
+loop green plus the P7+P8 deliverables landed.
 
 ## 13. Deferred items
 
@@ -824,6 +904,7 @@ exit conditions immutable.
 - ~~GitHub issue-sync~~ **Promoted into v1 scope** by the 2026-06-13 remediation amendment (§5.3) — `externalRefs` now carries fix-request issue URLs.
 - **Direct code-patch PRs from the audit tool** (even for mechanical fix classes). Reason: §5.3's detect-here-fix-there decision; revisit only if the issue-based loop proves too slow in practice.
 - **Submodule init + monorepo sub-package selection for static scans.** v1 shallow-clones the default-branch tree only (§6.2). Reason: target repos are single-package at v1; added when a monorepo or submodule-bearing target is registered.
+- **Ad-hoc allowlist-only live scanning of unregistered hosts.** v1 requires every `scan-live --url` host to resolve to an enabled `stagingTargets[]` entry (§5.1). Reason: keeps every scanned live target registry-backed (repo linkage, coverage-gap representation, trend keys all defined); ad-hoc scanning would need synthetic unnamed-target semantics not worth v1's complexity.
 - **Wildcard/CIDR allowlist entries.** Exact hostnames only in v1. Reason: keeps the gate trivially auditable.
 - **Per-entry non-default ports / non-https schemes in the allowlist gate.** v1 requires https + default port 443 (§4.2). Reason: staging is TLS-only and a non-default port denotes a different service; per-entry port pinning is added only if a real staging target needs it.
 - **Stored-XSS deep flows in live fixture.** v1 fixture seeds reflected XSS + a simple stored case; complex multi-step stored flows deferred. Reason: corpus cost; recall target applies to seeded cases.
@@ -834,35 +915,54 @@ exit conditions immutable.
 
 ## 14. Execution-safety contracts
 
+- **Workspace lock (`reports/.lock`).** A single advisory lock file at
+  `reports/.lock` serialises every writer of the shared file state: `audit run`
+  (report + trend writes), `audit fix`, and the dashboard "Send for fixing"
+  endpoint. Acquisition: create-exclusive (`wx`); on contention the losing
+  caller exits immediately with a named `WorkspaceLockedError` (it does not
+  block-wait). The lock records the holder's pid + ISO start time; a lock older
+  than 2h is treated as stale and may be broken by the next caller (the prior
+  process is assumed dead). All atomic writes below happen while the caller
+  holds this lock; read-only consumers (`audit ui`, `audit report`) do NOT take
+  it (they tolerate a concurrent atomic rename by re-reading on parse failure).
 - **Idempotency:** report writes are state-based — atomic tmp+rename per
   output file; re-running a scan overwrites deterministically (sorted
   findings, stable fingerprints). Trend append is key-based on `runId`
   (re-running the same runId replaces the line, no duplicates).
 - **`reports/fixes.json` writes:** the same atomic tmp+rename discipline as
-  report outputs, plus the `reports/.lock` (above) serialises ALL writers of
-  `fixes.json` — `audit fix`, the dashboard "Send for fixing" endpoint, and the
-  rehydrate-on-report-build step (§5.3). Each write is read-modify-write under
-  the lock: load → upsert the fingerprint-keyed entry → atomic rename. Keyed on
+  report outputs, serialised by the `reports/.lock` defined above. Every writer
+  (`audit fix`, the dashboard "Send for fixing" endpoint, and the
+  rehydrate-on-report-build step §5.3) does read-modify-write under the lock:
+  load → upsert the fingerprint-keyed entry → atomic rename. Keyed on
   fingerprint, so two writers targeting the same finding converge (last-writer
   wins on the status field, which is itself derived from GitHub state and so
   idempotent). `audit run`'s rehydrate step only READS `fixes.json` to populate
-  `externalRefs` (§5.3) and never races a status write because it too takes the
-  lock. Conflict/precedence: `fixes.json` is authoritative for issue URLs;
-  GitHub-derived status is recomputed on read, so a stale local status is
-  self-healing on the next derivation.
+  `externalRefs` (§5.3) but still runs inside `audit run`'s held lock, so it
+  never races a status write. Conflict/precedence: `fixes.json` is authoritative
+  for issue URLs; GitHub-derived status is recomputed on read, so a stale local
+  status is self-healing on the next derivation.
 - **Retry classification:** scanner subprocesses are `safe` to retry (read-only
   against repos; live scans re-send traffic but only to allowlisted staging —
   acceptable by contract). Git clone is `safe` (fresh temp dir per attempt).
 - **Concurrency:** single-process CLI; concurrent runs on the same workspace
-  are unsupported and guarded by a `reports/.lock` file (stale after 2h);
-  losing caller exits with a named error.
+  are unsupported and guarded by the `reports/.lock` workspace lock defined at
+  the top of this section (create-exclusive, stale after 2h, losing caller exits
+  with `WorkspaceLockedError`).
 - **Terminal event:** every `audit run` ends with exactly one run-summary
   record (stdout + `report.json.meta.status`): `success` (all scanners ran) |
   `partial` (≥1 scanner failed/timed out — named per scanner in
   `meta.failures`, never silent; trend `fixed` accounting suppressed for
-  incomplete scanner families per §6.5) | `failed` (config invalid, allowlist
-  violation, active-scan cred failure per §6.2, or no scanner completed).
-  Exit codes: 0 / 2 / 1 respectively;
+  incomplete scanner families per §6.5) | `failed`. **Status aggregation
+  (multi-target):** the run is `failed` ONLY for run-global faults that prevent
+  meaningful output — config invalid, allowlist violation, or no scanner
+  completed across all targets. A fault scoped to ONE target among several —
+  including an `activeScan: true` target's missing/failed creds (§6.2) — makes
+  THAT target's contribution `failed` (named in `meta.failures` with the target,
+  and its `meta.scannerStatus` families marked `failed`) and the OVERALL run
+  `partial`, so the other targets' findings still report. The §6.2 phrase "the
+  target's run is failed" is this per-target failure; it escalates to a run-level
+  `failed` only when it is the sole/only target or co-occurs with a run-global
+  fault. Exit codes: 0 / 2 / 1 respectively;
   findings presence does NOT affect exit code of `run` (reporting tool, not a
   gate) — `--fail-on <severity>` opts into gating (used by self-scan CI).
 - **State machine (live path):** `idle → preflight → gated(allowed) → passive →
@@ -893,7 +993,7 @@ exit conditions immutable.
 
 ## 16. Open questions (for Phase 2)
 
-- Exact pinned versions for the 5 binaries (resolve at P6 Dockerfile authoring; record in `KNOWLEDGE.md`).
+- Exact pinned versions for the 5 binaries (resolve at P6 Dockerfile authoring; record in the repo's existing `KNOWLEDGE.md` — a standing framework file per `CLAUDE.md`, not a new spec deliverable, so it is intentionally absent from the §11 file inventory).
 - ZAP orchestration mode: daemon API vs `zap-baseline.py`/automation-framework YAML (builder decides at P4 behind the wrapper interface; wrapper contract in §7.3 is fixed either way).
 - Whether `automation-v1` staging gets `activeScan: true` at launch (operator call — shipped `false`).
 
