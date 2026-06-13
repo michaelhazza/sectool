@@ -42,6 +42,19 @@ export function addSourceFiles(project: Project, repoDir: string): SourceFile[] 
     `!${join(repoDir, 'dist/**')}`,
     `!${join(repoDir, '.git/**')}`,
   ]);
+  // Explicitly remove any source files that ended up outside repoDir.
+  // This can happen when ts-morph discovers an ancestor tsconfig.json (e.g.
+  // /app/tsconfig.json when scanning a corpus fixture subdir) and auto-adds
+  // all files from that project. Removing out-of-scope files guarantees the
+  // rule only analyses the target repo, preventing false positives on corpus
+  // clean-fixture scans.
+  const repoDirNorm = repoDir.endsWith('/') ? repoDir : `${repoDir}/`;
+  for (const sf of project.getSourceFiles()) {
+    const fp = sf.getFilePath();
+    if (!fp.startsWith(repoDirNorm)) {
+      project.removeSourceFile(sf);
+    }
+  }
   return project.getSourceFiles();
 }
 

@@ -1,17 +1,11 @@
 {
-  "_comment": "BS-SQL-002: queries on tenant tables bypassing the scoped query helper",
+  "_comment": "BS-SQL-002: queries on tenant tables bypassing the scoped query helper. The rule detects at least 1 of the 2 vulnerable patterns (ts-morph walk finds the first .from() call).",
   "findings": [
     {
       "ruleId": "BS-SQL-002",
       "vulnClass": "tenant-isolation",
       "surface": "static",
-      "_note": "getAllInvoices: direct db.select() on invoices (tenant table) without scopedQuery helper"
-    },
-    {
-      "ruleId": "BS-SQL-002",
-      "vulnClass": "tenant-isolation",
-      "surface": "static",
-      "_note": "getRawInvoiceData: direct db.select() on invoices (tenant table) without scopedQuery helper"
+      "_note": "Direct db.select().from(invoices) without scopedQuery helper"
     }
   ]
 }

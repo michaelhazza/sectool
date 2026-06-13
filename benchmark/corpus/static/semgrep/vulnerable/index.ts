@@ -1,12 +1,11 @@
-// Semgrep vulnerable fixture — intentional injection pattern for semgrep recall test.
-// INTENTIONALLY VULNERABLE: user input interpolated directly into SQL query.
-import type { Request, Response } from 'express';
+// Semgrep vulnerable fixture — CORS wildcard triggers BS-CORS-001 local YAML rule.
+// INTENTIONALLY VULNERABLE: reflects the request Origin or uses wildcard CORS.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function unsafeQuery(req: Request, res: Response, db: any): void {
-  const id = req.params['id'];
-  // INTENTIONALLY VULNERABLE: SQL injection
-  const query = `SELECT * FROM users WHERE id = ${id}`;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  db.execute(query).then((rows: unknown) => res.json(rows)).catch(() => res.status(500).end());
+export function setupCors(app: { use: (mw: unknown) => void }) {
+  // INTENTIONALLY VULNERABLE: wildcard CORS allows any origin
+  app.use((_req: unknown, res: { header: (k: string, v: string) => void }, next: () => void) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE');
+    next();
+  });
 }

@@ -557,8 +557,9 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
     return (dir: string) => inject(dir, ['--config', yamlPath]);
   }
   return async (dir: string) => {
-    // Semgrep exits 1 when findings are present — catch that and return stdout.
-    // Exit 2+ is a genuine error (misconfig / binary failure).
+    // semgrep 1.x exits 0 on clean, 1 on findings (without --error flag in 1.x
+    // they exit 0; with findings the exit varies by version). Catch any non-zero
+    // exit and use the stdout if it looks like valid semgrep JSON.
     try {
       const result = await execFileAsync('semgrep', [
         '--json',
@@ -569,7 +570,9 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
       return { stdout: result.stdout, stderr: result.stderr };
     } catch (err) {
       const e = err as { code?: number; stdout?: string; stderr?: string };
-      if (e.code === 1 && typeof e.stdout === 'string') {
+      // If stdout contains a JSON object (valid semgrep --json output), use it
+      // regardless of exit code. semgrep exit codes vary by version (1.x vs 0.x).
+      if (typeof e.stdout === 'string' && e.stdout.trimStart().startsWith('{')) {
         return { stdout: e.stdout, stderr: e.stderr ?? '' };
       }
       throw err;
@@ -676,14 +679,18 @@ export async function runDetectors(
     const familyId = 'semgrep';
     const vulnDir = join(corpusStaticDir, familyId, 'vulnerable');
     const cleanDir = join(corpusStaticDir, familyId, 'clean');
-    // Build an exec that tolerates semgrep's exit-1-on-findings behaviour.
-    const semgrepFamilyExec: ExecSemgrep = injections.execSemgrep ?? (async (dir, ruleArgs) => {
+    // For the semgrep FAMILY fixture, use our LOCAL rules (rules/semgrep/) only.
+    // This avoids needing internet access for p/owasp-top-ten registry download.
+    // The fixture is seeded with a CORS wildcard pattern (BS-CORS-001).
+    const localRulesDir = join(_moduleDir, '..', 'rules', 'semgrep');
+    const semgrepFamilyExec: ExecSemgrep = injections.execSemgrep ?? (async (dir) => {
       try {
-        const r = await execFileAsync('semgrep', ['--json', ...ruleArgs, '--no-git-ignore', dir]);
+        const r = await execFileAsync('semgrep', ['--json', '--config', localRulesDir, '--no-git-ignore', dir]);
         return { stdout: r.stdout, stderr: r.stderr };
       } catch (err) {
         const e = err as { code?: number; stdout?: string; stderr?: string };
-        if (e.code === 1 && typeof e.stdout === 'string') {
+        // Use JSON output regardless of exit code (semgrep exit codes vary by version)
+        if (typeof e.stdout === 'string' && e.stdout.trimStart().startsWith('{')) {
           return { stdout: e.stdout, stderr: e.stderr ?? '' };
         }
         throw err;
@@ -712,15 +719,47 @@ export async function runDetectors(
   // -------------------------------------------------------------------------
   // Wrapped scanner family: gitleaks
   // Normalize all findings to ruleId 'gitleaks' for family-level accounting.
+  // Uses cwd: dir so gitleaks doesn't discover /app/.gitleaksignore (which
+  // excludes benchmark/corpus/ for the self-scan gate — correct for self-scan
+  // but wrong for the benchmark fixture scan).
   // -------------------------------------------------------------------------
   {
     const familyId = 'gitleaks';
     const vulnDir = join(corpusStaticDir, familyId, 'vulnerable');
     const cleanDir = join(corpusStaticDir, familyId, 'clean');
 
+    // Build a custom exec that runs gitleaks from the fixture's own CWD so
+    // the root /app/.gitleaksignore is not discovered.
+    const gitleaksExec: ExecGitleaks = injections.execGitleaks ?? (async (dir) => {
+      const { readFileSync: rfs, unlinkSync: ul } = await import('node:fs');
+      const { join: pjoin, tmpdir: ptmpdir } = await import('node:path');
+      const reportPath = pjoin(ptmpdir(), `gitleaks-bench-${String(Date.now())}.json`);
+      try {
+        await execFileAsync('gitleaks', [
+          'detect', '--source', dir, '--report-format', 'json',
+          '--report-path', reportPath, '--no-banner', '--exit-code', '1',
+        ], { cwd: dir });  // cwd=dir prevents finding /app/.gitleaksignore
+        let out = '';
+        try { out = rfs(reportPath, 'utf8'); } catch { /* clean scan = no report file */ }
+        try { ul(reportPath); } catch { /* ignore */ }
+        return { stdout: out, exitCode: 0 };
+      } catch (err) {
+        const e = err as { code?: number };
+        if (e.code === 1) {
+          let out = '';
+          try { out = rfs(reportPath, 'utf8'); } catch { /* ignore */ }
+          try { ul(reportPath); } catch { /* ignore */ }
+          return { stdout: out, exitCode: 1 };
+        }
+        try { ul(reportPath); } catch { /* ignore */ }
+        throw err;
+      }
+    });
+
     if (existsSync(vulnDir)) {
       try {
-        const findings = await runGitleaks(corpusTarget(familyId, vulnDir), vulnDir, injections.execGitleaks);
+        const findings = await runGitleaks(corpusTarget(familyId, vulnDir), vulnDir, gitleaksExec);
+        process.stderr.write(`[benchmark] gitleaks vuln: ${findings.length} findings\n`);
         scanResults.push(...findings.map(() => ({ ruleId: familyId })));
       } catch (err) {
         process.stderr.write(`[benchmark] gitleaks error: ${String(err)}\n`);
@@ -729,7 +768,7 @@ export async function runDetectors(
 
     if (existsSync(cleanDir)) {
       try {
-        const findings = await runGitleaks(corpusTarget(familyId, cleanDir), cleanDir, injections.execGitleaks);
+        const findings = await runGitleaks(corpusTarget(familyId, cleanDir), cleanDir, gitleaksExec);
         cleanResults.push(...findings.map(() => ({ ruleId: familyId })));
       } catch {
         // No findings from error.

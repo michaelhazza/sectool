@@ -1,6 +1,13 @@
 {
-  "_comment": "OSV-scanner wrapper family: vulnerable fixture — expects at least one finding from the osv scanner family. Real binary recall is CI/P6 benchmark run.",
+  "_comment": "OSV scanner finds CVEs in lodash 4.17.15 + minimist 0.2.0. 8 CVE groups found in CI run 8. Each CVE group is one finding.",
   "findings": [
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" },
     { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" }
   ]
 }
