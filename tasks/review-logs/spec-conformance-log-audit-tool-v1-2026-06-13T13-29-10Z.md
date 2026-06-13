@@ -7,6 +7,7 @@
 **Scope:** all-of-spec (8 phases P1–P8), full changed-code coverage — caller-confirmed whole-tool verification post full chunked pipeline + adversarial + pr-review
 **Changed-code set:** whole tool — `src/**`, `ui/**`, `benchmark/**`, `rules/semgrep/**`, `config/**`, `docs/rules/**`, `docs/fix-workflow.md`, `Dockerfile`, `CODEOWNERS`, `.github/workflows/**`, `.semgrepignore`, `.gitleaksignore`
 **Run at:** 2026-06-13T13:29:10Z
+**Commit at finish:** `66103a78bd5c`
 
 ---
 
