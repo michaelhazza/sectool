@@ -1,11 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { main } from './cli.js';
+// ── Mock config loader — isolates CLI tests from on-disk config files ──────
+// load.test.ts owns the file-reading contract; cli.test.ts tests CLI dispatch.
 
-const _moduleDir = dirname(fileURLToPath(import.meta.url));
-const _repoRoot = join(_moduleDir, '..');
+vi.mock('./config/load.js', () => {
+  const ConfigError = class ConfigError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ConfigError';
+    }
+  };
+
+  return {
+    ConfigError,
+    loadAllowlist: vi.fn(() => ({ hosts: [] })),
+    loadTargets: vi.fn(() => ({ repos: [], stagingTargets: [] })),
+    loadBaseline: vi.fn(() => ({ entries: [] })),
+  };
+});
+
+import { main } from './cli.js';
+import { ConfigError, loadAllowlist, loadTargets } from './config/load.js';
 
 // ── ExitSignal ─────────────────────────────────────────────────────────────
 
@@ -74,7 +88,8 @@ function capture(argv: string[]): { stdout: string; stderr: string; exitCode: nu
 
 describe('CLI — P1-4', () => {
   beforeEach(() => {
-    vi.restoreAllMocks();
+    vi.mocked(loadAllowlist).mockReturnValue({ hosts: [] } as unknown as ReturnType<typeof loadAllowlist>);
+    vi.mocked(loadTargets).mockReturnValue({ repos: [], stagingTargets: [] });
   });
 
   afterEach(() => {
@@ -168,8 +183,7 @@ describe('CLI — P1-4', () => {
 
   describe('shared flag defaults', () => {
     it('scan-source with defaults reaches the stub without config error', () => {
-      // Shipped config is valid (empty allowlist, 1 enabled repo, 0 enabled staging).
-      // Parsing succeeds with defaults; stub writes its message and returns.
+      // Config mock returns valid empty config; parsing succeeds with defaults.
       const { stderr, exitCode } = capture(['scan-source']);
       expect(stderr).not.toContain('Config error');
       expect(exitCode).toBe(0);
@@ -191,48 +205,28 @@ describe('CLI — P1-4', () => {
   // ── Config-validation path ───────────────────────────────────────────────
 
   describe('config validation', () => {
-    const allowlistPath = join(_repoRoot, 'config', 'allowed-staging-hosts.json');
-    const targetsPath = join(_repoRoot, 'config', 'targets.json');
-
     it('exits 1 with "Config error" message when allowlist contains invalid JSON', () => {
-      const original = readFileSync(allowlistPath, 'utf-8');
-      writeFileSync(allowlistPath, 'NOT JSON');
-      try {
-        const { stderr, exitCode } = capture(['scan-source']);
-        expect(exitCode).toBe(1);
-        expect(stderr).toContain('Config error');
-      } finally {
-        writeFileSync(allowlistPath, original);
-      }
+      vi.mocked(loadAllowlist).mockImplementationOnce(() => {
+        throw new ConfigError('Failed to read allowlist at /path: SyntaxError: Unexpected token');
+      });
+      const { stderr, exitCode } = capture(['scan-source']);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain('Config error');
     });
 
     it('exits 1 when an enabled staging target host is not on the allowlist', () => {
-      const original = readFileSync(targetsPath, 'utf-8');
-      const brokenTargets = JSON.stringify({
-        repos: [],
-        stagingTargets: [
-          {
-            name: 'bad-target',
-            url: 'https://evil.not-on-allowlist.example',
-            repo: 'some-repo',
-            activeScan: false,
-            rateLimitRps: 10,
-            enabled: true,
-          },
-        ],
+      vi.mocked(loadTargets).mockImplementationOnce(() => {
+        throw new ConfigError(
+          'Enabled staging target "bad-target" has host "evil.not-on-allowlist.example" which is not on the allowlist.',
+        );
       });
-      writeFileSync(targetsPath, brokenTargets);
-      try {
-        const { stderr, exitCode } = capture(['run']);
-        expect(exitCode).toBe(1);
-        expect(stderr).toContain('Config error');
-      } finally {
-        writeFileSync(targetsPath, original);
-      }
+      const { stderr, exitCode } = capture(['run']);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain('Config error');
     });
 
     it('accepts the shipped config (1 enabled repo, 0 enabled staging, empty allowlist)', () => {
-      // scan-source reaches the stub (exits 0, no config error).
+      // Mock returns valid config — scan-source reaches the stub (exits 0, no config error).
       const { stderr, exitCode } = capture(['scan-source']);
       expect(stderr).not.toContain('Config error');
       expect(exitCode).toBe(0);

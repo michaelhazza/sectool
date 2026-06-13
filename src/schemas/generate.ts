@@ -1,6 +1,6 @@
+import { z } from 'zod';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { FindingSchema } from './finding.js';
 import { TargetRegistrySchema } from './targets.js';
 import { AllowlistSchema } from './allowlist.js';
@@ -9,14 +9,14 @@ import { TrendLineSchema } from './trend.js';
 import { RunReportSchema } from './report.js';
 import { FixesFileSchema } from './fix.js';
 
-const schemas: Record<string, ReturnType<typeof zodToJsonSchema>> = {
-  finding: zodToJsonSchema(FindingSchema, 'Finding'),
-  targets: zodToJsonSchema(TargetRegistrySchema, 'TargetRegistry'),
-  allowlist: zodToJsonSchema(AllowlistSchema, 'Allowlist'),
-  baseline: zodToJsonSchema(BaselineSchema, 'Baseline'),
-  trend: zodToJsonSchema(TrendLineSchema, 'TrendLine'),
-  report: zodToJsonSchema(RunReportSchema, 'RunReport'),
-  fix: zodToJsonSchema(FixesFileSchema, 'FixesFile'),
+const schemas: Record<string, object> = {
+  finding: z.toJSONSchema(FindingSchema),
+  targets: z.toJSONSchema(TargetRegistrySchema),
+  allowlist: z.toJSONSchema(AllowlistSchema),
+  baseline: z.toJSONSchema(BaselineSchema),
+  trend: z.toJSONSchema(TrendLineSchema),
+  report: z.toJSONSchema(RunReportSchema),
+  fix: z.toJSONSchema(FixesFileSchema),
 };
 
 export function generateSchemas(outDir: string = 'schemas'): void {

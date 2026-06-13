@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -30,19 +30,53 @@ const benchmarkAllowlistPath = join(repoRoot, 'benchmark', 'allowlist.benchmark.
 let originalAllowlist: string;
 let originalTargets: string;
 let originalBaseline: string;
+let originalBenchmarkAllowlist: string | null;
 
 import { readFileSync } from 'node:fs';
+
+// Shipped base state: valid JSON for all three config files. Written once in
+// beforeAll so that the beforeEach save/afterEach restore cycle never starts
+// from a corrupted (empty or invalid) file left by a prior interrupted run.
+const BASE_ALLOWLIST = JSON.stringify({ hosts: [] });
+const BASE_TARGETS = JSON.stringify({
+  repos: [
+    {
+      name: 'automation-v1',
+      gitUrl: 'https://github.com/breakoutsolutions/automation-v1.git',
+      localPath: null,
+      stackTags: ['express'],
+      publicRoutes: [],
+      enabled: true,
+    },
+  ],
+  stagingTargets: [],
+});
+const BASE_BASELINE = JSON.stringify({ entries: [] });
+
+beforeAll(() => {
+  writeFileSync(allowlistPath, BASE_ALLOWLIST, 'utf-8');
+  writeFileSync(targetsPath, BASE_TARGETS, 'utf-8');
+  writeFileSync(baselinePath, BASE_BASELINE, 'utf-8');
+});
 
 beforeEach(() => {
   originalAllowlist = readFileSync(allowlistPath, 'utf-8');
   originalTargets = readFileSync(targetsPath, 'utf-8');
   originalBaseline = readFileSync(baselinePath, 'utf-8');
+  try {
+    originalBenchmarkAllowlist = readFileSync(benchmarkAllowlistPath, 'utf-8');
+  } catch {
+    originalBenchmarkAllowlist = null;
+  }
 });
 
 afterEach(() => {
   writeFileSync(allowlistPath, originalAllowlist, 'utf-8');
   writeFileSync(targetsPath, originalTargets, 'utf-8');
   writeFileSync(baselinePath, originalBaseline, 'utf-8');
+  if (originalBenchmarkAllowlist !== null) {
+    writeFileSync(benchmarkAllowlistPath, originalBenchmarkAllowlist, 'utf-8');
+  }
 });
 
 // ---------------------------------------------------------------------------

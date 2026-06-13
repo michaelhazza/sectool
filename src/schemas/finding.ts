@@ -57,7 +57,7 @@ const LiveTargetSchema = z.object({
   host: z.string().min(1),
 });
 
-const TargetSchema = z.discriminatedUnion('kind', [
+export const TargetSchema = z.discriminatedUnion('kind', [
   StaticTargetSchema,
   LiveTargetSchema,
 ]);
@@ -83,7 +83,7 @@ const SuppressionSchema = z.object({
 const EvidenceSchema = z.object({
   snippet: z.string().optional(),
   cvss: z.number().nullable(),
-  raw: z.record(z.unknown()),
+  raw: z.record(z.string(), z.unknown()),
 });
 
 const FindingBaseSchema = z.object({

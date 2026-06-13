@@ -23,7 +23,7 @@ const BENCHMARK_ALLOWLIST_PATH = join(_repoRoot, 'benchmark', 'allowlist.benchma
 type Brand = { readonly __loadedAllowlist: true };
 
 export type LoadedAllowlist = Brand & {
-  readonly hosts: ReadonlyArray<{ host: string; owner: string; addedAt: string; note?: string }>;
+  readonly hosts: ReadonlyArray<{ host: string; owner: string; addedAt: string; note?: string | undefined }>;
 };
 
 function mintAllowlist(hosts: LoadedAllowlist['hosts']): LoadedAllowlist {
