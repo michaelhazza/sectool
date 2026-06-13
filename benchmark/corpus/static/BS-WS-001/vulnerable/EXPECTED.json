@@ -1,0 +1,11 @@
+{
+  "_comment": "BS-WS-001: socket.io connection handler without auth handshake middleware",
+  "findings": [
+    {
+      "ruleId": "BS-WS-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "io.on('connection') registered without io.use(authMiddleware)"
+    }
+  ]
+}

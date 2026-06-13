@@ -1,0 +1,17 @@
+{
+  "_comment": "BS-VAL-001: route handlers reading req.body/query/params without Zod parse",
+  "findings": [
+    {
+      "ruleId": "BS-VAL-001",
+      "vulnClass": "misconfiguration",
+      "surface": "static",
+      "_note": "POST /api/users reads req.body without Zod schema parse"
+    },
+    {
+      "ruleId": "BS-VAL-001",
+      "vulnClass": "misconfiguration",
+      "surface": "static",
+      "_note": "GET /api/search reads req.query without Zod schema parse"
+    }
+  ]
+}

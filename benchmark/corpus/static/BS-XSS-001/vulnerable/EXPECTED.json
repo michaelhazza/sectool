@@ -1,0 +1,17 @@
+{
+  "_comment": "BS-XSS-001: user-supplied HTML rendered without sanitize-html",
+  "findings": [
+    {
+      "ruleId": "BS-XSS-001",
+      "vulnClass": "xss",
+      "surface": "static",
+      "_note": "req.body.content passed to res.send() without sanitizeHtml"
+    },
+    {
+      "ruleId": "BS-XSS-001",
+      "vulnClass": "xss",
+      "surface": "static",
+      "_note": "req.query.message passed to res.send() without sanitizeHtml"
+    }
+  ]
+}

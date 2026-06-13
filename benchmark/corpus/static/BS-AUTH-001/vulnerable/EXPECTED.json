@@ -1,0 +1,23 @@
+{
+  "_comment": "BS-AUTH-001: Express routes without auth/permission middleware",
+  "findings": [
+    {
+      "ruleId": "BS-AUTH-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "GET /api/users — no auth middleware"
+    },
+    {
+      "ruleId": "BS-AUTH-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "POST /api/admin/settings — no auth middleware"
+    },
+    {
+      "ruleId": "BS-AUTH-001",
+      "vulnClass": "auth-access-control",
+      "surface": "static",
+      "_note": "DELETE /api/users/:id — no auth middleware"
+    }
+  ]
+}
