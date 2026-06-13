@@ -35,3 +35,12 @@ Active backlog. Items captured here are queued for work; resolved items move to 
 - [ ] [origin:validate-setup:2026-06-12] [status:open] Author `architecture.md` so context-pack anchors resolve
   - Why: all 5 context packs reference `architecture.md` anchors; the doc doesn't exist yet (fresh adoption).
   - Approach: author after audit-tool v1 lands its real architecture; anchor IDs per framework convention.
+
+## Spec Review deferred items
+
+### audit-tool-v1 (2026-06-13)
+
+- [ ] [origin:chatgpt-spec-review-OAI-SPEC-003:2026-06-13] [status:deferred] [user] TrendHistory `unknown` partial-run status field — where does `unknown` live? — operator product call needed
+  - Why: §6.5 `TrendHistory` (`history/trend.jsonl`) promises a visible `unknown` partial-run status on the Trends UI screen (§5.2) and a guardrail test, but the record shape only defines counts (`new`/`fixed`/`persisting`/`bySeverity`) with no field to store `unknown`. Implementers can't tell whether `unknown` is target-level, scanner-family-level, or both.
+  - Approach: operator decides the shape, then the coordinator pins it in §6.5 + the Trends screen contract. Recommended conservative default: a target-level `"status": "unknown"` on the per-run target record, OR a closed `scannerFamilyStatus` map if per-family granularity should surface on the Trends screen. Left UNAPPLIED pending the operator call because it shapes visible Trends-screen rendering of partial runs.
+  - Risk: medium — a partial scanner failure could otherwise render as clean remediation on the Trends screen if the field is omitted or placed wrong.

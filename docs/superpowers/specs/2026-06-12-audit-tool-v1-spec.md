@@ -118,7 +118,21 @@ structurally impossible, not merely forbidden:
    TLS-only); (b) `new URL(u).hostname` exactly matches an enabled entry; and
    (c) the URL targets the default https port — `new URL(u).port` is empty or
    `"443"` (a non-default port denotes a different service on the same host and
-   is rejected in v1; per-entry non-default ports are a deferred item, §13).
+   is rejected in v1; per-entry non-default ports are a deferred item, §13); and
+   (d) **the hostname is a DNS name, not an IP literal** — any URL whose
+   `new URL(u).hostname` parses as an IPv4 literal (dotted-decimal AND
+   Node-accepted numeric/octal/hex forms, e.g. `2130706433`, `0x7f000001`) or an
+   IPv6 literal (bracketed, e.g. `[::1]`, `[::ffff:127.0.0.1]`) is rejected
+   outright in the **production** gate. Allowlist `host` entries are likewise
+   constrained to DNS names by the §6.3 schema (no IP-literal entries), so the
+   exact-match in (b) can never match an IP literal anyway; clause (d) closes
+   the parser-quirk path where a numeric/octal/hex IPv4 or bracketed IPv6 string
+   could otherwise slip through string comparison. (Loopback IP literals are
+   permitted ONLY via `loadBenchmarkAllowlist()` (§4.10), never the production
+   loader — the benchmark allowlist is the sole IP-literal-bearing path and is
+   schema-restricted to `127.0.0.1` / `localhost` / `*.localhost`.) [IP-literal
+   rejection per chatgpt-spec-review OAI-SPEC-006 — a *strengthening* of the §4
+   contract, never a relaxation.]
    Anything else throws `AllowlistViolationError` **before any network I/O** —
    a hard abort, not a warning. An empty allowlist (the shipped default) means
    the live path can scan nothing.
@@ -258,9 +272,19 @@ engineer-audience assumption.]
   executed. The inline `<script>` is a fixed, build-time chart renderer that
   consumes only a JSON data island (itself escaped via `</script>`-safe
   encoding); there is no `eval`, no `innerHTML` of evidence, and no
-  evidence-derived script. This is a security tool emitting attacker-controlled
+  evidence-derived script. **The inert-text rule covers every DOM carrier, not
+  just `<script>`:** evidence is escaped and confined to a visible text
+  container, and is NEVER emitted into a `<style>`, `<template>`, `<meta>`,
+  `<link>`, HTML comment, attribute value (including `aria-*`/`data-*`/`href`/
+  `src`/event-handler attributes), `<input type="hidden">`, or any
+  hidden/off-viewport subtree (`display:none`, `visibility:hidden`,
+  `aria-hidden`, off-screen absolute/fixed positioning). The acceptance contract
+  exercises this matrix (§10 references it) so a future implementation cannot
+  pass a bare `<script>`-escaping check while still leaking attacker-controlled
+  evidence through a non-visible carrier that browsers or assistive tooling
+  still process. This is a security tool emitting attacker-controlled
   strings, so the export must not become an XSS vector in whatever browser opens
-  the artifact.
+  the artifact. [Non-visible-carrier coverage per chatgpt-spec-review OAI-SPEC-007.]
 - **Mobile:** responsive, desktop-first; all screens usable at 375px (§3).
 
 **Screens (6).** Final shapes are the **approved prototypes** in
@@ -329,9 +353,20 @@ repo.
    joining the freshly-derived finding's fingerprint to `fixes.json`, so links
    survive the next `audit run` that re-derives findings from scratch (same
    source-of-truth precedence as §6.5: scan re-derives, persisted store
-   rehydrates). Idempotent: filing is keyed on fingerprint — an open
-   `audit-fix` issue with the same fingerprint marker is reused, never
-   duplicated (re-filing comments instead).
+   rehydrates). **Idempotent at BOTH the issue and the comment level:** filing
+   is keyed on fingerprint — an open `audit-fix` issue with the same fingerprint
+   marker is reused, never duplicated. When the issue already exists, the tool
+   posts at most ONE marker-bearing comment per distinct re-file *reason* (e.g. a
+   `reopened` transition, §5.3 step 4): each comment carries a deterministic
+   `<!-- audit-fix:<fingerprint>:<reason> -->` HTML marker, and the tool
+   **searches existing issue comments for that exact marker before posting** —
+   if a comment with the same marker is already present, the re-file is a no-op
+   (no new comment). This closes the duplicate-comment window: a retry after
+   GitHub accepted a comment but before `fixes.json` was updated, or a repeated
+   `audit fix`, finds the marker and skips. The external write is therefore
+   genuinely idempotent (search-before-create for issues AND search-before-comment
+   for comments), matching the §14 `idempotent` retry classification. [Comment
+   idempotency pinned per chatgpt-spec-review OAI-SPEC-008.]
 3. **Repo-local execution.** The target repo's Claude Code GitHub Action picks
    up `audit-fix` issues, implements the fix on a branch, and opens a PR
    referencing the issue. The repo's own gates + human review own merge.
@@ -389,6 +424,7 @@ All schemas are Zod (`src/schemas/`), each exporting a generated JSON Schema
 ```jsonc
 {
   "id": "f-3f9a1c2b8d4e0a17",            // "f-" + first 16 hex of fingerprint (§6.6)
+  "fingerprint": "3f9a1c2b8d4e0a17…",   // FULL 64-hex sha256 (§6.6); id === "f-" + fingerprint.slice(0,16). Canonical key for fixes.json (§5.3) and SARIF auditToolFingerprintV1 (§6.10)
   "ruleId": "BS-SQL-001",                  // custom rule, wrapped-scanner map, or live check id
   "source": "ast",                         // "ast" | "semgrep" | "gitleaks" | "osv" | "zap" | "nuclei" | "probe"
   "surface": "static",                     // "static" | "live"
@@ -418,6 +454,18 @@ All schemas are Zod (`src/schemas/`), each exporting a generated JSON Schema
 Nullability: `evidence.cvss` null unless upstream provides one; `location`
 fields are surface-specific (static vs live shapes are a discriminated union on
 `target.kind`). Producer: layer 1–3 normalizers. Consumer: layer 4 + report.
+
+**`fingerprint` is the canonical full key (not the truncated `id`).** Every
+finding carries the FULL 64-hex sha256 `fingerprint` (§6.6) alongside the
+display `id` (`id === "f-" + fingerprint.slice(0,16)`). The full `fingerprint`
+is the value used as: the `reports/fixes.json` key (§5.3), the SARIF
+`auditToolFingerprintV1` (§6.10), the `audit fix <finding-id>` → fixes.json
+join key, and the `audit-fix` GitHub issue marker (§5.3). The truncated `id`
+is for human/UI display only and is NEVER an idempotency or join key — its
+truncation makes collisions possible. `RunReport.findings[]` (§6.9) therefore
+serialises the full `fingerprint` so a re-emitted `audit report --format sarif`
+and `audit fix` operate from the report file alone, with no recomputation from
+display fields. [Per chatgpt-spec-review OAI-SPEC-001.]
 
 **Field lifecycle (raw scan finding vs report finding — one schema, two
 stages).** `Finding` is a single Zod type used at both stages; three fields are
@@ -456,7 +504,7 @@ references.
               "passField": "password",     // request field name for the password
               "bodyType": "json",          // "json" | "form-urlencoded" — login request encoding
               "sessionCarrier": "cookie",  // "cookie" | "bearer" — how the authenticated session is carried on subsequent requests
-              "successCheck": { "statusIn": [200, 204], "jsonHasKey": "token" }, // login is "succeeded" iff status ∈ statusIn AND (jsonHasKey present in body OR a Set-Cookie was issued)
+              "successCheck": { "statusIn": [200, 204], "jsonHasKey": "token" }, // login "succeeded" iff status ∈ statusIn AND the session credential for THIS sessionCarrier was actually obtained — see carrier-aware rule below
               "testUsers": [               // env NAMES, never values
                 { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_A", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_A" },
                 { "userEnv": "AUDIT_STAGING_AUTOMATION_USER_B", "passEnv": "AUDIT_STAGING_AUTOMATION_PASS_B" }
@@ -495,10 +543,20 @@ claude-spec-review CR-003.] A `form` auth block fully specifies the login
 exchange so ZAP/Nuclei/session/IDOR crawls (§7.3) are reproducible: `method` +
 `loginPath` + `bodyType` define the request; `userField`/`passField` name the
 credential fields; `sessionCarrier` says whether the post-login session rides
-in a cookie or a bearer token; and `successCheck` defines login success
-(`status ∈ statusIn` AND (`jsonHasKey` present OR a `Set-Cookie` issued)) — a
-login that does not satisfy `successCheck` counts as a login failure for the
-§6.2 failure-pinning rule below. CSRF tokens (if the login form issues one) are
+in a cookie or a bearer token; and `successCheck` defines login success in a
+**carrier-aware** way — login succeeds iff `status ∈ statusIn` AND the
+credential the scanner will actually replay for `sessionCarrier` was obtained:
+for `sessionCarrier: "bearer"` the response MUST contain an extractable token at
+`jsonHasKey` (a `Set-Cookie` alone does NOT satisfy success — the crawler has no
+bearer to send); for `sessionCarrier: "cookie"` the response MUST issue a usable
+`Set-Cookie` (a JSON token alone does NOT satisfy success — cookie-based crawling
+cannot authenticate from it). The carrier-agnostic OR ("`jsonHasKey` present OR a
+`Set-Cookie` issued") is **rejected** because it can mark a login "succeeded"
+while the scanner holds no credential for its configured carrier, silently
+running an `activeScan: true` target unauthenticated and overstating
+IDOR/access-control coverage. A login that does not satisfy this carrier-aware
+`successCheck` counts as a login failure for the §6.2 failure-pinning rule below.
+[Carrier-aware successCheck per chatgpt-spec-review OAI-SPEC-009.] CSRF tokens (if the login form issues one) are
 captured from the pre-login `GET loginPath` response and replayed on the login
 POST; this is the only CSRF handling in v1 (deeper anti-CSRF flows are out of
 scope). `auth.testUsers` is a closed array of env-var-name pairs: when `auth` is present the schema requires ≥ 1 entry (authenticated
@@ -756,8 +814,14 @@ in the listed order, clamped to the `critical…low` scale:
    below `high` regardless of demotion.
 
 Report ordering: severity desc → confidence (confirmed > probable > tentative)
-→ vulnClass criticality (tenant-isolation first) → target name. CVSS from
-upstream scanners is carried in `evidence.cvss` as metadata only.
+→ vulnClass criticality (tenant-isolation first) → target name → **`ruleId`
+(asc) → full `fingerprint` (asc)** as the final, total tiebreaker. The last two
+keys guarantee a *total* order even when two findings share severity,
+confidence, vulnClass, and target — so JSON/Markdown/SARIF/HTML/UI/benchmark
+byte output is deterministic and independent of scanner arrival order or
+engine sort stability. CVSS from upstream scanners is carried in
+`evidence.cvss` as metadata only. [Final tiebreaker per chatgpt-spec-review
+OAI-SPEC-004.]
 
 **Reachability inputs (how the modifier operands are set).** `reachability`
 (§6.1) is set at normalization, not inferred dynamically: a static rule fires
@@ -786,7 +850,8 @@ Two findings correlate when ALL of:
 Correlated pairs merge into the static finding (it carries the fix location);
 the live finding's id is appended to `correlatedWith`, severity recomputed
 (§8.1), and the report renders one entry with both evidence blocks. Dedupe is
-deterministic: process findings sorted by id so run order can't change output.
+deterministic: process findings sorted by full `fingerprint` (§6.6, not the
+truncated `id`) so run order can't change output.
 
 ## 10. Benchmark corpus + quality gates (definition of done)
 
@@ -824,6 +889,23 @@ benchmark/
     suppress the same `findingId` on another target (§6.4).
   - *Active-scan cred failure:* an `activeScan: true` target with missing
     creds must produce a `failed` run, not a passive scan (§6.2).
+  - *HTML evidence inert-text matrix:* malicious evidence values containing
+    `<script>`, `<style>`, `<template>`, `<meta>`, `<link>`, HTML comments,
+    `aria-*`/`data-*`/event-handler attributes, `<input type="hidden">`,
+    `display:none`/`visibility:hidden`/`aria-hidden`/off-viewport subtrees, and a
+    literal `</script>` must appear in the HTML export ONLY as escaped text in
+    the visible evidence container — never as parsed DOM or executable script
+    (§5.2). [OAI-SPEC-007.]
+  - *Allowlist IP-literal rejection:* the production `assertAllowlisted` rejects
+    IP-literal URLs before any network I/O — `https://127.0.0.1/`, a
+    numeric/octal/hex IPv4 variant Node's `URL` accepts, `https://[::1]/`, and
+    `https://[::ffff:127.0.0.1]/` — while only `loadBenchmarkAllowlist()` may
+    permit loopback literals (§4.2). [OAI-SPEC-006.]
+  - *Carrier-aware login success:* a `sessionCarrier: "bearer"` login that only
+    sets a cookie, and a `sessionCarrier: "cookie"` login that only returns a
+    JSON token, each count as a login *failure* and mark an `activeScan: true`
+    target `failed` — never a silent unauthenticated active scan (§6.2).
+    [OAI-SPEC-009.]
 - **Self-scan gate:** CI statically scans this repo itself and must be clean;
   `benchmark/corpus/**` and `benchmark/live-fixture/**` are excluded via the
   self-scan config (they are intentionally vulnerable by design — exclusion
@@ -920,9 +1002,22 @@ loop green plus the P7+P8 deliverables landed.
   (report + trend writes), `audit fix`, and the dashboard "Send for fixing"
   endpoint. Acquisition: create-exclusive (`wx`); on contention the losing
   caller exits immediately with a named `WorkspaceLockedError` (it does not
-  block-wait). The lock records the holder's pid + ISO start time; a lock older
-  than 2h is treated as stale and may be broken by the next caller (the prior
-  process is assumed dead). All atomic writes below happen while the caller
+  block-wait). The lock records the holder's pid, ISO start time, and a
+  `heartbeatAt` ISO timestamp that the holder **refreshes at least every 60s**
+  for the lifetime of the run (a long portfolio scan rewrites the lock's
+  `heartbeatAt` in place via the same atomic tmp+rename). **Staleness is decided
+  by liveness, not by total run duration** — a legitimate full-portfolio `audit
+  run` may exceed any fixed wall-clock and must NOT be breakable while alive
+  (there is no cap on registered targets). A held lock may be broken by the next
+  caller ONLY when the holder is provably gone, established in order:
+  (1) the recorded pid is not a live process (`process.kill(pid, 0)` throws
+  `ESRCH`) → break immediately; (2) the pid cannot be verified (e.g. recorded on
+  another host) AND `heartbeatAt` is older than the stale threshold (default 5×
+  the 60s heartbeat interval = 5min) → break. A live pid with a fresh heartbeat
+  is NEVER broken regardless of elapsed run time. The old "older than 2h ⇒ stale"
+  rule is replaced by this heartbeat+pid-liveness contract. [Per
+  chatgpt-spec-review OAI-SPEC-005 — fixed wall-clock staleness could break a
+  still-running legitimate scan.] All atomic writes below happen while the caller
   holds this lock; read-only consumers (`audit ui`, `audit report`) do NOT take
   it (they tolerate a concurrent atomic rename by re-reading on parse failure).
 - **Idempotency:** report writes are state-based — atomic tmp+rename per
@@ -930,15 +1025,17 @@ loop green plus the P7+P8 deliverables landed.
   findings, stable fingerprints). Trend append is key-based on `runId`
   (re-running the same runId replaces the line, no duplicates).
 - **`reports/fixes.json` writes:** the same atomic tmp+rename discipline as
-  report outputs, serialised by the `reports/.lock` defined above. Every writer
-  (`audit fix`, the dashboard "Send for fixing" endpoint, and the
-  rehydrate-on-report-build step §5.3) does read-modify-write under the lock:
+  report outputs, serialised by the `reports/.lock` defined above. There are
+  exactly TWO writers — `audit fix` and the dashboard "Send for fixing"
+  endpoint (same code path) — each doing read-modify-write under the lock:
   load → upsert the fingerprint-keyed entry → atomic rename. Keyed on
   fingerprint, so two writers targeting the same finding converge (last-writer
   wins on the status field, which is itself derived from GitHub state and so
-  idempotent). `audit run`'s rehydrate step only READS `fixes.json` to populate
-  `externalRefs` (§5.3) but still runs inside `audit run`'s held lock, so it
-  never races a status write. Conflict/precedence: `fixes.json` is authoritative
+  idempotent). The report-build rehydrate step (`audit run`, §5.3) is **NOT a
+  writer**: it only READS `fixes.json` to populate the report's derived
+  `externalRefs` (a pure projection — it never mutates `fixes.json`, never
+  changes its bytes or mtime), and it still runs inside `audit run`'s held lock,
+  so it never races a concurrent status write. Conflict/precedence: `fixes.json` is authoritative
   for issue URLs; GitHub-derived status is recomputed on read, so a stale local
   status is self-healing on the next derivation.
 - **Retry classification:** scanner subprocesses are `safe` to retry (read-only
@@ -946,8 +1043,9 @@ loop green plus the P7+P8 deliverables landed.
   acceptable by contract). Git clone is `safe` (fresh temp dir per attempt).
 - **Concurrency:** single-process CLI; concurrent runs on the same workspace
   are unsupported and guarded by the `reports/.lock` workspace lock defined at
-  the top of this section (create-exclusive, stale after 2h, losing caller exits
-  with `WorkspaceLockedError`).
+  the top of this section (create-exclusive, broken only on pid-liveness +
+  stale-heartbeat per that contract — never on elapsed run time alone, losing
+  caller exits with `WorkspaceLockedError`).
 - **Terminal event:** every `audit run` ends with exactly one run-summary
   record (stdout + `report.json.meta.status`): `success` (all scanners ran) |
   `partial` (≥1 scanner failed/timed out — named per scanner in
@@ -971,10 +1069,13 @@ loop green plus the P7+P8 deliverables landed.
   `gated(allowed)` — unrepresentable via the `AllowedTarget` brand (§4.1).
   Status set is closed; additions require spec amendment.
 - **Fix-request writes (§5.3):** the ONLY HTTP writes to an external system
-  are GitHub issue create/comment calls, idempotent by fingerprint marker
-  (search-before-create; re-running `audit fix` reuses the open issue). Retry
-  classification: `idempotent`. No other HTTP writes exist; no DB (checklist
-  §10.6 N/A — no unique constraints).
+  are GitHub issue create/comment calls, idempotent by fingerprint marker at
+  BOTH levels — search-before-create for the issue (reuses the open `audit-fix`
+  issue) AND search-before-comment for comments (each comment carries a
+  deterministic `audit-fix:<fingerprint>:<reason>` marker; a re-file finds the
+  marker and posts nothing, so retries never produce duplicate comments, §5.3
+  step 2). Retry classification: `idempotent`. No other HTTP writes exist; no DB
+  (checklist §10.6 N/A — no unique constraints).
 
 ## 15. Self-consistency + count reconciliation
 
