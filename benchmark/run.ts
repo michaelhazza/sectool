@@ -560,9 +560,11 @@ function makeSemgrepRuleExec(yamlPath: string, inject?: ExecSemgrep): ExecSemgre
     // semgrep 1.78: --no-git-ignore triggers a metrics-consent dialog exit 2.
     // Drop the flag; benchmark corpus dirs have no .gitignore to worry about.
     try {
+      // cwd: dir — prevents semgrep from discovering /app/.semgrepignore which
+      // excludes benchmark/corpus/**; without this, "paths.scanned" is empty.
       const result = await execFileAsync('semgrep', [
         '--json', '--metrics=off', '--config', yamlPath, dir,
-      ]);
+      ], { cwd: dir });
       process.stderr.write(`[semgrep-exec] code=0 results=${String(result.stdout).slice(0,120)}\n`);
       return { stdout: result.stdout, stderr: result.stderr };
     } catch (err) {
@@ -690,7 +692,8 @@ export async function runDetectors(
     const localRulesDir = join(_moduleDir, '..', 'rules', 'semgrep');
     const semgrepFamilyExec: ExecSemgrep = injections.execSemgrep ?? (async (dir) => {
       try {
-        const r = await execFileAsync('semgrep', ['--json', '--metrics=off', '--config', localRulesDir, dir]);
+        // cwd: dir — same .semgrepignore bypass as the YAML-rule exec above
+        const r = await execFileAsync('semgrep', ['--json', '--metrics=off', '--config', localRulesDir, dir], { cwd: dir });
         process.stderr.write(`[semgrep-family] code=0 stdout=${r.stdout.slice(0,120)}\n`);
         return { stdout: r.stdout, stderr: r.stderr };
       } catch (err) {
