@@ -1,6 +1,44 @@
 import { parseArgs } from 'node:util';
+import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
-import { loadAllowlist, loadTargets, ConfigError } from './config/load.js';
+import { loadAllowlist, loadTargets, loadBaseline, ConfigError } from './config/load.js';
+import { scanRepos } from './static/orchestrator.js';
+import { preflight, dryRun } from './live/preflight.js';
+import { loginForTarget } from './live/auth.js';
+import { runZap } from './live/scanners/zap.js';
+import { runNuclei } from './live/scanners/nuclei.js';
+import { correlate } from './correlate/correlate.js';
+import { buildReport, writeReport } from './report/json.js';
+import { toMarkdown } from './report/markdown.js';
+import { toSarif } from './report/sarif.js';
+import {
+  writeTrend,
+  buildTrendLine,
+  readTrendLines,
+  buildPrevFingerprintMap,
+} from './report/trend.js';
+import { withWorkspaceLock, WorkspaceLockedError } from './report/lock.js';
+import type { ScannerStatusEntry, RunTarget, FailureEntry } from './schemas/report.js';
+import type { Finding } from './schemas/finding.js';
+import type { AllowedTarget } from './live/gate.js';
+import type { Session } from './live/auth.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const REPO_ROOT = resolve(__dirname, '..');
+
+// ---------------------------------------------------------------------------
+// Types for injectable live-scan dependencies (enable unit testing without
+// network access — callers supply fake implementations in tests)
+// ---------------------------------------------------------------------------
+
+export type LiveScanDeps = {
+  runProbes: (target: AllowedTarget, rps: number) => Promise<Finding[]>;
+  runZapScanner: typeof runZap;
+  runNucleiScanner: typeof runNuclei;
+};
 
 const COMMANDS = ['scan-source', 'scan-live', 'run', 'report', 'ui', 'fix'] as const;
 type Command = (typeof COMMANDS)[number];
@@ -92,14 +130,16 @@ function parseOrExit(fn: () => void, usage: string): void {
   }
 }
 
-function validateConfig(): void {
+function loadConfig() {
   const allowlist = loadAllowlist();
-  loadTargets(allowlist);
+  const registry = loadTargets(allowlist);
+  const baseline = loadBaseline();
+  return { allowlist, registry, baseline };
 }
 
-function validateConfigOrExit(): void {
+function loadConfigOrExit() {
   try {
-    validateConfig();
+    return loadConfig();
   } catch (err) {
     if (err instanceof ConfigError) {
       process.stderr.write(`Config error: ${err.message}\n`);
@@ -355,37 +395,341 @@ function parseFix(argv: string[]): FixArgs {
   };
 }
 
-// Stub implementations — scan bodies filled by later phases (P2/P4/P5).
-// The args parameters are intentionally unused at P1; later phases replace
-// these stubs with real implementations (P2/P4/P5).
+// ---------------------------------------------------------------------------
+// Helper: generate a unique run id
+// ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runScanSource(_args: ScanSourceArgs): void {
-  process.stdout.write('[scan-source] not yet implemented (P2)\n');
+function generateRunId(): string {
+  const now = new Date();
+  // Format: YYYY-MM-DDTHH-MM-SSZ-<4hex>
+  const pad = (n: number): string => n.toString().padStart(2, '0');
+  const ts = `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())}T${pad(now.getUTCHours())}-${pad(now.getUTCMinutes())}-${pad(now.getUTCSeconds())}Z`;
+  const suffix = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `${ts}-${suffix}`;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: find the most recent report.json
+// ---------------------------------------------------------------------------
+
+function findLatestReport(): import('./schemas/report.js').RunReport | null {
+  const reportsDir = resolve(REPO_ROOT, 'reports');
+  let entries: string[];
+  try {
+    entries = readdirSync(reportsDir);
+  } catch {
+    return null;
+  }
+  const runDirs = entries
+    .filter((e) => {
+      try {
+        return statSync(resolve(reportsDir, e)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+  const last = runDirs[runDirs.length - 1];
+  if (last === undefined) return null;
+  const reportPath = resolve(reportsDir, last, 'report.json');
+  try {
+    const raw = readFileSync(reportPath, 'utf8');
+    return JSON.parse(raw) as import('./schemas/report.js').RunReport;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live-scan helper: scan one staging target, returns findings + status
+// ---------------------------------------------------------------------------
+
+export async function scanLiveTarget(
+  stagingUrl: string,
+  config: ReturnType<typeof loadConfig>,
+  opts: { scannerTimeoutMs: number },
+  deps?: Partial<LiveScanDeps>,
+): Promise<{
+  findings: Finding[];
+  scannerStatus: ScannerStatusEntry[];
+  targets: RunTarget[];
+  failures: FailureEntry[];
+}> {
+  // Gate + registry lookup — AllowedTarget required for all live scanners
+  const { target, registryEntry } = preflight(stagingUrl, config.allowlist, config.registry);
+  const rps = registryEntry.rateLimitRps ?? 10;
+  const activeScan = registryEntry.activeScan;
+
+  const allFindings: Finding[] = [];
+  const scannerStatus: ScannerStatusEntry[] = [];
+  const failures: FailureEntry[] = [];
+  const coverageGaps: string[] = [];
+
+  // Auth
+  const loginResult = await loginForTarget(target, registryEntry.auth, activeScan);
+
+  if (loginResult.kind === 'failure') {
+    // activeScan:true + login failure → target failed (§6.2)
+    failures.push({ target: registryEntry.name, family: 'probe', reason: loginResult.message });
+    failures.push({ target: registryEntry.name, family: 'zap', reason: loginResult.message });
+    failures.push({ target: registryEntry.name, family: 'nuclei', reason: loginResult.message });
+    scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'failed' });
+    scannerStatus.push({ target: registryEntry.name, family: 'zap', state: 'failed' });
+    scannerStatus.push({ target: registryEntry.name, family: 'nuclei', state: 'failed' });
+    const runTarget: RunTarget = { kind: 'staging', name: registryEntry.name, coverageGaps: [loginResult.message] };
+    return { findings: allFindings, scannerStatus, targets: [runTarget], failures };
+  }
+
+  if (loginResult.kind === 'unauthenticated') {
+    coverageGaps.push(loginResult.coverageGap);
+  }
+
+  const session: Session | undefined = loginResult.kind === 'session' ? loginResult : undefined;
+
+  // Probes family
+  const probeRunner = deps?.runProbes;
+  if (probeRunner !== undefined) {
+    try {
+      const probeFindings = await probeRunner(target, rps);
+      allFindings.push(...probeFindings);
+      scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'complete' });
+    } catch {
+      failures.push({ target: registryEntry.name, family: 'probe', reason: 'probe family failed' });
+      scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'failed' });
+    }
+  } else {
+    // Default: probes not available without injectable clients — mark skipped
+    scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'skipped' });
+  }
+
+  // ZAP
+  const zapRunner = deps?.runZapScanner ?? runZap;
+  try {
+    const zapOpts = { rps, activeScan, sessions: undefined as [Session, Session] | undefined };
+    const zapFindings = await zapRunner(target, zapOpts);
+    allFindings.push(...zapFindings);
+    scannerStatus.push({ target: registryEntry.name, family: 'zap', state: 'complete' });
+  } catch {
+    failures.push({ target: registryEntry.name, family: 'zap', reason: 'zap scanner failed' });
+    scannerStatus.push({ target: registryEntry.name, family: 'zap', state: 'failed' });
+  }
+
+  // Nuclei
+  const nucleiRunner = deps?.runNucleiScanner ?? runNuclei;
+  try {
+    const nucleiOpts = { rps, activeScan, session };
+    const nucleiFindings = await nucleiRunner(target, nucleiOpts);
+    allFindings.push(...nucleiFindings);
+    scannerStatus.push({ target: registryEntry.name, family: 'nuclei', state: 'complete' });
+  } catch {
+    failures.push({ target: registryEntry.name, family: 'nuclei', reason: 'nuclei scanner failed' });
+    scannerStatus.push({ target: registryEntry.name, family: 'nuclei', state: 'failed' });
+  }
+
+  const runTarget: RunTarget = { kind: 'staging', name: registryEntry.name, coverageGaps };
+  return { findings: allFindings, scannerStatus, targets: [runTarget], failures };
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand bodies (config loaded at dispatch site, before async body)
+// ---------------------------------------------------------------------------
+
+async function doScanSource(
+  args: ScanSourceArgs,
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  const { registry } = config;
+  const repos = args.repo !== undefined
+    ? registry.repos.filter((r) => r.name === args.repo && r.enabled)
+    : registry.repos.filter((r) => r.enabled);
+
+  if (repos.length === 0) {
+    process.stdout.write('No enabled repos to scan.\n');
+    return;
+  }
+
+  const result = await scanRepos(repos, {}, {
+    scannerTimeoutMs: args.scannerTimeout * 60_000,
+    maxParallelTargets: args.maxParallelTargets,
+  });
+  process.stdout.write(
+    `scan-source: ${result.findings.length} finding(s) from ${repos.length} repo(s).\n`,
+  );
+}
+
+async function doScanLive(
+  args: ScanLiveArgs,
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  if (args.url === undefined) {
+    process.stderr.write(`Error: --url is required for scan-live\n\n${SCAN_LIVE_USAGE}`);
+    process.exit(1);
+  }
+
+  if (args.dryRun) {
+    // dry-run: preflight only, zero scanners, zero traffic (§4.6)
+    dryRun(args.url, config.allowlist, config.registry);
+    return;
+  }
+
+  // Non-dry-run: live engine — only reachable via AllowedTarget from preflight
+  const result = await scanLiveTarget(args.url, config, {
+    scannerTimeoutMs: args.scannerTimeout * 60_000,
+  });
+  process.stdout.write(`scan-live: ${result.findings.length} finding(s).\n`);
+}
+
+async function doRun(
+  args: RunArgs,
+  config: ReturnType<typeof loadConfig>,
+): Promise<void> {
+  const runId = generateRunId();
+  const startedAt = new Date().toISOString();
+
+  await withWorkspaceLock(async () => {
+    const allFindings: Finding[] = [];
+    const allScannerStatus: ScannerStatusEntry[] = [];
+    const allTargets: RunTarget[] = [];
+    const allFailures: FailureEntry[] = [];
+
+    // Static scan
+    const repos = args.repo !== undefined
+      ? config.registry.repos.filter((r) => r.name === args.repo && r.enabled)
+      : config.registry.repos.filter((r) => r.enabled);
+
+    if (repos.length > 0) {
+      const staticResult = await scanRepos(repos, {}, {
+        scannerTimeoutMs: args.scannerTimeout * 60_000,
+        maxParallelTargets: args.maxParallelTargets,
+      });
+      allFindings.push(...staticResult.findings);
+      allScannerStatus.push(...staticResult.scannerStatus);
+
+      for (const repo of repos) {
+        const firstFinding = staticResult.findings.find(
+          (f) => f.target.kind === 'repo' && f.target.name === repo.name,
+        );
+        allTargets.push({
+          kind: 'repo',
+          name: repo.name,
+          commit: firstFinding?.target.kind === 'repo' ? firstFinding.target.commit : undefined,
+          coverageGaps: [],
+        });
+      }
+    }
+
+    // Live scan — each enabled staging target goes through preflight (§4.6 invariant)
+    const stagingTargets = args.url !== undefined
+      ? config.registry.stagingTargets.filter(
+          (t) => t.enabled && new URL(t.url).hostname === new URL(args.url!).hostname,
+        )
+      : config.registry.stagingTargets.filter((t) => t.enabled);
+
+    for (const st of stagingTargets) {
+      const liveResult = await scanLiveTarget(st.url, config, {
+        scannerTimeoutMs: args.scannerTimeout * 60_000,
+      });
+      allFindings.push(...liveResult.findings);
+      allScannerStatus.push(...liveResult.scannerStatus);
+      allTargets.push(...liveResult.targets);
+      allFailures.push(...liveResult.failures);
+    }
+
+    // Correlate static + live
+    const correlated = correlate(allFindings, config.registry);
+
+    // Determine run status (§14)
+    const hasFailures = allFailures.length > 0;
+    const hasAnyComplete = allScannerStatus.some((s) => s.state === 'complete');
+    const runStatus: 'success' | 'partial' | 'failed' =
+      hasFailures && hasAnyComplete ? 'partial'
+        : hasFailures && !hasAnyComplete ? 'failed'
+          : 'success';
+
+    const finishedAt = new Date().toISOString();
+    const report = buildReport({
+      runId,
+      date: runId.slice(0, 10),
+      rawFindings: correlated,
+      scannerStatus: allScannerStatus,
+      targets: allTargets,
+      baseline: config.baseline,
+      meta: {
+        status: runStatus,
+        failures: allFailures,
+        scannerStatus: allScannerStatus,
+        startedAt,
+        finishedAt,
+        toolVersion: 'audit-tool/1.0.0',
+      },
+    });
+
+    // Atomic write of report + ancillary formats
+    const reportsDir = resolve(REPO_ROOT, 'reports');
+    await writeReport(report, reportsDir);
+    const runDir = resolve(reportsDir, runId);
+    writeFileSync(resolve(runDir, 'report.md'), toMarkdown(report), 'utf8');
+    writeFileSync(resolve(runDir, 'report.sarif'), toSarif(report), 'utf8');
+
+    // Append trend line (§6.5)
+    const prevLines = readTrendLines();
+    const prevFpMap = buildPrevFingerprintMap(prevLines, reportsDir);
+    const trendLine = buildTrendLine(report, prevFpMap);
+    await writeTrend(trendLine);
+
+    process.stdout.write(
+      `Run ${runId}: ${runStatus} — ${report.findings.length} finding(s).\n`,
+    );
+
+    // --fail-on exit code (§14 exit code 2)
+    if (args.failOn !== undefined) {
+      const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      const threshold = SEVERITY_ORDER[args.failOn] ?? 99;
+      const hasAboveThreshold = report.findings.some(
+        (f) => !f.suppressed && (SEVERITY_ORDER[f.severity] ?? 99) <= threshold,
+      );
+      if (hasAboveThreshold) {
+        process.exit(2);
+      }
+    }
+
+    if (runStatus === 'failed') {
+      process.exit(1);
+    }
+  });
+}
+
+function doReport(args: ReportArgs): void {
+  const report = findLatestReport();
+  if (report === null) {
+    process.stderr.write('No runs found. Run `audit run` first.\n');
+    process.exit(1);
+  }
+
+  switch (args.format) {
+    case 'json':
+      process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+      break;
+    case 'md':
+      process.stdout.write(toMarkdown(report) + '\n');
+      break;
+    case 'sarif':
+      process.stdout.write(toSarif(report) + '\n');
+      break;
+    case 'html':
+      // html stub — replaced by P7-3
+      process.stdout.write('[html export] not yet implemented (P7)\n');
+      break;
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runScanLive(_args: ScanLiveArgs): void {
-  process.stdout.write('[scan-live] not yet implemented (P4)\n');
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runRun(_args: RunArgs): void {
-  process.stdout.write('[run] not yet implemented (P5)\n');
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runReport(_args: ReportArgs): void {
-  process.stdout.write('[report] not yet implemented (P5)\n');
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runUi(_args: UiArgs): void {
+function doUi(_args: UiArgs): void {
   process.stdout.write('[ui] not yet implemented (P7)\n');
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-function runFix(_args: FixArgs): void {
+function doFix(_args: FixArgs): void {
   process.stdout.write('[fix] not yet implemented (P8)\n');
 }
 
@@ -406,43 +750,59 @@ export function main(argv: string[]): void {
 
   const command = cmd as Command;
 
-  // Parse subcommand args first: --help exits before config validation so
+  // Parse subcommand args first: --help exits before config load so
   // help text is accessible even when config is broken.
   switch (command) {
     case 'scan-source': {
       const args = parseScanSource(rest);
-      validateConfigOrExit();
-      runScanSource(args);
+      // Config loaded synchronously here — errors exit before the async body runs
+      const config = loadConfigOrExit();
+      doScanSource(args, config).catch((err: unknown) => {
+        if (err instanceof WorkspaceLockedError) {
+          process.stderr.write(`Error: ${err.message}\n`);
+          process.exit(1);
+        }
+        throw err;
+      });
       break;
     }
     case 'scan-live': {
       const args = parseScanLive(rest);
-      validateConfigOrExit();
-      runScanLive(args);
+      const config = loadConfigOrExit();
+      doScanLive(args, config).catch((err: unknown) => {
+        if (err instanceof WorkspaceLockedError) {
+          process.stderr.write(`Error: ${err.message}\n`);
+          process.exit(1);
+        }
+        throw err;
+      });
       break;
     }
     case 'run': {
       const args = parseRun(rest);
-      validateConfigOrExit();
-      runRun(args);
+      const config = loadConfigOrExit();
+      doRun(args, config).catch((err: unknown) => {
+        if (err instanceof WorkspaceLockedError) {
+          process.stderr.write('Workspace is locked. Another audit run is in progress.\n');
+          process.exit(1);
+        }
+        throw err;
+      });
       break;
     }
     case 'report': {
       const args = parseReport(rest);
-      validateConfigOrExit();
-      runReport(args);
+      doReport(args);
       break;
     }
     case 'ui': {
       const args = parseUi(rest);
-      validateConfigOrExit();
-      runUi(args);
+      doUi(args);
       break;
     }
     case 'fix': {
       const args = parseFix(rest);
-      validateConfigOrExit();
-      runFix(args);
+      doFix(args);
       break;
     }
   }

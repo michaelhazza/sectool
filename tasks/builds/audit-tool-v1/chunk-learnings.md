@@ -117,3 +117,86 @@ would be preferable for interactive/incremental use but is not our primary use c
   non-zero on findings (check ZAP docs), `defaultExecZap` may need the same try/catch as
   gitleaks. The current implementation only catches Nuclei's non-zero exit; ZAP's behavior
   depends on the automation-framework version. Verify at P6.
+
+## P4-7 — Live fixture app + §4.7 immutable safety-abort test (2026-06-13)
+
+**What worked:**
+- The §4.7 abort test needs only `assertAllowlisted` + `AllowlistViolationError` from
+  `src/live/gate.ts` and `loadBenchmarkAllowlist` from `src/config/load.ts`. The full
+  live-scan path is not needed — the gate fires before any network I/O.
+- Using a non-allowlisted DNS name (`not-on-allowlist.fixture.local`) as the scan target
+  triggers clause (b) of the gate (no allowlist match), not clause (d) (IP-literal rejection).
+  This tests the normal production-gate path, not the IP-literal special case.
+- The hit-recording server uses Node's built-in `createServer` from `node:http` (no external
+  deps). Inline in the test file, started in `beforeAll` / stopped in `afterAll`.
+- `server.listen(0, '127.0.0.1', callback)` with port `0` gives an OS-assigned port —
+  avoids port conflicts in CI.
+- `benchmark/live-fixture/server.js` (plain JS, not TS) is excluded from lint and typecheck
+  by the existing `benchmark/live-fixture/**` ignores in `eslint.config.js` and `tsconfig.json`.
+- `benchmark/live-fixture/EXPECTED.json` uses `{ "checks": [...] }` shape (matching
+  `checkLiveFixture()` in `benchmark/run.ts` which reads `dataRecord['checks']`).
+
+**Watch-out for future chunks:**
+- P6-1 live-fixture integration must boot `benchmark/live-fixture/server.js` as a subprocess
+  and pass its actual port to `loadBenchmarkAllowlist`-backed scan calls. The server prints
+  `LISTENING <host>:<port>` to stdout on startup for port discovery.
+- The `benchmark/live-fixture/EXPECTED.json` `checks` array covers all live ids and wildcard
+  families. P6-1 may expand the fixture routes and refine what's expected from each check.
+
+## P5-6 — Trend writer + CLI wiring (2026-06-13)
+
+**What worked:**
+- Exporting `scanLiveTarget` from `cli.ts` with an injectable `LiveScanDeps` parameter makes the live engine composition testable without network access — tests inject fake `runZapScanner` / `runNucleiScanner` functions.
+- Moving `loadConfigOrExit()` to be called SYNCHRONOUSLY in the dispatch switch (before the `.catch()` handler fires the async body) is critical: if config loading is inside the async body, `ExitSignal` escapes into an unhandled promise rejection in tests. Calling it synchronously at the dispatch site means `ExitSignal` is thrown in the `main()` call frame and caught by `capture()`.
+- `vi.mock('node:fs', async (importOriginal) => { const actual = ...; return { ...actual, readdirSync: vi.fn(() => []) } })` — the `async importOriginal` pattern is required to spread the real fs module while overriding specific functions.
+- Trend JSONL write is atomic: write all lines (with runId-based dedup) to a `.tmp.${pid}` file then rename over the real file. This is idempotent per §14.
+- `computeTargetTrend` conservative partial-run rule: count a prev fp as "fixed" only if the family that previously produced it ALSO ran to completion in the CURRENT run. When completeFamilies is empty (all families failed/skipped), fixed=0 regardless.
+- The `bySeverity` counter avoids `noUncheckedIndexedAccess` complaints by using explicit if/else branches instead of index access on the counter object.
+- `doUi` and `doFix` are stub stubs (not yet implemented in P7/P8) — they still require `// eslint-disable-next-line @typescript-eslint/no-unused-vars` on `_args` even though they're not consumed by async machinery.
+
+**Watch-out for future chunks:**
+- `scanLiveTarget` in `cli.ts` is exported for testing. P6-2 guardrail tests that need to test partial-run behavior should use this export with injected fakes.
+- The live probe clients (TLS socket, HTTP fetch) are NOT wired in P5-6's default `scanLiveTarget` — the `runProbes` dep is optional and defaults to `scannerStatus: 'skipped'`. P6 real-binary integration must supply a real probe runner (or the probes family will always be skipped in production). This is a known gap; the probe runners need injectable clients to be unit-testable.
+- `doReport` uses `findLatestReport()` which reads `readdirSync(reportsDir)` — tests must mock `node:fs.readdirSync`. The `vi.mock('node:fs', async (importOriginal) => ...)` pattern is required to preserve real `readFileSync` for other modules.
+- `buildPrevFingerprintMap` reads the previous run's `report.json` from disk (by looking at the last trend line's runId). If the previous report file is missing, it returns `undefined` (first-run semantics). This is correct but means a deleted report breaks trend continuity — document in KNOWLEDGE.md.
+- The `html` format in `doReport` is intentionally a stub (`'[html export] not yet implemented (P7)'`). P7-3 replaces this by exporting `toHtml(report)` and wiring it here.
+- `withWorkspaceLock` from `src/report/lock.ts` wraps the `doRun` body. The `WorkspaceLockedError` is re-thrown from the `.catch()` handler as `process.exit(1)`. P8 fix endpoint wires the same lock.
+
+## P5-5 — Markdown + SARIF emitters (2026-06-13)
+
+**What worked:**
+- Both emitters call `redact(report)` / `redact(sarifLog)` before serializing — the redaction
+  chokepoint is applied at the emitter level per §5.4.
+- `sortFindings` from `json.ts` is imported and re-applied in both emitters so the byte output
+  is deterministic regardless of whether `report.findings` was already sorted.
+- SARIF `tool.driver.version` strips the `"audit-tool/"` prefix from `meta.toolVersion` so the
+  version field is a bare semver string as SARIF consumers expect.
+- `collectRuleIds` preserves insertion order (first occurrence wins) which, combined with the
+  sorted findings input, is deterministic.
+- SARIF `result.suppressions` reads from `finding.suppression.justification` (the report-stage
+  field) not from any external config — this is the §6.10 contract.
+
+**Watch-out for future chunks:**
+- `toSarif` and `toMarkdown` do NOT include the full `evidence.raw` object in output — only
+  `evidence.snippet` is rendered. Redaction tests for these surfaces should assert that
+  credential-key fields (e.g. `raw.secret`, `raw.authorization`) are absent from output, NOT
+  that a `[redacted:...]` placeholder appears (it won't, because `raw` is not serialized).
+- P5-6 wires `audit report --format md|sarif` in `src/cli.ts` by calling `toMarkdown(report)`
+  / `toSarif(report)` after loading `reports/<runId>/report.json` — both functions accept a
+  `RunReport` directly.
+- P7-3 wires `audit report --format html` in `src/cli.ts` using an analogous `toHtml(report)`
+  pattern. P5-6 should leave the html format as a stub that P7-3 replaces.
+- The SARIF `runs[0].tool.driver.rules` list only includes rules that appear in `findings[]`.
+  An empty report emits an empty rules array, which is valid SARIF.
+- `RULE_SHORT_DESCRIPTIONS` in `sarif.ts` covers the 11 custom rules + 3 wrapped families +
+  7 live check families. Fallback for unknown ids is `"Security finding: <id>"`. New rule ids
+  added in P3/P4 do not require a change to `sarif.ts` (fallback handles them), but adding an
+  entry to the map gives a more readable SARIF `shortDescription`.
+- `escapeMarkdown` in `markdown.ts` escapes backtick, backslash, and pipe — sufficient for
+  table cells. Evidence snippets are rendered inside a fenced code block (not inline), so
+  markdown injection risk is low.
+- The §4.7 abort test is IMMUTABLE. Never modify it to pass by weakening the assertion
+  (never change `expect(hitCount).toBe(0)` or remove the `AllowlistViolationError` throw
+  assertion). If a future change breaks this test, fix the change, not the test.
+- `benchmark/safety-abort.test.ts` is collected by vitest via the `benchmark/**/*.test.ts`
+  glob already in `vitest.config.ts` (added in P1-5).

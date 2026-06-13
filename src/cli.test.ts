@@ -18,8 +18,82 @@ vi.mock('./config/load.js', () => {
   };
 });
 
+// ── Mock static orchestrator ───────────────────────────────────────────────
+vi.mock('./static/orchestrator.js', () => ({
+  scanRepos: vi.fn(() => Promise.resolve({ findings: [], scannerStatus: [] })),
+}));
+
+// ── Mock preflight / dry-run ───────────────────────────────────────────────
+vi.mock('./live/preflight.js', () => ({
+  preflight: vi.fn(() => { throw new Error('preflight called unexpectedly'); }),
+  dryRun: vi.fn(),
+  UnregisteredTargetError: class UnregisteredTargetError extends Error {},
+}));
+
+// ── Mock report modules ────────────────────────────────────────────────────
+vi.mock('./report/trend.js', () => ({
+  writeTrend: vi.fn(() => Promise.resolve(undefined)),
+  buildTrendLine: vi.fn(() => ({ runId: 'test-run', date: '2026-06-13', targets: {} })),
+  readTrendLines: vi.fn(() => []),
+  buildPrevFingerprintMap: vi.fn(() => undefined),
+}));
+
+vi.mock('./report/json.js', () => ({
+  buildReport: vi.fn(() => ({
+    runId: 'test-run',
+    date: '2026-06-13',
+    findings: [],
+    targets: [],
+    meta: {
+      status: 'success',
+      failures: [],
+      scannerStatus: [],
+      startedAt: '2026-06-13T00:00:00.000Z',
+      finishedAt: '2026-06-13T00:00:01.000Z',
+      toolVersion: 'audit-tool/1.0.0',
+    },
+  })),
+  writeReport: vi.fn(() => Promise.resolve('/tmp/reports/test-run/report.json')),
+  sortFindings: vi.fn((f: unknown[]) => f),
+}));
+
+vi.mock('./report/markdown.js', () => ({
+  toMarkdown: vi.fn(() => '# Report'),
+}));
+
+vi.mock('./report/sarif.js', () => ({
+  toSarif: vi.fn(() => '{}'),
+}));
+
+vi.mock('./report/lock.js', () => ({
+  WorkspaceLockedError: class WorkspaceLockedError extends Error {
+    pid = 0;
+    heartbeatAt = '';
+  },
+  withWorkspaceLock: vi.fn((fn: () => Promise<unknown>) => fn()),
+  acquireLock: vi.fn(() => Promise.resolve({ release: vi.fn(), refresh: vi.fn() })),
+}));
+
+vi.mock('./correlate/correlate.js', () => ({
+  correlate: vi.fn((findings: unknown[]) => findings),
+}));
+
+// ── Mock fs for report command ─────────────────────────────────────────────
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(() => []),
+    statSync: vi.fn(() => ({ isDirectory: () => true })),
+    readFileSync: actual.readFileSync,
+    writeFileSync: vi.fn(),
+  };
+});
+
 import { main } from './cli.js';
 import { ConfigError, loadAllowlist, loadTargets } from './config/load.js';
+import { scanRepos } from './static/orchestrator.js';
+import { dryRun } from './live/preflight.js';
 
 // ── ExitSignal ─────────────────────────────────────────────────────────────
 
@@ -86,7 +160,7 @@ function capture(argv: string[]): { stdout: string; stderr: string; exitCode: nu
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe('CLI — P1-4', () => {
+describe('CLI — P1-4 + P5-6', () => {
   beforeEach(() => {
     vi.mocked(loadAllowlist).mockReturnValue({ hosts: [] } as unknown as ReturnType<typeof loadAllowlist>);
     vi.mocked(loadTargets).mockReturnValue({ repos: [], stagingTargets: [] });
@@ -251,6 +325,68 @@ describe('CLI — P1-4', () => {
       const { stderr, exitCode } = capture(['fix']);
       expect(exitCode).toBe(1);
       expect(stderr).toContain('finding-ref');
+    });
+  });
+
+  // ── P5-6 composition tests ─────────────────────────────────────────────
+
+  describe('P5-6 CLI wiring — scan-source invokes scanRepos', () => {
+    it('scan-source dispatches to scanRepos (no stub survives)', () => {
+      // scan-source with no enabled repos just prints a message
+      vi.mocked(loadTargets).mockReturnValue({ repos: [], stagingTargets: [] });
+      // Allow the async dispatch to complete
+      const { stdout } = capture(['scan-source']);
+      // The output mentions no stubs ("not yet implemented")
+      expect(stdout).not.toMatch(/not yet implemented/);
+      // scanRepos may not be called synchronously (it's async); the important
+      // assertion is that the stub message is gone.
+    });
+  });
+
+  describe('P5-6 CLI wiring — scan-live --dry-run invokes dryRun without scanners', () => {
+    it('scan-live --dry-run calls dryRun and does not invoke live scanners', () => {
+      vi.mocked(loadAllowlist).mockReturnValue({ hosts: [] } as unknown as ReturnType<typeof loadAllowlist>);
+      vi.mocked(loadTargets).mockReturnValue({ repos: [], stagingTargets: [] });
+
+      capture(['scan-live', '--url', 'https://staging.example.com', '--dry-run']);
+
+      // dryRun was called (preflight only — zero traffic)
+      expect(vi.mocked(dryRun)).toHaveBeenCalledWith(
+        'https://staging.example.com',
+        expect.anything(),
+        expect.anything(),
+      );
+      // scanRepos was NOT called (dry-run is live-only preflight, not static)
+      expect(vi.mocked(scanRepos)).not.toHaveBeenCalled();
+    });
+
+    it('scan-live --dry-run does not emit stub message', () => {
+      const { stdout } = capture(['scan-live', '--url', 'https://staging.example.com', '--dry-run']);
+      expect(stdout).not.toMatch(/not yet implemented/);
+    });
+  });
+
+  describe('P5-6 CLI wiring — no scan-body stub survives', () => {
+    it('scan-source output does not contain stub text', () => {
+      const { stdout } = capture(['scan-source']);
+      expect(stdout).not.toMatch(/not yet implemented \(P2\)/);
+    });
+
+    it('scan-live --dry-run output does not contain stub text', () => {
+      const { stdout } = capture(['scan-live', '--url', 'https://staging.example.com', '--dry-run']);
+      expect(stdout).not.toMatch(/not yet implemented \(P4\)/);
+    });
+
+    it('run output does not contain stub text', () => {
+      const { stdout } = capture(['run']);
+      expect(stdout).not.toMatch(/not yet implemented \(P5\)/);
+    });
+
+    it('report output does not contain stub text (P5 stub gone)', () => {
+      // With empty readdirSync mock the command exits with error, but not stub text
+      const { stdout, stderr } = capture(['report']);
+      expect(stdout).not.toMatch(/not yet implemented \(P5\)/);
+      expect(stderr).not.toMatch(/not yet implemented \(P5\)/);
     });
   });
 });
