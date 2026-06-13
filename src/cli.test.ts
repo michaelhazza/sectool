@@ -524,11 +524,18 @@ describe('CLI — P1-4 + P5-6', () => {
   const fakeConfig = {
     allowlist: { hosts: [] } as unknown as ReturnType<typeof loadAllowlist>,
     registry: {
-      repos: [{ name: 'test-repo', gitUrl: 'https://github.com/owner/test-repo.git', enabled: true }],
+      repos: [{
+        name: 'test-repo',
+        gitUrl: 'https://github.com/owner/test-repo.git',
+        localPath: null,
+        stackTags: [],
+        publicRoutes: [],
+        enabled: true,
+      }],
       stagingTargets: [],
     },
     baseline: { entries: [] },
-  };
+  } as unknown as Parameters<typeof doFix>[1];
 
   // Factory helpers — avoids @typescript-eslint/no-unused-vars on `_name` params
   const envWithToken = (token: string): import('./fix/github.js').EnvReader =>
