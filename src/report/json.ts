@@ -109,8 +109,14 @@ function deriveReportFields(
   finding: Finding,
   fixesFile: FixesFile,
 ): Finding {
-  // Recompute severity — liveConfirmed is true when correlatedWith is non-empty
-  const liveConfirmed = finding.correlatedWith.length > 0;
+  // Recompute severity — the §8.1 live-confirmed modifier (+1 step, confidence
+  // → "confirmed") applies ONLY to the STATIC finding that correlated with a
+  // live finding. The live finding keeps its own severity/confidence (passive
+  // live evidence is "probable", not unconditionally "confirmed"; §8.1
+  // confidence inputs). Without this surface guard, a correlated live finding —
+  // whose correlatedWith now carries the static partner's id — would be wrongly
+  // bumped a severity step and promoted to confirmed.
+  const liveConfirmed = finding.surface === 'static' && finding.correlatedWith.length > 0;
   const { severity, confidence } = computeSeverity(
     {
       baseSeverity: finding.baseSeverity,

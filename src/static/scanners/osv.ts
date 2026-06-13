@@ -142,12 +142,26 @@ function normalizeOsvVuln(
 export type ExecOsv = (dir: string) => Promise<{ stdout: string }>;
 
 async function defaultExecOsv(dir: string): Promise<{ stdout: string }> {
-  const { stdout } = await execFileAsync('osv-scanner', [
-    '--format', 'json',
-    '--recursive',
-    dir,
-  ]);
-  return { stdout };
+  // osv-scanner exits 1 when vulnerabilities are found and 0 when none — both
+  // are valid, non-error outcomes that carry parseable JSON on stdout (mirrors
+  // the gitleaks/nuclei exit-code convention). Only exit 2+ (a genuine tool
+  // error: malformed args, unreadable lockfile) is a hard failure that should
+  // throw so the orchestrator marks the family `failed`.
+  try {
+    const { stdout } = await execFileAsync('osv-scanner', [
+      '--format', 'json',
+      '--recursive',
+      dir,
+    ]);
+    return { stdout };
+  } catch (err) {
+    const execErr = err as NodeJS.ErrnoException & { stdout?: string; code?: number };
+    if (execErr.code === 1 && typeof execErr.stdout === 'string') {
+      // Exit 1 = vulnerabilities found (normal) — parse what osv-scanner emitted.
+      return { stdout: execErr.stdout };
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
