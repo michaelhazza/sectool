@@ -7,15 +7,20 @@ on:
       - main
 
 jobs:
-  ci:
-    name: Lint + typecheck + test + benchmark + self-scan
+  gates:
+    name: Lint + typecheck + test + build
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/breakoutsolutions/audit-tool:latest
+    continue-on-error: false
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -29,15 +34,32 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      - name: Build
+      - name: Build (server)
         run: npm run build
 
+      - name: Build (client SPA)
+        run: npm run build:client
+
+  benchmark:
+    name: Benchmark + self-scan (scanner image)
+    runs-on: ubuntu-latest
+    needs: gates
+    continue-on-error: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build scanner image
+        run: docker build -t audit-tool:ci .
+
       - name: Benchmark (recall/precision gate)
-        run: npm run benchmark
+        # ENTRYPOINT is a shell exec-wrapper so npm overrides work correctly.
+        run: docker run --rm audit-tool:ci npm run benchmark
 
       - name: Self-scan (must be clean)
         # Scans this repo statically using the built tool.
         # benchmark/corpus/** and benchmark/live-fixture/** are excluded via
         # .semgrepignore and .gitleaksignore (checked-in, not ad-hoc).
-        # Exits 2 if any high-or-above finding is detected.
-        run: node dist/cli.js run --repo audit-tool --fail-on high
+        # Exits non-zero if any high-or-above finding is detected.
+        run: docker run --rm -v "${{ github.workspace }}:/scan:ro" audit-tool:ci audit run --repo audit-tool --fail-on high

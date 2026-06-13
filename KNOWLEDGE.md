@@ -37,6 +37,37 @@ with a symlink at `/usr/local/bin/zap.sh`.
   2. tsx's bundled esbuild (0.28.1) can mismatch the extracted platform binary (0.21.5) → `Host version "0.28.1" does not match binary version "0.21.5"`. Fix: extract a matching `@esbuild/win32-x64@0.28.1` binary into an isolated dir and set `ESBUILD_BINARY_PATH` to it. Do NOT `npm install --force` the top-level platform pkg — it breaks vitest/vite, which want their nested 0.21.5.
   3. `gpt-5.5` at `effort: high` (and `medium` over a ~96k-token diff) returns **HTTP 520** (Cloudflare gateway timeout — synchronous Responses call exceeds the edge limit). For large PRs, split the diff into subsystem batches and/or drop to `effort: low`; add retry-on-520. A single 520 is transient and usually clears on retry.
 
+## CI design — two-job split (2026-06-14)
+
+Root cause of broken CI: `ci.yml` ran its single job inside
+`container: { image: ghcr.io/breakoutsolutions/audit-tool:latest }`, an image
+that was never built or pushed (no image-publish workflow existed). Every run
+failed at container startup. Additionally, `USER audit` + a hard `ENTRYPOINT`
+in the Dockerfile broke `actions/checkout` and step execution inside a GHA job
+container.
+
+**Chosen fix — two-job model:**
+
+1. **`gates` job** (`ubuntu-latest`, no container): `actions/checkout` +
+   `actions/setup-node@v4` (Node 20) + `npm ci`, then runs `lint`,
+   `typecheck`, `test:unit`, `build`, and `build:client`. No scanner binaries
+   needed; these gates pass on the plain node runner.
+
+2. **`benchmark` job** (`ubuntu-latest`, after `gates`): builds the scanner
+   image from the repo `Dockerfile` (`docker build -t audit-tool:ci .`), then
+   runs benchmark and self-scan via `docker run --rm audit-tool:ci <cmd>`. The
+   image is always built from the current commit — no GHCR dependency.
+
+**Dockerfile exec-wrapper:** replaced `ENTRYPOINT ["node", "dist/cli.js"]`
+with a shell script (`docker-entrypoint.sh`) that passes `npm`, `node`, `sh`,
+`bash`, and absolute-path commands through directly, and prepends
+`node dist/cli.js` for bare CLI verbs. Also changed `useradd --shell
+/bin/false` to `--shell /bin/sh` so npm/node can execute inside the container.
+
+**weekly-audit.yml:** removed `container:` stanza; now runs `docker build`
+then `docker run` with secrets passed via `--env`, and mounts `./reports` to
+capture artifacts.
+
 ## Corrections
 
 - (none yet)

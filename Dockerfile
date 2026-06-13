@@ -98,9 +98,16 @@ COPY package.json ./
 COPY config/ config/
 COPY rules/ rules/
 
-# Non-root user for security
-RUN useradd --system --no-create-home --shell /bin/false audit
+# Exec-wrapper entrypoint: lets `docker run img npm run benchmark` pass through
+# directly while `docker run img run --repo foo` prepends `node dist/cli.js`.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Non-root user for security. Shell is /bin/sh (not /bin/false) so that the
+# entrypoint wrapper and npm/node commands execute inside the container.
+RUN useradd --system --no-create-home --shell /bin/sh audit && \
+    chown -R audit:audit /app
 USER audit
 
-ENTRYPOINT ["node", "dist/cli.js"]
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]
