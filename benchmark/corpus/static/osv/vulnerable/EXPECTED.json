@@ -1,0 +1,6 @@
+{
+  "_comment": "OSV-scanner wrapper family: vulnerable fixture — expects at least one finding from the osv scanner family. Real binary recall is CI/P6 benchmark run.",
+  "findings": [
+    { "ruleId": "osv", "vulnClass": "dependency-cve", "surface": "static" }
+  ]
+}

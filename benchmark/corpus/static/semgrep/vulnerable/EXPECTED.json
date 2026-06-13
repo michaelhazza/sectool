@@ -1,0 +1,6 @@
+{
+  "_comment": "Semgrep wrapper family: vulnerable fixture — expects at least one finding from the semgrep scanner family. Real binary recall is CI/P6 benchmark run.",
+  "findings": [
+    { "ruleId": "semgrep", "vulnClass": "injection", "surface": "static" }
+  ]
+}

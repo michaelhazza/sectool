@@ -1,0 +1,5 @@
+# CODEOWNERS — config/* requires PR review by michaelhazza (§4.3 / §6.4).
+# Any change to the allowlist, baseline, or target registry must be approved
+# by the designated owner before merge — no-override rule anchored here.
+
+config/* @michaelhazza

@@ -1,0 +1,6 @@
+{
+  "_comment": "Gitleaks wrapper family: vulnerable fixture — expects at least one finding from the gitleaks scanner family. Real binary recall is CI/P6 benchmark run.",
+  "findings": [
+    { "ruleId": "gitleaks", "vulnClass": "secrets", "surface": "static" }
+  ]
+}

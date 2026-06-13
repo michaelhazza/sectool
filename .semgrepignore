@@ -1,0 +1,5 @@
+# Intentionally-vulnerable benchmark fixtures — excluded from self-scan.
+# These directories contain seeded bad code by design (§10 corpus).
+# Exclusion is pinned here, not ad-hoc (§10 self-scan gate).
+benchmark/corpus/
+benchmark/live-fixture/

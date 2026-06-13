@@ -1,0 +1,44 @@
+name: Weekly portfolio audit
+
+on:
+  schedule:
+    # Every Monday at 03:00 UTC
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: Full portfolio scan (static + live staging)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/breakoutsolutions/audit-tool:latest
+
+    env:
+      AUDIT_GITHUB_READ_TOKEN: ${{ secrets.AUDIT_GITHUB_READ_TOKEN }}
+      AUDIT_STAGING_AUTOMATION_USER_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_USER_A }}
+      AUDIT_STAGING_AUTOMATION_PASS_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_PASS_A }}
+      AUDIT_STAGING_AUTOMATION_USER_B: ${{ secrets.AUDIT_STAGING_AUTOMATION_USER_B }}
+      AUDIT_STAGING_AUTOMATION_PASS_B: ${{ secrets.AUDIT_STAGING_AUTOMATION_PASS_B }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Portfolio audit (all enabled repos + staging targets)
+        # Static scan of all registered repos + live DAST against allowlisted
+        # staging hosts only. All live traffic is gated by config/allowed-staging-hosts.json.
+        run: node dist/cli.js run
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 90

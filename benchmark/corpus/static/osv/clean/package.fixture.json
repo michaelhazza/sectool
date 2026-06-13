@@ -1,0 +1,7 @@
+{
+  "_comment": "OSV clean fixture: package with no known-vulnerable dependencies.",
+  "name": "osv-clean-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {}
+}

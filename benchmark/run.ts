@@ -1,14 +1,15 @@
 /**
- * benchmark/run.ts — minimal benchmark harness (P1-5)
+ * benchmark/run.ts — benchmark harness (P1-5 core; P6-1 live-fixture extension)
  *
  * Exports CANONICAL_CHECK_IDS (the authoritative stable id list) and
- * runBenchmark() (the `npm run benchmark` entry). P6-1 extends this with
- * live-fixture integration and real scanner invocations.
+ * runBenchmark() (the `npm run benchmark` entry). P6-1 adds live-fixture
+ * subprocess boot/teardown and port-discovery wiring.
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 const _moduleDir = dirname(fileURLToPath(import.meta.url));
 const CORPUS_STATIC_DIR = join(_moduleDir, 'corpus', 'static');
@@ -272,6 +273,91 @@ export function checkLiveFixture(liveFixtureDir: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Live-fixture subprocess wiring (P6-1)
+// ---------------------------------------------------------------------------
+
+export interface LiveFixtureHandle {
+  host: string;
+  port: number;
+  /** Stop the subprocess. */
+  stop: () => Promise<void>;
+}
+
+/**
+ * Boot `benchmark/live-fixture/server.js` as a Node subprocess.
+ * Discovers its bound port by reading the `LISTENING <host>:<port>` line
+ * from stdout (the server's startup contract). Resolves when the server is
+ * ready; rejects after `timeoutMs` (default 10s) if no LISTENING line arrives.
+ *
+ * Real scanner invocations against the returned `host:port` require the CI
+ * Docker environment with ZAP/Nuclei/etc. installed — callers guard with
+ * `BENCHMARK_LIVE_SCAN` env var.
+ */
+export function bootLiveFixture(
+  liveFixtureDir: string,
+  timeoutMs = 10_000,
+): Promise<LiveFixtureHandle> {
+  return new Promise((resolve, reject) => {
+    const serverPath = join(liveFixtureDir, 'server.js');
+    if (!existsSync(serverPath)) {
+      reject(new Error(`live-fixture server not found: ${serverPath}`));
+      return;
+    }
+
+    const child: ChildProcess = spawn(process.execPath, [serverPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let settled = false;
+    let stdout = '';
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        child.kill();
+        reject(new Error(`live-fixture server did not print LISTENING within ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+      const match = /LISTENING (\S+):(\d+)/.exec(stdout);
+      if (match !== null && !settled) {
+        settled = true;
+        clearTimeout(timer);
+        const host = match[1] ?? '127.0.0.1';
+        const port = parseInt(match[2] ?? '0', 10);
+        resolve({
+          host,
+          port,
+          stop: () =>
+            new Promise<void>((res) => {
+              child.once('exit', () => res());
+              child.kill();
+            }),
+        });
+      }
+    });
+
+    child.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    child.on('exit', (code) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(new Error(`live-fixture server exited early with code ${String(code)}`));
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // EXPECTED.json reader
 // ---------------------------------------------------------------------------
 
@@ -300,29 +386,35 @@ export interface ScanResult {
 /**
  * Run the benchmark harness.
  *
- * In P1-5 this validates corpus structure and cross-checks the rule inventory
- * against corpus directories. Actual scanner invocations are wired in P6-1.
+ * Cross-checks the rule inventory (CANONICAL_CHECK_IDS) against the corpus
+ * directories and the live-fixture EXPECTED.json. Computes recall/precision
+ * over all static corpus rules. Live-fixture scanning is wired via
+ * `liveFixtureResults` (populated by the P6 CI run with real binaries).
  *
- * @param scanResults - Actual scan findings (passed by P6-1; empty in P1-5).
+ * @param scanResults - Actual scan findings from the static corpus (vulnerable fixtures).
+ * @param cleanResults - Findings from the clean fixtures (should be empty for precision).
+ * @param liveFixtureResults - Findings from the live fixture (populated by real scanners in CI).
  * @param corpusStaticDir - Override for the corpus/static dir (used in tests).
  * @param liveFixtureDir - Override for the live-fixture dir (used in tests).
  */
 export function runBenchmark(
   scanResults: readonly ScanResult[] = [],
+  cleanResults: readonly ScanResult[] = [],
+  liveFixtureResults: readonly ScanResult[] = [],
   corpusStaticDir: string = CORPUS_STATIC_DIR,
   liveFixtureDir: string = LIVE_FIXTURE_DIR,
 ): BenchmarkResult {
-  // Step 1: rule-inventory ↔ corpus cross-check
+  // Step 1: rule-inventory ↔ corpus cross-check (CANONICAL_CHECK_IDS-driven)
   const { complete: completeIds, missing: missingStatic } = walkStaticCorpus(corpusStaticDir);
   const { fixtureExists, missingIds: missingLive } = checkLiveFixture(liveFixtureDir);
 
   const missingFixtures: string[] = [
     ...missingStatic.map(({ ruleId }) => ruleId),
-    ...(!fixtureExists ? ['live-fixture/EXPECTED.json (not yet created — P4-7)'] : []),
+    ...(!fixtureExists ? ['live-fixture/EXPECTED.json'] : []),
     ...missingLive.map((id) => `${id} (not in live-fixture/EXPECTED.json)`),
   ];
 
-  // Step 2: per-rule recall/precision over static corpus
+  // Step 2: per-rule recall/precision over static corpus (vulnerable fixtures)
   const byRule: RuleResult[] = [];
 
   for (const ruleId of completeIds) {
@@ -331,25 +423,28 @@ export function runBenchmark(
     const metrics = computeRuleMetrics(ruleId, expected, scanResults);
     byRule.push(metrics);
 
-    // Clean fixture must yield zero findings (precision check for the rule)
-    const cleanActual = scanResults.filter(
-      (f) =>
-        f.ruleId === ruleId &&
-        // P6-1 provides target info; in P1-5 all results are treated as from
-        // the vulnerable fixture. This guard is a placeholder for P6-1.
-        false,
-    );
-    if (cleanActual.length > 0) {
+    // Clean fixture must yield zero findings (precision check per rule)
+    const cleanForRule = cleanResults.filter((f) => f.ruleId === ruleId);
+    if (cleanForRule.length > 0) {
       byRule.push({
         ruleId: `${ruleId} (clean fixture)`,
         expectedCount: 0,
-        actualCount: cleanActual.length,
+        actualCount: cleanForRule.length,
         truePositives: 0,
-        falsePositives: cleanActual.length,
+        falsePositives: cleanForRule.length,
         misses: 0,
         recall: 1,
         precision: 0,
       });
+    }
+  }
+
+  // Step 3: live-fixture recall (against LIVE_IDS listed in EXPECTED.json)
+  if (liveFixtureResults.length > 0) {
+    for (const liveId of LIVE_IDS) {
+      const liveExpected: ExpectedFinding[] = [{ ruleId: liveId, surface: 'live' }];
+      const liveMetrics = computeRuleMetrics(liveId, liveExpected, liveFixtureResults);
+      byRule.push(liveMetrics);
     }
   }
 

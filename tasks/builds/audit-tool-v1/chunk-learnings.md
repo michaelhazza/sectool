@@ -200,3 +200,37 @@ would be preferable for interactive/incremental use but is not our primary use c
   assertion). If a future change breaks this test, fix the change, not the test.
 - `benchmark/safety-abort.test.ts` is collected by vitest via the `benchmark/**/*.test.ts`
   glob already in `vitest.config.ts` (added in P1-5).
+
+## P6-1 — Benchmark completion + repo-acquisition integration test (2026-06-13)
+
+**What worked:**
+- `it.skipIf(condition)` in vitest evaluates the condition at **collection time** (import/module
+  evaluation), NOT at `beforeAll` time. Using a module-level `spawnSync('git', ['--version'])`
+  check is the correct way to gate git-dependent tests — any state set in `beforeAll` will
+  be `undefined` when `skipIf` evaluates.
+- `spawnSync('git', ['--version'], { stdio: 'ignore' }).status === 0` is a fast, synchronous
+  git availability check with no output noise.
+- Plain arrow functions returning `Promise.resolve([])` (not `async`) avoid
+  `@typescript-eslint/require-await` in fake scanner/client stubs — same pattern as P4-5/P4-6.
+- For `bootLiveFixture`: `spawn(process.execPath, [serverPath], { stdio: ['ignore', 'pipe', 'pipe'] })`
+  with `child.stdout.on('data', ...)` reading for `LISTENING <host>:<port>` is reliable. The server
+  prints to stdout synchronously after `server.listen` callback fires.
+- The P1-5 `runBenchmark(scanResults, corpusStaticDir, liveFixtureDir)` call sites all needed
+  updating to the new 5-param `(scanResults, cleanResults, liveFixtureResults, corpusStaticDir, liveFixtureDir)`
+  signature. Replace-all on the test file handles all call sites at once.
+- Corpus dirs for wrapped scanner families (semgrep/gitleaks/osv) must exist with both
+  `vulnerable/EXPECTED.json` and `clean/` for the CANONICAL_CHECK_IDS cross-check to pass.
+  These are scaffold fixtures only; real binary recall is CI-only.
+- `package.json` in corpus dirs is blocked by the config-protection hook. Use `.fixture.json`
+  as a workaround for OSV fixture manifests in the corpus.
+
+**Watch-out for future chunks:**
+- `bootLiveFixture` returns a `LiveFixtureHandle` with `host`, `port`, and `stop()`. P6-2 and
+  the CI benchmark run use these to construct the loopback URL for `loadBenchmarkAllowlist`
+  and the live scan call. The allowlist must include the actual port: `127.0.0.1:<port>`.
+- `runBenchmark` now takes 5 params. The `liveFixtureResults` param is only non-empty during
+  CI real-binary runs (P6 core-quality exit loop). Unit tests pass `[]` for it.
+- The integration test uses `file://` URLs for the bare repo — git on Windows requires the
+  path to use forward slashes in the URL (replace `\\` with `/`).
+- `beforeAll` timeout for the bare-repo fixture setup should be ≥ 60_000ms (git clone + commit
+  + push can be slow on Windows under CI conditions).

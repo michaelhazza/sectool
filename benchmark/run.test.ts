@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   CANONICAL_CHECK_IDS,
   computeRuleMetrics,
@@ -9,9 +10,12 @@ import {
   runBenchmark,
   walkStaticCorpus,
   checkLiveFixture,
+  bootLiveFixture,
   type ExpectedFinding,
   type RuleResult,
 } from './run.js';
+
+const _moduleDir = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // CANONICAL_CHECK_IDS contract
@@ -344,7 +348,7 @@ describe('runBenchmark', () => {
   }
 
   it('passed=false and missingFixtures non-empty when static corpus is empty', () => {
-    const result = runBenchmark([], tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark([], [], [], tmpCorpusDir, tmpLiveDir);
     expect(result.passed).toBe(false);
     expect(result.missingFixtures.length).toBeGreaterThan(0);
   });
@@ -352,7 +356,7 @@ describe('runBenchmark', () => {
   it('passed=false when live fixture is missing', () => {
     makeAllStaticFixtures();
     // no live fixture
-    const result = runBenchmark([], tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark([], [], [], tmpCorpusDir, tmpLiveDir);
     expect(result.passed).toBe(false);
     expect(result.missingFixtures.some((m) => m.includes('live-fixture'))).toBe(true);
   });
@@ -361,7 +365,7 @@ describe('runBenchmark', () => {
     makeAllStaticFixtures();
     makeAllLiveFixtures();
     // No actual scan results → misses on expected findings
-    const result = runBenchmark([], tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark([], [], [], tmpCorpusDir, tmpLiveDir);
     // All rules have expected findings but no actuals → recall = 0
     expect(result.passed).toBe(false);
     expect(result.aggregate.recall).toBeLessThan(1);
@@ -378,7 +382,7 @@ describe('runBenchmark', () => {
       'BS-VAL-001', 'semgrep', 'gitleaks', 'osv',
     ];
     const scanResults = ids.map((id) => ({ ruleId: id }));
-    const result = runBenchmark(scanResults, tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark(scanResults, [], [], tmpCorpusDir, tmpLiveDir);
     expect(result.passed).toBe(true);
     expect(result.aggregate.recall).toBe(1);
     expect(result.aggregate.totalFalsePositives).toBe(0);
@@ -398,7 +402,7 @@ describe('runBenchmark', () => {
       ...ids.map((id) => ({ ruleId: id })),
       { ruleId: 'BS-SQL-001' }, // extra unexpected finding = FP
     ];
-    const result = runBenchmark(scanResults, tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark(scanResults, [], [], tmpCorpusDir, tmpLiveDir);
     expect(result.passed).toBe(false);
     expect(result.aggregate.totalFalsePositives).toBeGreaterThan(0);
   });
@@ -407,9 +411,68 @@ describe('runBenchmark', () => {
     // Only create BS-SQL-001; all others missing
     makeStaticFixture('BS-SQL-001', [{ ruleId: 'BS-SQL-001' }]);
     makeAllLiveFixtures();
-    const result = runBenchmark([], tmpCorpusDir, tmpLiveDir);
+    const result = runBenchmark([], [], [], tmpCorpusDir, tmpLiveDir);
     // 13 of 14 static ids missing
     expect(result.missingFixtures).toContain('BS-RLS-001');
     expect(result.missingFixtures).not.toContain('BS-SQL-001');
+  });
+
+  it('clean-fixture false positives are counted separately from vulnerable-fixture results', () => {
+    makeAllStaticFixtures();
+    makeAllLiveFixtures();
+    const vulnResults = [{ ruleId: 'BS-SQL-001' }];
+    // Simulate a false positive on the clean fixture for BS-SQL-001
+    const cleanResults = [{ ruleId: 'BS-SQL-001' }];
+    const result = runBenchmark(vulnResults, cleanResults, [], tmpCorpusDir, tmpLiveDir);
+    // The clean FP entry should appear as a separate byRule entry
+    const cleanEntry = result.byRule.find((r) => r.ruleId === 'BS-SQL-001 (clean fixture)');
+    expect(cleanEntry).toBeDefined();
+    expect(cleanEntry?.falsePositives).toBe(1);
+    expect(result.passed).toBe(false);
+  });
+
+  it('live-fixture results feed per-live-id recall accounting', () => {
+    makeAllStaticFixtures();
+    makeAllLiveFixtures();
+    const vulnResults = [
+      'BS-RLS-001', 'BS-SQL-001', 'BS-SQL-002', 'BS-AUTH-001', 'BS-AUTH-002',
+      'BS-JWT-001', 'BS-UPLOAD-001', 'BS-XSS-001', 'BS-CORS-001', 'BS-WS-001',
+      'BS-VAL-001', 'semgrep', 'gitleaks', 'osv',
+    ].map((id) => ({ ruleId: id }));
+    // Provide live results for all LIVE_IDS + wildcard families
+    const liveResults = [
+      'LIVE-TLS-001', 'LIVE-HDR-001', 'LIVE-COOKIE-001', 'LIVE-EXPOSE-001',
+      'LIVE-LEAK-001', 'LIVE-IDOR-001', 'LIVE-SESSION-001',
+      'ZAP-P-*', 'ZAP-A-*', 'NUCLEI-*',
+    ].map((id) => ({ ruleId: id }));
+    const result = runBenchmark(vulnResults, [], liveResults, tmpCorpusDir, tmpLiveDir);
+    expect(result.passed).toBe(true);
+    expect(result.aggregate.recall).toBe(1);
+    const liveTlsEntry = result.byRule.find((r) => r.ruleId === 'LIVE-TLS-001');
+    expect(liveTlsEntry).toBeDefined();
+    expect(liveTlsEntry?.truePositives).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bootLiveFixture — smoke test (P6-1 live-fixture integration wiring)
+// ---------------------------------------------------------------------------
+
+describe('bootLiveFixture', () => {
+  it('boots the live-fixture server and discovers its port from stdout', async () => {
+    const liveFixtureDir = join(_moduleDir, 'live-fixture');
+    const handle = await bootLiveFixture(liveFixtureDir, 10_000);
+    try {
+      expect(handle.port).toBeGreaterThan(0);
+      expect(handle.host).toMatch(/^(127\.0\.0\.1|localhost)$/);
+    } finally {
+      await handle.stop();
+    }
+  }, 15_000);
+
+  it('rejects when the server dir does not exist', async () => {
+    await expect(bootLiveFixture('/nonexistent/dir', 500)).rejects.toThrow(
+      /live-fixture server not found/,
+    );
   });
 });
