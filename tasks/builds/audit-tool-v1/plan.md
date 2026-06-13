@@ -240,7 +240,7 @@ No new primitive is invented by this plan beyond the §11-locked set. Nothing to
 
 ### P4-5 — Auth/login exchange (carrier-aware successCheck) **[ADV]**
 - **Phase:** P4
-- **Files:** `src/live/auth.ts` (*new file under `src/live/`; see plan-gap 2*); test colocated
+- **Files:** `src/live/auth.ts` (§11 inventory — plan-gap 2 RESOLVED); test colocated
 - **Implements:** §6.2 form-login exchange — `method`+`loginPath`+`bodyType` build the request, `userField`/`passField` name creds (from env-var **names**, never values), `sessionCarrier` (cookie|bearer) selects credential extraction, **carrier-aware `successCheck`**: bearer requires an extractable token at `jsonHasKey` (Set-Cookie alone ≠ success); cookie requires a usable `Set-Cookie` (JSON token alone ≠ success); the carrier-agnostic OR is rejected. Pre-login CSRF token captured from `GET loginPath` and replayed (only CSRF handling in v1). §6.2 failure pinning: `activeScan:true` + missing creds / login failure → target `failed` (named in `meta.failures`), never silent downgrade; `activeScan:false` + failure → unauthenticated scan + explicit coverage gap.
 - **Module shape.** *Public:* `establishSession(target, authConfig): Session | LoginFailure`. *Hidden:* the request builder, the carrier-aware success evaluation, the CSRF capture/replay, the env-name→value resolution.
 - **Error handling:** login failure on active target → typed failure feeding §6.2 pinning; creds-from-env missing → same.
@@ -481,7 +481,7 @@ No new primitive is invented by this plan beyond the §11-locked set. Nothing to
 - **Files:** `docs/fix-workflow.md`
 - **Implements:** §5.3 step 3 — target-repo onboarding (install the standard Claude Code action + `audit-fix` label; one-time), and the manual-fallback paste path.
 - **Module shape.** *Public:* the doc. *Hidden:* n/a.
-- **Test-first/G1 acceptance:** doc completeness reviewed at PR; `npx eslint` n/a.
+- **Test-first/G1 acceptance:** `docs/fix-workflow.md` MUST include headings for: required GitHub label (`audit-fix`), Claude Code action setup, token/scope requirements (`AUDIT_GITHUB_FIX_TOKEN`, `issues:write` only), issue marker format (fingerprint marker), expected PR-reference format, the 6 remediation-state meanings (§5.3), and the manual-fallback paste-prompt flow. Grep-checkable at review (matching the P7-2 acceptance bar) [external review LOW-2]. `npx eslint` n/a.
 - **Depends on:** P8-2 (the label/marker contract the doc describes).
 
 ---
