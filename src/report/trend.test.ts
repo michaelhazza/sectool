@@ -18,34 +18,38 @@ function makeFinding(overrides: {
   const id = `f-${fp.slice(0, 16)}`;
   const targetKind = overrides.targetKind ?? 'repo';
   const targetName = overrides.targetName ?? 'test-repo';
-  const target: Finding['target'] =
-    targetKind === 'repo'
-      ? { kind: 'repo', name: targetName }
-      : { kind: 'staging', host: targetName };
-
-  return {
+  const common = {
     id,
     fingerprint: fp,
     ruleId: 'BS-TEST-001',
     source: overrides.source,
-    surface: targetKind === 'repo' ? 'static' : 'live',
-    vulnClass: 'injection',
+    vulnClass: 'injection' as const,
     severity: overrides.severity ?? 'high',
     baseSeverity: overrides.severity ?? 'high',
-    confidence: 'probable',
-    target,
-    location:
-      targetKind === 'repo'
-        ? { path: 'src/test.ts', symbol: 'GET /test' }
-        : { url: 'https://staging.example.com/test', method: 'GET' },
+    confidence: 'probable' as const,
     evidence: { snippet: 'test snippet', cvss: null, raw: {} },
-    reachability: 'unknown',
+    reachability: 'unknown' as const,
     correlatedWith: [],
     externalRefs: [],
     firstSeen: '2026-06-13T00:00:00.000Z',
     suppressed: false,
     suppression: null,
     note: null,
+  };
+
+  if (targetKind === 'repo') {
+    return {
+      ...common,
+      surface: 'static',
+      target: { kind: 'repo', name: targetName },
+      location: { path: 'src/test.ts', symbol: 'GET /test' },
+    };
+  }
+  return {
+    ...common,
+    surface: 'live',
+    target: { kind: 'staging', host: targetName },
+    location: { url: 'https://staging.example.com/test', method: 'GET' },
   };
 }
 
