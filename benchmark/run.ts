@@ -760,13 +760,32 @@ export async function runDetectors(
       try {
         tmpDir = mkdtempSync(join(tmpdir(), 'audit-bench-osv-'));
         copyFileSync(fixtureFile, join(tmpDir, 'package.json'));
-        // Also copy the lockfile if present (osv-scanner uses it for resolved versions)
-        const lockFile = join(sourceDir, 'package-lock.fixture.json');
-        if (existsSync(lockFile)) {
-          copyFileSync(lockFile, join(tmpDir, 'package-lock.json'));
+        const lockFixture = join(sourceDir, 'package-lock.fixture.json');
+        const lockDest = join(tmpDir, 'package-lock.json');
+        if (existsSync(lockFixture)) {
+          copyFileSync(lockFixture, lockDest);
         }
+        // Use --lockfile to scope osv-scanner to exactly this fixture's lockfile,
+        // avoiding --recursive picking up /app/node_modules from the container CWD.
+        const osvExec: ExecOsv = injections.execOsv ?? (async () => {
+          if (!existsSync(lockDest)) {
+            // No lockfile = no resolved packages = no findings.
+            return { stdout: JSON.stringify({ results: [] }) };
+          }
+          try {
+            const r = await execFileAsync('osv-scanner', [
+              '--format', 'json',
+              '--lockfile', lockDest,
+            ]);
+            return { stdout: r.stdout };
+          } catch (e) {
+            const ee = e as { code?: number; stdout?: string };
+            if (ee.code === 1 && typeof ee.stdout === 'string') return { stdout: ee.stdout };
+            throw e;
+          }
+        });
         const target = corpusTarget(familyId, tmpDir);
-        const findings = await runOsv(target, tmpDir, injections.execOsv);
+        const findings = await runOsv(target, tmpDir, osvExec);
         resultsBucket.push(...findings.map(() => ({ ruleId: familyId })));
       } catch {
         // Binary absent or no vulnerabilities found.

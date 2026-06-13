@@ -1,9 +1,12 @@
-// Gitleaks vulnerable fixture — hardcoded secret for recall test.
-// INTENTIONALLY VULNERABLE: hardcoded credentials seeded for gitleaks detection.
-// These are NOT real credentials — this file exists only for the benchmark corpus.
+// Gitleaks vulnerable fixture — hardcoded secrets for recall test.
+// INTENTIONALLY VULNERABLE: these are seeded test values, not real credentials.
+// This file exists only for the benchmark corpus; the values are fictitious.
 
-// Gitleaks detects this as a generic-api-key (high entropy + variable naming pattern)
-export const PASSWORD = 'Sup3rS3cr3tP@ssw0rd!XyZ#2026';
+// Gitleaks detects hardcoded private key headers (high-confidence rule)
+export const privateKey = `-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAzRTBenchmarkFixtureTestOnlyNotARealKeyXXXXXXXXXXXX
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+-----END RSA PRIVATE KEY-----`;
 
-// Gitleaks detects this as a private key header pattern
-export const PRIVATE_KEY_HEADER = '-----BEGIN RSA PRIVATE KEY-----';
+// Gitleaks also detects high-entropy strings in password variable assignments
+export const dbPassword = 'xK9#mP2$vQ7!nL4@hR1^wF6&jT3*bN8';

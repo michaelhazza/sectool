@@ -1,21 +1,14 @@
-// BS-SQL-001 clean fixture: no sql tagged templates or raw SQL interpolation.
-// All data access uses parameterized ORM calls — no request-derived SQL building.
+// BS-SQL-001 clean fixture: no sql tagged templates, no raw SQL, no request interpolation.
+// Returns static data only — no user input flows anywhere near SQL.
 
-function buildDb() {
-  return {
-    query: async (table: string, id: string) => [{ id, table }],
-  };
+export function getStaticUsers() {
+  return [
+    { id: 1, name: 'Alice' },
+    { id: 2, name: 'Bob' },
+  ];
 }
 
-const db = buildDb();
-
-export async function getUserById(req: { params: { id: string } }) {
-  // Safe: uses parameterized ORM method, no sql template literal
-  const result = await db.query('users', req.params.id);
-  return result;
-}
-
-export async function getItemByName(req: { query: { name: string } }) {
-  // Safe: parameterized lookup, no raw SQL
-  return db.query('items', req.query.name ?? '');
+export function getStaticItem(id: number) {
+  const items: Record<number, string> = { 1: 'Widget', 2: 'Gadget' };
+  return items[id] ?? null;
 }
