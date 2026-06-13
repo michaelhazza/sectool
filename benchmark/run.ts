@@ -730,28 +730,27 @@ export async function runDetectors(
 
     // Build a custom exec that runs gitleaks from the fixture's own CWD so
     // the root /app/.gitleaksignore is not discovered.
-    const gitleaksExec: ExecGitleaks = injections.execGitleaks ?? (async (dir) => {
-      const { readFileSync: rfs, unlinkSync: ul } = await import('node:fs');
-      const { join: pjoin, tmpdir: ptmpdir } = await import('node:path');
-      const reportPath = pjoin(ptmpdir(), `gitleaks-bench-${String(Date.now())}.json`);
+    // Uses top-level imports (readFileSync, unlinkSync, join, tmpdir, execFileAsync).
+    const gitleaksExec: ExecGitleaks = injections.execGitleaks ?? (async (dir: string) => {
+      const reportPath = join(tmpdir(), `gitleaks-bench-${String(Date.now())}.json`);
       try {
         await execFileAsync('gitleaks', [
           'detect', '--source', dir, '--report-format', 'json',
           '--report-path', reportPath, '--no-banner', '--exit-code', '1',
         ], { cwd: dir });  // cwd=dir prevents finding /app/.gitleaksignore
         let out = '';
-        try { out = rfs(reportPath, 'utf8'); } catch { /* clean scan = no report file */ }
-        try { ul(reportPath); } catch { /* ignore */ }
+        try { out = readFileSync(reportPath, 'utf8'); } catch { /* clean scan = no report file */ }
+        try { unlinkSync(reportPath); } catch { /* ignore */ }
         return { stdout: out, exitCode: 0 };
       } catch (err) {
         const e = err as { code?: number };
         if (e.code === 1) {
           let out = '';
-          try { out = rfs(reportPath, 'utf8'); } catch { /* ignore */ }
-          try { ul(reportPath); } catch { /* ignore */ }
+          try { out = readFileSync(reportPath, 'utf8'); } catch { /* ignore */ }
+          try { unlinkSync(reportPath); } catch { /* ignore */ }
           return { stdout: out, exitCode: 1 };
         }
-        try { ul(reportPath); } catch { /* ignore */ }
+        try { unlinkSync(reportPath); } catch { /* ignore */ }
         throw err;
       }
     });
