@@ -45,7 +45,7 @@ function makeStaticFinding(overrides: Partial<Finding> = {}): Finding {
     suppression: null,
     note: null,
     ...overrides,
-  };
+  } as Finding;
 }
 
 function makePack(): RemediationPack {

@@ -831,7 +831,7 @@ function repoUrlForFinding(
   finding: Finding,
   registry: ReturnType<typeof loadConfig>['registry'],
 ): string | null {
-  if (finding.target.kind !== 'repo') return null;
+  if (finding.surface !== 'static') return null;
   const repoEntry = registry.repos.find((r) => r.name === finding.target.name);
   return repoEntry?.gitUrl ?? null;
 }
@@ -900,8 +900,8 @@ export async function doFix(args: FixArgs, config: ReturnType<typeof loadConfig>
     }
 
     const result = await fileFixRequest(finding, pack, repoUrl, {
-      client: deps?.githubClient,
-      env: deps?.env,
+      ...(deps?.githubClient !== undefined ? { client: deps.githubClient } : {}),
+      ...(deps?.env !== undefined ? { env: deps.env } : {}),
     });
 
     await upsertFix(

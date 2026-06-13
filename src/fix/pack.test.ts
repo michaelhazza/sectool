@@ -10,7 +10,7 @@ const FULL_FP = 'a'.repeat(64);
 const DISPLAY_ID = `f-${'a'.repeat(16)}`;
 
 function makeStaticFinding(overrides: Partial<Finding> = {}): Finding {
-  const base: Finding = {
+  const base = {
     id: DISPLAY_ID,
     fingerprint: FULL_FP,
     ruleId: 'BS-SQL-001',
@@ -35,12 +35,12 @@ function makeStaticFinding(overrides: Partial<Finding> = {}): Finding {
     suppression: null,
     note: null,
     ...overrides,
-  };
+  } as Finding;
   return base;
 }
 
 function makeLiveFinding(overrides: Partial<Finding> = {}): Finding {
-  const base: Finding = {
+  const base = {
     id: DISPLAY_ID,
     fingerprint: FULL_FP,
     ruleId: 'ZAP-P-10020',
@@ -64,7 +64,7 @@ function makeLiveFinding(overrides: Partial<Finding> = {}): Finding {
     suppression: null,
     note: null,
     ...overrides,
-  };
+  } as Finding;
   return base;
 }
 

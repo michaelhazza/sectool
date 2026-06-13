@@ -134,7 +134,10 @@ function makeProductionFixHandler(opts?: { client?: GitHubHttpClient; env?: EnvR
     const repoUrl = repoEntry.gitUrl;
 
     const pack = buildPack(finding);
-    const result = await fileFixRequest(finding, pack, repoUrl, { client: opts?.client, env: opts?.env });
+    const result = await fileFixRequest(finding, pack, repoUrl, {
+      ...(opts?.client !== undefined ? { client: opts.client } : {}),
+      ...(opts?.env !== undefined ? { env: opts.env } : {}),
+    });
 
     await upsertFix(
       finding.fingerprint,

@@ -407,7 +407,7 @@ const defaultGitHubClient: GitHubHttpClient = async (req) => {
   const response = await fetch(req.url, {
     method: req.method,
     headers: req.headers,
-    body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
+    ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),
   });
   const body: unknown = await response.json().catch(() => ({}));
   return { status: response.status, body };
