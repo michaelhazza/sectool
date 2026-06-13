@@ -5,10 +5,26 @@ import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { loadAllowlist, loadTargets, loadBaseline, ConfigError } from './config/load.js';
 import { scanRepos } from './static/orchestrator.js';
+import type { ScannerMap } from './static/orchestrator.js';
 import { preflight, dryRun } from './live/preflight.js';
 import { loginForTarget } from './live/auth.js';
 import { runZap } from './live/scanners/zap.js';
 import { runNuclei } from './live/scanners/nuclei.js';
+import { runSemgrep } from './static/scanners/semgrep.js';
+import { runGitleaks } from './static/scanners/gitleaks.js';
+import { runOsv } from './static/scanners/osv.js';
+import * as ruleSQL001 from './static/rules/BS-SQL-001.js';
+import * as ruleSQL002 from './static/rules/BS-SQL-002.js';
+import * as ruleRLS001 from './static/rules/BS-RLS-001.js';
+import * as ruleAUTH001 from './static/rules/BS-AUTH-001.js';
+import * as ruleWS001 from './static/rules/BS-WS-001.js';
+import * as ruleVAL001 from './static/rules/BS-VAL-001.js';
+import * as ruleXSS001 from './static/rules/BS-XSS-001.js';
+import { createProject, addSourceFiles } from './static/rules/harness.js';
+import { runTlsProbe, runTlsProbeDefault } from './live/probes/tls.js';
+import { runHeadersProbe, defaultHeadersClient } from './live/probes/headers.js';
+import { runCookiesProbe, defaultCookiesClient } from './live/probes/cookies.js';
+import { runExposureProbe, defaultExposureClient } from './live/probes/exposure.js';
 import { correlate } from './correlate/correlate.js';
 import { buildReport, writeReport } from './report/json.js';
 import { toMarkdown } from './report/markdown.js';
@@ -33,6 +49,93 @@ import type { Session } from './live/auth.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = resolve(__dirname, '..');
+
+// ---------------------------------------------------------------------------
+// Static scanner map — wires all 4 families (ast, semgrep, gitleaks, osv)
+// with real runner implementations. Injectable callers can override per-family.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the real static ScannerMap that powers `audit scan-source` / `audit run`.
+ *
+ * ast: runs all 7 ts-morph rules over the repo using a shared Project instance
+ *      created once per invocation (avoids redundant parsing across rules).
+ * semgrep / gitleaks / osv: shell-out wrappers from src/static/scanners/*.
+ *
+ * All four scanner functions match ScannerFn: (dir, target) => Promise<Finding[]>.
+ */
+export function buildStaticScannerMap(): ScannerMap {
+  return {
+    ast: (dir, target) => {
+      // Create a shared project for all 7 rules to avoid re-parsing the same files
+      const project = createProject(dir);
+      addSourceFiles(project, dir);
+      const allFindings: Finding[] = [];
+      allFindings.push(...ruleSQL001.run(dir, target.name, project));
+      allFindings.push(...ruleSQL002.run(dir, target.name, project));
+      allFindings.push(...ruleRLS001.run(dir, target.name, project));
+      // BS-AUTH-001 has an extra repoConfig param before project
+      allFindings.push(...ruleAUTH001.run(dir, target.name, { publicRoutes: target.publicRoutes ?? [] }, project));
+      allFindings.push(...ruleWS001.run(dir, target.name, project));
+      allFindings.push(...ruleVAL001.run(dir, target.name, project));
+      allFindings.push(...ruleXSS001.run(dir, target.name, project));
+      // Deduplicate by fingerprint (rules may emit the same finding via overlapping patterns)
+      const seen = new Set<string>();
+      return Promise.resolve(allFindings.filter((f) => {
+        if (seen.has(f.fingerprint)) return false;
+        seen.add(f.fingerprint);
+        return true;
+      }));
+    },
+    semgrep: (dir, target) => runSemgrep(target, dir),
+    gitleaks: (dir, target) => runGitleaks(target, dir),
+    osv: (dir, target) => runOsv(target, dir),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Real probe runner — runs all 4 passive probe families against a live target.
+// Uses real HTTP clients (injectable per-probe for unit testing).
+// ---------------------------------------------------------------------------
+
+async function defaultRunProbes(target: AllowedTarget, rps: number): Promise<Finding[]> {
+  const allFindings: Finding[] = [];
+
+  // TLS probe — uses Node's built-in tls module (no external binary)
+  try {
+    const tlsFindings = await runTlsProbe(target, rps, runTlsProbeDefault);
+    allFindings.push(...tlsFindings);
+  } catch {
+    // Probe errors are non-fatal at the individual probe level; the outer
+    // scanLiveTarget catch handles family-level failure if runProbes throws.
+  }
+
+  // Headers probe
+  try {
+    const { findings } = await runHeadersProbe(target, rps, defaultHeadersClient);
+    allFindings.push(...findings);
+  } catch {
+    // non-fatal
+  }
+
+  // Cookies probe
+  try {
+    const cookieFindings = await runCookiesProbe(target, rps, defaultCookiesClient);
+    allFindings.push(...cookieFindings);
+  } catch {
+    // non-fatal
+  }
+
+  // Exposure probe
+  try {
+    const exposureFindings = await runExposureProbe(target, rps, defaultExposureClient);
+    allFindings.push(...exposureFindings);
+  } catch {
+    // non-fatal
+  }
+
+  return allFindings;
+}
 
 // ---------------------------------------------------------------------------
 // Types for injectable live-scan dependencies (enable unit testing without
@@ -459,15 +562,28 @@ function findLatestReport(): import('./schemas/report.js').RunReport | null {
   } catch {
     return null;
   }
+  // RUN_ID_RE: YYYY-MM-DDTHH-MM-SSZ-<4hex> — used to parse the embedded timestamp
+  // for sort order. Non-conforming dir names are excluded so stray dirs (e.g.
+  // .lock, temp dirs) cannot influence which report is considered latest (AUD-009).
+  const RUN_ID_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)-[0-9a-f]{4}$/;
   const runDirs = entries
     .filter((e) => {
       try {
-        return statSync(resolve(reportsDir, e)).isDirectory();
+        return RUN_ID_RE.test(e) && statSync(resolve(reportsDir, e)).isDirectory();
       } catch {
         return false;
       }
     })
-    .sort();
+    .sort((a, b) => {
+      // Parse the ISO-ish timestamp prefix (replace hyphens-in-time with colons for Date)
+      const toTs = (s: string): number => {
+        const m = RUN_ID_RE.exec(s);
+        if (!m) return 0;
+        // "2026-06-12T03-00-00Z" → "2026-06-12T03:00:00Z"
+        return new Date(m[1]!.replace(/T(\d{2})-(\d{2})-(\d{2})Z$/, 'T$1:$2:$3Z')).getTime();
+      };
+      return toTs(a) - toTs(b);
+    });
   const last = runDirs[runDirs.length - 1];
   if (last === undefined) return null;
   const reportPath = resolve(reportsDir, last, 'report.json');
@@ -525,20 +641,15 @@ export async function scanLiveTarget(
 
   const session: Session | undefined = loginResult.kind === 'session' ? loginResult : undefined;
 
-  // Probes family
-  const probeRunner = deps?.runProbes;
-  if (probeRunner !== undefined) {
-    try {
-      const probeFindings = await probeRunner(target, rps);
-      allFindings.push(...probeFindings);
-      scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'complete' });
-    } catch {
-      failures.push({ target: registryEntry.name, family: 'probe', reason: 'probe family failed' });
-      scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'failed' });
-    }
-  } else {
-    // Default: probes not available without injectable clients — mark skipped
-    scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'skipped' });
+  // Probes family — use injectable dep when provided, otherwise use the real default runner
+  const probeRunner = deps?.runProbes ?? defaultRunProbes;
+  try {
+    const probeFindings = await probeRunner(target, rps);
+    allFindings.push(...probeFindings);
+    scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'complete' });
+  } catch {
+    failures.push({ target: registryEntry.name, family: 'probe', reason: 'probe family failed' });
+    scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'failed' });
   }
 
   // ZAP
@@ -587,7 +698,7 @@ async function doScanSource(
     return;
   }
 
-  const result = await scanRepos(repos, {}, {
+  const result = await scanRepos(repos, buildStaticScannerMap(), {
     scannerTimeoutMs: args.scannerTimeout * 60_000,
     maxParallelTargets: args.maxParallelTargets,
   });
@@ -625,7 +736,10 @@ async function doRun(
   const runId = generateRunId();
   const startedAt = new Date().toISOString();
 
-  await withWorkspaceLock(async () => {
+  // Capture the desired exit code inside the lock, return it, then exit after
+  // the lock releases. Calling process.exit() inside withWorkspaceLock would
+  // bypass the finally-block that releases the lock (AUD-006).
+  const desiredExitCode = await withWorkspaceLock(async () => {
     const allFindings: Finding[] = [];
     const allScannerStatus: ScannerStatusEntry[] = [];
     const allTargets: RunTarget[] = [];
@@ -637,7 +751,7 @@ async function doRun(
       : config.registry.repos.filter((r) => r.enabled);
 
     if (repos.length > 0) {
-      const staticResult = await scanRepos(repos, {}, {
+      const staticResult = await scanRepos(repos, buildStaticScannerMap(), {
         scannerTimeoutMs: args.scannerTimeout * 60_000,
         maxParallelTargets: args.maxParallelTargets,
       });
@@ -728,14 +842,21 @@ async function doRun(
         (f) => !f.suppressed && (SEVERITY_ORDER[f.severity] ?? 99) <= threshold,
       );
       if (hasAboveThreshold) {
-        process.exit(2);
+        return 2;
       }
     }
 
     if (runStatus === 'failed') {
-      process.exit(1);
+      return 1;
     }
+
+    return 0;
   });
+
+  // Exit AFTER the lock has been released by withWorkspaceLock's finally block
+  if (desiredExitCode !== 0) {
+    process.exit(desiredExitCode);
+  }
 }
 
 function doReport(args: ReportArgs): void {

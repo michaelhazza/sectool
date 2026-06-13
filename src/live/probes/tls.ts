@@ -1,3 +1,4 @@
+import * as tls from 'node:tls';
 import type { AllowedTarget } from '../gate.js';
 import { withHostBudget } from '../ratelimit.js';
 import { redact } from '../../report/redaction.js';
@@ -84,6 +85,44 @@ function buildFinding(
     note: null,
   };
 }
+
+/**
+ * Real TLS client: connects to the target host via Node's tls module and
+ * returns TLS peer information. Uses the AllowedTarget's hostname + port 443
+ * (or port extracted from the URL when present).
+ */
+export const runTlsProbeDefault: TlsClient = (target: AllowedTarget): Promise<TlsPeerInfo> => {
+  return new Promise((resolve, reject) => {
+    let port = 443;
+    try {
+      const u = new URL(target.url);
+      if (u.port) port = parseInt(u.port, 10);
+    } catch { /* use default */ }
+
+    const socket = tls.connect(
+      { host: target.hostname, port, servername: target.hostname, rejectUnauthorized: false },
+      () => {
+        const cert = socket.getPeerCertificate();
+        const protocol = socket.getProtocol() ?? 'unknown';
+        const cipher = socket.getCipher()?.name ?? 'unknown';
+        const authorized = socket.authorized;
+        const cnRaw = cert?.subject?.CN;
+        const subjectCN = (Array.isArray(cnRaw) ? cnRaw[0] : cnRaw) ?? target.hostname;
+        const validTo = cert?.valid_to ?? new Date(0).toISOString();
+        socket.destroy();
+        resolve({ protocol, subjectCN, validTo, authorized, cipher });
+      },
+    );
+    socket.on('error', (err: Error) => {
+      socket.destroy();
+      reject(err);
+    });
+    socket.setTimeout(10_000, () => {
+      socket.destroy();
+      reject(new Error(`TLS connection to ${target.hostname} timed out`));
+    });
+  });
+};
 
 /**
  * Run the TLS probe against the given AllowedTarget.

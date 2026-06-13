@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeTargetTrend, buildTrendLine } from './trend.js';
 import type { RunReport } from '../schemas/report.js';
-import type { Finding } from '../schemas/finding.js';
+import type { Finding, ScannerFamily } from '../schemas/finding.js';
 
 // ---------------------------------------------------------------------------
 // Minimal Finding factory
@@ -89,10 +89,23 @@ const FP_D = 'd'.repeat(64);
 // §10 Partial-run trend guardrail
 // ---------------------------------------------------------------------------
 
+// Helper: build a prevFingerprints map in the new family-attributed format
+// target → family → Set<fp>
+function makePrevFps(
+  targetName: string,
+  familyFps: Record<string, string[]>,
+): Map<string, Map<ScannerFamily, Set<string>>> {
+  const familyMap = new Map<ScannerFamily, Set<string>>();
+  for (const [family, fps] of Object.entries(familyFps)) {
+    familyMap.set(family as ScannerFamily, new Set(fps));
+  }
+  return new Map([[targetName, familyMap]]);
+}
+
 describe('computeTargetTrend — partial-run rule (§6.5 / §10 guardrail)', () => {
   it('when a scanner family times out, its previously-known finding is NOT counted fixed', () => {
     // Previous run: ast family produced FP_A (complete)
-    const prevFps = new Map([['test-repo', new Set([FP_A])]]);
+    const prevFps = makePrevFps('test-repo', { ast: [FP_A] });
 
     // Current run: ast family TIMED OUT (skipped), so FP_A is absent not because it's fixed
     const currentReport = makeReport({
@@ -115,7 +128,7 @@ describe('computeTargetTrend — partial-run rule (§6.5 / §10 guardrail)', () 
   });
 
   it('when a scanner family fails, its previously-known finding is NOT counted fixed', () => {
-    const prevFps = new Map([['test-repo', new Set([FP_A])]]);
+    const prevFps = makePrevFps('test-repo', { ast: [FP_A] });
 
     const currentReport = makeReport({
       findings: [],
@@ -147,7 +160,7 @@ describe('computeTargetTrend — partial-run rule (§6.5 / §10 guardrail)', () 
   });
 
   it('when all families complete, a finding absent in current run IS counted fixed', () => {
-    const prevFps = new Map([['test-repo', new Set([FP_A, FP_B])]]);
+    const prevFps = makePrevFps('test-repo', { ast: [FP_A, FP_B] });
 
     const currentReport = makeReport({
       findings: [
@@ -166,7 +179,7 @@ describe('computeTargetTrend — partial-run rule (§6.5 / §10 guardrail)', () 
   });
 
   it('correctly computes new findings in a complete run', () => {
-    const prevFps = new Map([['test-repo', new Set([FP_A])]]);
+    const prevFps = makePrevFps('test-repo', { ast: [FP_A] });
 
     const currentReport = makeReport({
       findings: [
@@ -224,6 +237,60 @@ describe('computeTargetTrend — partial-run rule (§6.5 / §10 guardrail)', () 
     expect(trend.bySeverity.high).toBe(1);
     expect(trend.bySeverity.medium).toBe(1);
     expect(trend.bySeverity.low).toBe(0);
+    expect(trend.status).toBe('unknown');
+  });
+
+  // AUD-007: cross-family masquerade guardrail
+  // prev semgrep found FP_X, prev ast found FP_Y
+  // this run: semgrep FAILED (so FP_X absence is unknown), ast COMPLETE (FP_Y absent = fixed)
+  // Expected: fixed===0 (FP_X must NOT be counted fixed since semgrep failed),
+  //           status==='unknown' (semgrep failed)
+  it('AUD-007 — semgrep-produced fp NOT counted fixed when semgrep fails this run', () => {
+    const FP_X = 'x'.repeat(64);
+    const FP_Y = 'y'.repeat(64);
+
+    // prev: semgrep produced FP_X, ast produced FP_Y
+    const prevFps = makePrevFps('test-repo', { semgrep: [FP_X], ast: [FP_Y] });
+
+    // this run: semgrep FAILED, ast COMPLETE, neither FP_X nor FP_Y present
+    const currentReport = makeReport({
+      findings: [],
+      scannerStatus: [
+        { target: 'test-repo', family: 'semgrep', state: 'failed' },
+        { target: 'test-repo', family: 'ast', state: 'complete' },
+      ],
+    });
+
+    const trend = computeTargetTrend('test-repo', currentReport, prevFps);
+
+    // FP_X: semgrep failed → NOT counted fixed
+    // FP_Y: ast completed AND FP_Y absent → counted fixed
+    // Net fixed = 1 (only FP_Y), NOT 2
+    expect(trend.fixed).toBe(1);
+    // status is unknown because semgrep failed
+    expect(trend.status).toBe('unknown');
+  });
+
+  it('AUD-007 strict: semgrep failed + ast complete + FP_X absent → fixed===0 when FP_X is semgrep-only', () => {
+    const FP_X = 'x'.repeat(64);
+
+    // prev: only semgrep produced FP_X (no ast findings)
+    const prevFps = makePrevFps('test-repo', { semgrep: [FP_X] });
+
+    // this run: semgrep FAILED, ast COMPLETE, FP_X absent
+    const currentReport = makeReport({
+      findings: [],
+      scannerStatus: [
+        { target: 'test-repo', family: 'semgrep', state: 'failed' },
+        { target: 'test-repo', family: 'ast', state: 'complete' },
+      ],
+    });
+
+    const trend = computeTargetTrend('test-repo', currentReport, prevFps);
+
+    // FP_X was from semgrep which failed → fixed MUST be 0
+    expect(trend.fixed).toBe(0);
+    // status unknown (semgrep failed)
     expect(trend.status).toBe('unknown');
   });
 });

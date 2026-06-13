@@ -350,6 +350,29 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
     // Read the report from the temp file ZAP wrote to (set in the YAML)
     reportContent = readFileSync(reportFile, 'utf8');
   } catch (err) {
+    // ZAP -autorun exits non-zero in two distinct cases:
+    //   exit 1: alerts found at or above the configured threshold (expected — the report is valid)
+    //   exit 2+: genuine tool error (bad args, binary not found, internal crash)
+    // Discriminate by checking whether the report file was written. If it exists
+    // and is parseable, treat the run as successful (findings-present path).
+    // If not, re-throw so the orchestrator marks the family failed.
+    const execErr = err as NodeJS.ErrnoException & { code?: number };
+    const exitCode = execErr.code;
+    if (typeof exitCode === 'number' && exitCode === 1) {
+      try {
+        reportContent = readFileSync(reportFile, 'utf8');
+        // Report was written — clean up yaml tmp and proceed to parse
+        try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
+        try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
+        try {
+          return JSON.parse(reportContent) as ZapReport;
+        } catch {
+          return { alerts: [] };
+        }
+      } catch {
+        // Report file not written — genuine tool error
+      }
+    }
     try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
     throw err;

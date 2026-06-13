@@ -1,3 +1,5 @@
+import * as https from 'node:https';
+import * as http from 'node:http';
 import type { AllowedTarget } from '../gate.js';
 import { withHostBudget } from '../ratelimit.js';
 import { redact } from '../../report/redaction.js';
@@ -122,6 +124,53 @@ function buildFinding(
     note: null,
   };
 }
+
+/**
+ * Real HTTP/HTTPS client for the exposure probe.
+ * Makes a GET request to the target URL + path and returns the status + body preview.
+ * Does not follow redirects — only direct responses are inspected.
+ */
+export const defaultExposureClient: ExposureClient = (
+  target: AllowedTarget,
+  path: string,
+): Promise<PathProbeResult> => {
+  return new Promise((resolve, reject) => {
+    const fullUrl = `${target.url.replace(/\/$/, '')}${path}`;
+    const isHttps = fullUrl.startsWith('https://');
+    const client = isHttps ? https : http;
+    const req = client.request(
+      fullUrl,
+      { method: 'GET', headers: { 'User-Agent': 'audit-tool/1.0.0' }, rejectUnauthorized: false },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const contentType = res.headers['content-type'];
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          // Only collect up to 512 bytes for the body preview
+          if (chunks.reduce((acc, c) => acc + c.length, 0) < 512) {
+            chunks.push(chunk);
+          }
+        });
+        res.on('end', () => {
+          const bodyPreviewStr = Buffer.concat(chunks).slice(0, 512).toString('utf8');
+          const result: PathProbeResult = {
+            path,
+            status,
+            ...(typeof contentType === 'string' ? { contentType } : {}),
+            ...(bodyPreviewStr.length > 0 ? { bodyPreview: bodyPreviewStr } : {}),
+          };
+          resolve(result);
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.setTimeout(10_000, () => {
+      req.destroy(new Error(`Exposure probe request to ${fullUrl} timed out`));
+    });
+    req.end();
+  });
+};
 
 /**
  * Run the exposed-endpoint probe against the given AllowedTarget.

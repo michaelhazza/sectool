@@ -785,7 +785,7 @@ describe('CLI — P1-4 + P5-6', () => {
 
     it('audit report --format html calls toHtml when a report exists', async () => {
       const fakeReport = {
-        runId: '2026-06-13T00-00-00Z-test',
+        runId: '2026-06-13T00-00-00Z-ab12',
         date: '2026-06-13',
         findings: [],
         targets: [],
@@ -802,7 +802,7 @@ describe('CLI — P1-4 + P5-6', () => {
       // Provide a run dir so findLatestReport() finds the fake report.
       // readdirSync is a vi.fn() from the mock setup.
       vi.mocked(readdirSync).mockReturnValueOnce(
-        ['2026-06-13T00-00-00Z-test'] as unknown as ReturnType<typeof readdirSync>,
+        ['2026-06-13T00-00-00Z-ab12'] as unknown as ReturnType<typeof readdirSync>,
       );
       // Spy on the mocked node:fs module's readFileSync for this one call.
       const fsMod = await import('node:fs');

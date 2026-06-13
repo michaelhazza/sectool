@@ -332,6 +332,81 @@ describe('writeReport — atomic tmp+rename', () => {
 });
 
 // ---------------------------------------------------------------------------
+// AUD-008: live-confirmed surface-guard
+// A correlated live finding's severity + confidence are unchanged after
+// buildReport (only the static partner is bumped — §8.1 surface guard).
+// ---------------------------------------------------------------------------
+
+describe('buildReport — AUD-008 live-confirmed surface guard', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(resolve(tmpdir(), 'audit-aud008-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('correlated live finding severity + confidence are unchanged after buildReport', () => {
+    const staticFp = makeFingerprint('staticfingerp1');
+    const liveFp = makeFingerprint('livefingerprin1');
+
+    // Static finding — after correlation, correlatedWith points at the live finding
+    const staticFinding = makeStaticFinding({
+      fingerprint: staticFp,
+      id: `f-${staticFp.slice(0, 16)}`,
+      surface: 'static',
+      severity: 'high',
+      baseSeverity: 'high',
+      confidence: 'probable',
+      correlatedWith: [`f-${liveFp.slice(0, 16)}`],
+    });
+
+    // Live finding — after correlation, correlatedWith points at the static finding.
+    // Use vulnClass 'misconfiguration' (no severity floor) and reachability 'unknown'
+    // so the severity stays at baseSeverity 'medium' after computeSeverity.
+    const liveFinding: Finding = {
+      ...makeStaticFinding({
+        fingerprint: liveFp,
+        id: `f-${liveFp.slice(0, 16)}`,
+        vulnClass: 'misconfiguration',
+        severity: 'medium',
+        baseSeverity: 'medium',
+        confidence: 'probable',
+        correlatedWith: [`f-${staticFp.slice(0, 16)}`],
+      }),
+      surface: 'live',
+      source: 'zap',
+      target: { kind: 'staging', host: 'staging.example.dev' },
+      location: { url: 'https://staging.example.dev/api/users', method: 'GET' },
+    };
+
+    const fixesPath = resolve(tmpDir, 'fixes.json');
+    writeFileSync(fixesPath, '{}', 'utf8');
+
+    const report = buildReport(
+      makeBuildInput({
+        rawFindings: [staticFinding, liveFinding],
+        fixesPath,
+      }),
+    );
+
+    const resultLive = report.findings.find((f) => f.fingerprint === liveFp);
+    const resultStatic = report.findings.find((f) => f.fingerprint === staticFp);
+
+    // Live finding must NOT have its severity or confidence bumped
+    expect(resultLive?.severity).toBe('medium');
+    expect(resultLive?.confidence).toBe('probable');
+
+    // Static finding IS bumped (liveConfirmed = true for static with correlatedWith)
+    // baseSeverity is 'high'; with liveConfirmed the severity stays 'high' (floor for injection)
+    // but confidence becomes 'confirmed'
+    expect(resultStatic?.confidence).toBe('confirmed');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Redaction pass
 // ---------------------------------------------------------------------------
 

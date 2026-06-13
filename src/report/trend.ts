@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { RunReport } from '../schemas/report.js';
 import type { TrendLine, TargetTrend } from '../schemas/trend.js';
 import { TrendLineSchema } from '../schemas/trend.js';
+import type { ScannerFamily } from '../schemas/finding.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -22,11 +23,15 @@ const TREND_PATH = resolve(REPO_ROOT, 'history', 'trend.jsonl');
  *
  * When prevFingerprints is undefined (first run), all current findings are "new"
  * and fixed=0 regardless of family completion.
+ *
+ * prevFingerprints: target → family → Set<fingerprint>
+ * This family attribution is required so that a finding from family X is only
+ * counted "fixed" when family X completed this run (§6.5 cross-family guardrail).
  */
 export function computeTargetTrend(
   targetName: string,
   currentReport: RunReport,
-  prevFingerprints: ReadonlyMap<string, Set<string>> | undefined,
+  prevFingerprints: ReadonlyMap<string, ReadonlyMap<ScannerFamily, Set<string>>> | undefined,
 ): TargetTrend {
   // Determine which families completed for this target
   const completeFamilies = new Set(
@@ -81,56 +86,38 @@ export function computeTargetTrend(
     };
   }
 
-  // Previous fingerprints for this target, grouped by family
-  const prevFamilyFps = prevFingerprints.get(targetName) ?? new Set<string>();
+  // Previous fingerprints for this target, keyed by family
+  // family → Set<fingerprint>
+  const prevByFamily = prevFingerprints.get(targetName) ?? new Map<ScannerFamily, Set<string>>();
+
+  // Flat set of all prev fingerprints for this target (for new/persisting computation)
+  const allPrevFps = new Set<string>();
+  for (const fpSet of prevByFamily.values()) {
+    for (const fp of fpSet) allPrevFps.add(fp);
+  }
 
   let newCount = 0;
   let persistingCount = 0;
   let fixedCount = 0;
 
-  // new: in current complete families but not in prev
+  // new: in current complete families but not in any prev family
   for (const fp of currentCompleteFps) {
-    if (prevFamilyFps.has(fp)) {
+    if (allPrevFps.has(fp)) {
       persistingCount++;
     } else {
       newCount++;
     }
   }
 
-  // fixed: in prev but NOT in current AND the family that produced them completed
-  // We need to know which family produced each prev fingerprint — this comes from
-  // the previous report. Since we don't have the previous report here, we use
-  // only complete families' absence as a proxy.
-  //
-  // The partial-run rule: fixed is only counted for families that completed.
-  // Any prev fp from a non-complete family is NOT counted as fixed.
-  //
-  // Because prevFamilyFps only contains fingerprints from families that were
-  // complete in the PREVIOUS run (the caller is responsible for building this map
-  // from the previous report's complete-family findings), we check whether the
-  // family that produced that fingerprint also ran to completion THIS run.
-  //
-  // The prevCompleteFamilyFps parameter gives us exactly the fingerprints that
-  // were complete last time. We can only count a fingerprint as "fixed" if:
-  //   1. It was present in the previous run (it was complete last time, so it's in prevFamilyFps)
-  //   2. It is NOT present in the current run
-  //   3. Its originating family completed THIS run
-  //
-  // Since we don't have per-fingerprint family membership from prev, we compute
-  // "fixed" conservatively: only count a prev fp as fixed if the current run
-  // completed at least one family (so the absence is meaningful) — but only from
-  // the complete families of THIS run.
-  //
-  // Implementation: a prev fp is fixed only if:
-  //   - It is in prevFamilyFps (was present last run)
-  //   - It is NOT in currentCompleteFps
-  //   - completeFamilies is non-empty (so at least something ran and completed)
-  //
-  // This is conservative but correct: if a family timed out, we don't count its
-  // previously-known findings as fixed.
-  for (const fp of prevFamilyFps) {
-    if (!currentCompleteFps.has(fp) && completeFamilies.size > 0) {
-      fixedCount++;
+  // fixed: in prev but NOT in current, AND the family that produced the prev fp
+  // completed THIS run (§6.5 cross-family guardrail).
+  // Only count a prev fp as fixed when its originating family ran to completion.
+  for (const [family, fpSet] of prevByFamily) {
+    if (!completeFamilies.has(family)) continue; // that family didn't complete → skip
+    for (const fp of fpSet) {
+      if (!currentCompleteFps.has(fp)) {
+        fixedCount++;
+      }
     }
   }
 
@@ -146,13 +133,13 @@ export function computeTargetTrend(
 /**
  * Build a TrendLine from the current RunReport and optional previous fingerprint map.
  *
- * prevFingerprintsByTarget: for each target name, the set of fingerprints
- * from that target's COMPLETE families in the previous run. When undefined,
+ * prevFingerprintsByTarget: for each target name, a family→Set<fp> map of
+ * fingerprints from complete families in the previous run. When undefined,
  * all findings are treated as new.
  */
 export function buildTrendLine(
   report: RunReport,
-  prevFingerprintsByTarget: ReadonlyMap<string, Set<string>> | undefined,
+  prevFingerprintsByTarget: ReadonlyMap<string, ReadonlyMap<ScannerFamily, Set<string>>> | undefined,
 ): TrendLine {
   const targetNames = new Set<string>();
   for (const f of report.findings) {
@@ -212,12 +199,14 @@ export function readTrendLines(trendPath?: string): TrendLine[] {
  * the corresponding report.json. If the previous report is unavailable, returns
  * undefined (first run semantics).
  *
- * This is used to provide the prevFingerprintsByTarget for trend computation.
+ * Returns: target → family → Set<fingerprint>
+ * Only fingerprints from families that completed in the previous run are included.
+ * This family attribution is required for the §6.5 cross-family fixed guardrail.
  */
 export function buildPrevFingerprintMap(
   prevLines: TrendLine[],
   reportsDir?: string,
-): ReadonlyMap<string, Set<string>> | undefined {
+): ReadonlyMap<string, ReadonlyMap<ScannerFamily, Set<string>>> | undefined {
   if (prevLines.length === 0) return undefined;
 
   const base = reportsDir ?? resolve(REPO_ROOT, 'reports');
@@ -234,20 +223,28 @@ export function buildPrevFingerprintMap(
     return undefined;
   }
 
-  const map = new Map<string, Set<string>>();
+  // target → family → Set<fingerprint>
+  const map = new Map<string, Map<ScannerFamily, Set<string>>>();
   for (const f of prevReport.findings) {
     const targetName = f.target.kind === 'repo' ? f.target.name : f.target.host;
+    const family: ScannerFamily = f.source;
 
     // Only include fingerprints from families that completed in the prev run
     const wasComplete = prevReport.meta.scannerStatus.some(
-      (s) => s.target === targetName && s.family === f.source && s.state === 'complete',
+      (s) => s.target === targetName && s.family === family && s.state === 'complete',
     );
     if (!wasComplete) continue;
 
-    let fpSet = map.get(targetName);
+    let familyMap = map.get(targetName);
+    if (familyMap === undefined) {
+      familyMap = new Map<ScannerFamily, Set<string>>();
+      map.set(targetName, familyMap);
+    }
+
+    let fpSet = familyMap.get(family);
     if (fpSet === undefined) {
       fpSet = new Set();
-      map.set(targetName, fpSet);
+      familyMap.set(family, fpSet);
     }
     fpSet.add(f.fingerprint);
   }

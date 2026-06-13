@@ -1,3 +1,5 @@
+import * as https from 'node:https';
+import * as http from 'node:http';
 import type { AllowedTarget } from '../gate.js';
 import { withHostBudget } from '../ratelimit.js';
 import { redact } from '../../report/redaction.js';
@@ -148,6 +150,43 @@ function buildFinding(
     note: null,
   };
 }
+
+/**
+ * Real HTTP/HTTPS client for the headers probe.
+ * Makes a HEAD request to the target URL and returns the response headers.
+ * Does not follow redirects — the redirect location is returned for scope-exclusion recording.
+ */
+export const defaultHeadersClient: HeadersClient = (target: AllowedTarget): Promise<HttpHeadResponse> => {
+  return new Promise((resolve, reject) => {
+    const isHttps = target.url.startsWith('https://');
+    const client = isHttps ? https : http;
+    const req = client.request(
+      target.url,
+      { method: 'HEAD', headers: { 'User-Agent': 'audit-tool/1.0.0' }, rejectUnauthorized: false },
+      (res) => {
+        const headers: Record<string, string> = {};
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (typeof v === 'string') headers[k] = v;
+          else if (Array.isArray(v)) headers[k] = v.join(', ');
+        }
+        const status = res.statusCode ?? 0;
+        const redirectLocation = headers['location'];
+        res.resume(); // drain the response body
+        const result: HttpHeadResponse = {
+          status,
+          headers,
+          ...(redirectLocation !== undefined ? { redirectLocation } : {}),
+        };
+        resolve(result);
+      },
+    );
+    req.on('error', reject);
+    req.setTimeout(10_000, () => {
+      req.destroy(new Error(`Headers probe request to ${target.url} timed out`));
+    });
+    req.end();
+  });
+};
 
 /**
  * Run the security headers probe against the given AllowedTarget.

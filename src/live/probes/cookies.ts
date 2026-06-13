@@ -1,3 +1,5 @@
+import * as https from 'node:https';
+import * as http from 'node:http';
 import type { AllowedTarget } from '../gate.js';
 import { withHostBudget } from '../ratelimit.js';
 import { redact } from '../../report/redaction.js';
@@ -145,6 +147,35 @@ function buildFinding(
     note: null,
   };
 }
+
+/**
+ * Real HTTP/HTTPS client for the cookies probe.
+ * Makes a GET request to the target URL and returns all Set-Cookie headers.
+ * Does not follow redirects — only the direct response cookies are inspected.
+ */
+export const defaultCookiesClient: CookiesClient = (target: AllowedTarget): Promise<CookieResponse> => {
+  return new Promise((resolve, reject) => {
+    const isHttps = target.url.startsWith('https://');
+    const client = isHttps ? https : http;
+    const req = client.request(
+      target.url,
+      { method: 'GET', headers: { 'User-Agent': 'audit-tool/1.0.0' }, rejectUnauthorized: false },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        // Node's http module returns set-cookie as string[] (already split)
+        const raw = res.headers['set-cookie'] ?? [];
+        const setCookieHeaders = Array.isArray(raw) ? raw : [raw];
+        res.resume(); // drain the response body
+        resolve({ status, setCookieHeaders });
+      },
+    );
+    req.on('error', reject);
+    req.setTimeout(10_000, () => {
+      req.destroy(new Error(`Cookies probe request to ${target.url} timed out`));
+    });
+    req.end();
+  });
+};
 
 /**
  * Run the cookie flags probe against the given AllowedTarget.
