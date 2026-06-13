@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mobile Preview Gallery: Breakout Audit Tool</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --bg-surface: #13161d;
+      --bg-card: #191c26;
+      --border: #252a38;
+      --text-primary: #e8eaf0;
+      --text-secondary: #8b91a8;
+      --text-muted: #555c72;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text-primary);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Page header */
+    .gallery-header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 24px 32px;
+    }
+
+    .gallery-header-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .gallery-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .gallery-sub {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .gallery-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(107, 140, 255, 0.08);
+      border: 1px solid rgba(107, 140, 255, 0.18);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #a0b4ff;
+      margin-top: 12px;
+    }
+
+    /* Gallery scroll container */
+    .gallery-scroll {
+      padding: 32px;
+      overflow-x: auto;
+    }
+
+    .gallery-inner {
+      display: flex;
+      gap: 48px;
+      align-items: flex-start;
+      min-width: max-content;
+      padding-bottom: 16px;
+    }
+
+    /* Individual phone frame */
+    .phone-frame-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .phone-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-align: center;
+      max-width: 200px;
+    }
+
+    .phone-label-sub {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-align: center;
+      margin-top: 2px;
+    }
+
+    /* CSS phone bezel */
+    .phone-bezel {
+      width: 240px;
+      /* Scaled-down representation: real content is 375px, displayed at 240px */
+      position: relative;
+      background: #1a1c24;
+      border-radius: 36px;
+      border: 3px solid #32364a;
+      padding: 14px 8px 16px;
+      box-shadow:
+        0 0 0 1px #0a0b0f,
+        0 24px 80px rgba(0,0,0,0.7),
+        inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+
+    /* Speaker notch */
+    .phone-notch {
+      width: 60px;
+      height: 6px;
+      background: #0d0f14;
+      border-radius: 3px;
+      margin: 0 auto 10px;
+    }
+
+    /* Screen area */
+    .phone-screen {
+      width: 100%;
+      /* height to preserve 375:812 ratio at 224px display width */
+      height: calc(224px * 812 / 375);
+      border-radius: 14px;
+      overflow: hidden;
+      background: #0d0f14;
+      position: relative;
+    }
+
+    .phone-screen iframe {
+      /* iframe is at native 375px width, scaled down to 224px */
+      width: 375px;
+      height: calc(224px * 812 / 375);
+      transform-origin: top left;
+      transform: scale(calc(224 / 375));
+      pointer-events: none;
+      border: none;
+      display: block;
+    }
+
+    /* Home indicator */
+    .phone-home {
+      width: 80px;
+      height: 4px;
+      background: #32364a;
+      border-radius: 2px;
+      margin: 12px auto 0;
+    }
+
+    /* Side button hints */
+    .phone-bezel::before {
+      content: '';
+      position: absolute;
+      top: 70px;
+      right: -5px;
+      width: 3px;
+      height: 50px;
+      background: #32364a;
+      border-radius: 0 2px 2px 0;
+    }
+
+    .phone-bezel::after {
+      content: '';
+      position: absolute;
+      top: 60px;
+      left: -5px;
+      width: 3px;
+      height: 70px;
+      background: #32364a;
+      border-radius: 2px 0 0 2px;
+    }
+
+    /* Scale indicator badge */
+    .scale-badge {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      text-align: center;
+    }
+
+    /* Section divider label */
+    .gallery-section-label {
+      writing-mode: horizontal-tb;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border-left: 2px solid var(--border);
+      padding-left: 12px;
+      align-self: center;
+      height: 120px;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Back to prototype link */
+    .back-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #6b8cff;
+      text-decoration: none;
+      margin-top: 8px;
+    }
+
+    .back-link:hover { text-decoration: underline; }
+
+    /* Info box at bottom */
+    .gallery-footer {
+      padding: 24px 32px;
+      border-top: 1px solid var(--border);
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .tech-notes {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+
+    .tech-notes strong { color: var(--text-secondary); }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="gallery-header">
+  <div class="gallery-header-inner">
+    <div class="gallery-title">Mobile Preview Gallery</div>
+    <div class="gallery-sub">All screens rendered at 375px viewport width (iPhone SE / standard mobile). Scroll right to see all screens.</div>
+    <div class="gallery-note">
+      <svg viewBox="0 0 20 20" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
+      These are live renders of the actual responsive HTML files, not screenshots. Click any phone to open the full page.
+    </div>
+    <div style="margin-top:10px;">
+      <a href="index.html" class="back-link">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M7.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l2.293 2.293a1 1 0 010 1.414z" clip-rule="evenodd"/></svg>
+        Back to portfolio overview
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- Gallery scroll -->
+<div class="gallery-scroll">
+  <div class="gallery-inner">
+
+    <!-- 1: Overview -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">Portfolio Overview</div>
+      <div class="phone-label-sub">index.html</div>
+      <a href="index.html" title="Open Overview" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="index.html" title="Portfolio Overview mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+    <!-- 2: What Needs Fixing -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">What Needs Fixing</div>
+      <div class="phone-label-sub">run-report.html</div>
+      <a href="run-report.html" title="Open Findings" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="run-report.html" title="Findings mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+    <!-- 3: Finding detail (ready to send) -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">Issue Detail</div>
+      <div class="phone-label-sub">finding-detail.html (send panel)</div>
+      <a href="finding-detail.html" title="Open Issue Detail" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="finding-detail.html" title="Issue detail mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+    <!-- Divider -->
+    <div class="gallery-section-label">Fix workflow</div>
+
+    <!-- 4: Fix Progress -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">Fix Progress</div>
+      <div class="phone-label-sub">fixes.html</div>
+      <a href="fixes.html" title="Open Fix Progress" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="fixes.html" title="Fix progress mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+    <!-- Divider -->
+    <div class="gallery-section-label">Tracking &amp; safety</div>
+
+    <!-- 5: Progress Over Time -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">Progress Over Time</div>
+      <div class="phone-label-sub">trends.html</div>
+      <a href="trends.html" title="Open Trends" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="trends.html" title="Trends mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+    <!-- 6: Sites and Safety -->
+    <div class="phone-frame-wrapper">
+      <div class="phone-label">Sites and Safety</div>
+      <div class="phone-label-sub">targets.html</div>
+      <a href="targets.html" title="Open Sites and Safety" style="text-decoration:none;">
+        <div class="phone-bezel">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <iframe src="targets.html" title="Sites and Safety mobile view" loading="lazy" scrolling="yes" tabindex="-1" aria-hidden="true"></iframe>
+          </div>
+          <div class="phone-home"></div>
+        </div>
+      </a>
+      <div class="scale-badge">375 x 812 (64% scale)</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Footer notes -->
+<div class="gallery-footer">
+  <div class="tech-notes">
+    <strong>Designer notes (not shown to operators):</strong><br>
+    All frames are live iframes at 375px, scaled to ~64% display size using CSS transform. Pointer events are disabled on iframes; click the bezel to navigate to the full page.<br>
+    Each screen uses a responsive single-file layout with media queries at 375px / 768px / 1280px. Mobile bottom nav (5 tabs) is present on all screens except this gallery page (desktop-only utility).<br>
+    Mobile tier: all main screens are Tier 2 (responsive, no clipping). Run-history table in trends.html uses sticky-first-column horizontal scroll. Fix-pipeline track in fixes.html uses overflow-x:auto. No page-level horizontal overflow at 375px on any screen.
+  </div>
+</div>
+
+</body>
+</html>

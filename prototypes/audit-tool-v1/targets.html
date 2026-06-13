@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Sites and Safety: Breakout Security Audit</title>
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    .flag-on {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--status-success-bg);
+      color: var(--status-success);
+      border: 1px solid var(--status-success-border);
+      border-radius: 20px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .flag-off {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--bg-inset);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    /* Allowlist entry */
+    .allowlist-entry {
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      margin-bottom: 8px;
+    }
+
+    .allowlist-entry-host {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--status-success);
+      margin-bottom: 6px;
+    }
+
+    .allowlist-meta {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .allowlist-meta-item { display: flex; flex-direction: column; gap: 2px; }
+    .allowlist-meta-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .allowlist-meta-value { color: var(--text-secondary); }
+
+    /* Baseline entries */
+    .baseline-entry {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      margin-bottom: 10px;
+      transition: border-color 0.15s;
+    }
+
+    .baseline-entry-expired {
+      border-color: var(--sev-critical-border);
+      background: rgba(255, 68, 85, 0.03);
+    }
+
+    .baseline-entry-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+
+    .baseline-entry-title { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px; }
+    .baseline-entry-id { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+
+    .baseline-detail-row {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .baseline-detail-item { display: flex; flex-direction: column; gap: 2px; }
+    .baseline-detail-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+    .stack-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .section-sep {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+
+    .safety-note {
+      background: rgba(107, 140, 255, 0.05);
+      border: 1px solid rgba(107, 140, 255, 0.2);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+
+    .safety-note strong { color: #6b8cff; }
+
+    .env-name {
+      font-family: var(--mono);
+      font-size: 11px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+      color: var(--text-secondary);
+    }
+
+    @media (max-width: 768px) {
+      .baseline-entry-header { flex-direction: column; }
+      .allowlist-meta { gap: 12px; }
+      .baseline-detail-row { gap: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Mobile top bar -->
+<div class="mobile-topbar">
+  <div class="mobile-topbar-logo">
+    <div class="sidebar-logo-icon" style="width:26px;height:26px;">
+      <svg viewBox="0 0 20 20" fill="white" width="14" height="14"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+    </div>
+    Audit Tool
+  </div>
+</div>
+
+<!-- Mobile bottom nav (5 tabs) -->
+<nav class="mobile-bottomnav" aria-label="Mobile navigation">
+  <div class="mobile-bottomnav-inner">
+    <a href="index.html" class="mobile-nav-item" aria-label="Overview">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+      Overview
+    </a>
+    <a href="run-report.html" class="mobile-nav-item" aria-label="Findings">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+      Findings
+    </a>
+    <a href="fixes.html" class="mobile-nav-item" aria-label="Fixes">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      Fixes
+    </a>
+    <a href="trends.html" class="mobile-nav-item" aria-label="Trends">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+      Trends
+    </a>
+    <a href="targets.html" class="mobile-nav-item active" aria-label="Targets">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+      Targets
+    </a>
+  </div>
+</nav>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 20 20" fill="white" width="16" height="16"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      </div>
+      <div>
+        <div class="sidebar-logo-text">Audit Tool</div>
+        <div class="sidebar-logo-sub">Breakout Solutions</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Views</div>
+      <a href="index.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        Portfolio Overview
+      </a>
+      <a href="run-report.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+        What Needs Fixing
+        <span class="nav-badge">3</span>
+      </a>
+      <a href="fixes.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Fix Progress
+        <span class="nav-badge-fix">1</span>
+      </a>
+      <a href="trends.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+        Progress Over Time
+      </a>
+      <a href="targets.html" class="nav-item active">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+        Sites and Safety
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      Read-only view<br>
+      v1.0.0 · localhost:4173
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+    <div class="page-header">
+      <h1 class="page-title">Sites and Safety</h1>
+      <p class="page-subtitle">What this tool scans, which test sites are approved for live checks, and risks you have acknowledged</p>
+    </div>
+
+    <div class="page-body">
+
+      <!-- Safety contract callout -->
+      <div class="safety-note">
+        <strong>Live scanning safety:</strong> This tool can only run live checks against test sites that are explicitly listed in the "Approved test sites" section below. Any other URL is blocked before any request is sent. This cannot be bypassed with any setting or option. To add a site, edit the approved list via a reviewed pull request signed off by @michaelhazza.
+      </div>
+
+      <!-- SECTION 1: Source repos -->
+      <div class="section-heading">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        Projects scanned (code analysis)
+        <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Code is analysed for known security patterns</span>
+      </div>
+
+      <!-- automation-v1 -->
+      <div class="card mb-12">
+        <div class="flex-between mb-12">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:3px;">automation-v1</div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-muted);">github.com/michaelhazza/automation-v1.git</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+            <span class="flag-on">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              Scanning enabled
+            </span>
+            <span class="pill pill-static" style="font-size:10px;">Code analysis</span>
+          </div>
+        </div>
+        <div class="info-row mb-12">
+          <div class="info-row-item">
+            <div class="info-row-label">Last scanned commit</div>
+            <div class="info-row-value" style="font-size:12px;font-family:var(--mono);">abc123f4</div>
+          </div>
+          <div class="info-row-item">
+            <div class="info-row-label">Open issues</div>
+            <div class="info-row-value">22</div>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Technology stack</div>
+          <div class="stack-tags">
+            <span class="tag">express</span>
+            <span class="tag">drizzle-rls</span>
+            <span class="tag">jwt</span>
+            <span class="tag">react</span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Public routes (excluded from the login-required check)</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);">POST /api/auth/login &nbsp;·&nbsp; GET /api/health</div>
+        </div>
+      </div>
+
+      <!-- payments-v2 -->
+      <div class="card mb-12">
+        <div class="flex-between mb-12">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:3px;">payments-v2</div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-muted);">github.com/michaelhazza/payments-v2.git</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+            <span class="flag-on">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              Scanning enabled
+            </span>
+            <span class="pill pill-static" style="font-size:10px;">Code analysis</span>
+          </div>
+        </div>
+        <div class="info-row mb-12">
+          <div class="info-row-item">
+            <div class="info-row-label">Last scanned commit</div>
+            <div class="info-row-value" style="font-size:12px;font-family:var(--mono);">8d2e9a1c</div>
+          </div>
+          <div class="info-row-item">
+            <div class="info-row-label">Open issues</div>
+            <div class="info-row-value" style="display:flex;align-items:center;gap:4px;">
+              12<span style="font-size:10px;color:var(--status-partial);" title="Dependency check count missing from last incomplete scan">+?</span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-bottom:8px;">
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Technology stack</div>
+          <div class="stack-tags">
+            <span class="tag">express</span>
+            <span class="tag">drizzle-rls</span>
+            <span class="tag">jwt</span>
+            <span class="tag">stripe</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- crm-v1 -->
+      <div class="card mb-24">
+        <div class="flex-between mb-12">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:3px;">crm-v1</div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--text-muted);">github.com/michaelhazza/crm-v1.git</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+            <span class="flag-on">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              Scanning enabled
+            </span>
+            <span class="pill pill-static" style="font-size:10px;">Code analysis</span>
+          </div>
+        </div>
+        <div class="info-row">
+          <div class="info-row-item">
+            <div class="info-row-label">Last scanned commit</div>
+            <div class="info-row-value" style="font-size:12px;font-family:var(--mono);">3f7ab2d9</div>
+          </div>
+          <div class="info-row-item">
+            <div class="info-row-label">Open issues</div>
+            <div class="info-row-value">5</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION 2: Staging targets -->
+      <hr class="section-sep">
+
+      <div class="section-heading">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+        Live test sites
+        <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Staging environments checked for issues in real conditions</span>
+      </div>
+
+      <!-- automation-v1-staging -->
+      <div class="card mb-12">
+        <div class="flex-between mb-12">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:3px;">automation-v1 (test site)</div>
+            <div style="font-family:var(--mono);font-size:12px;color:#6b8cff;">staging.automation.breakout.dev</div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;">
+            <span class="flag-on">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              Scanning enabled
+            </span>
+            <span class="pill pill-live" style="font-size:10px;">Live test site</span>
+          </div>
+        </div>
+        <div class="info-row mb-12">
+          <div class="info-row-item">
+            <div class="info-row-label">Linked project</div>
+            <div class="info-row-value" style="font-size:12px;">automation-v1</div>
+          </div>
+          <div class="info-row-item">
+            <div class="info-row-label">Active probing</div>
+            <div class="info-row-value">
+              <span class="flag-off">Off (observe only)</span>
+              <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">No form submissions or injection probes</div>
+            </div>
+          </div>
+          <div class="info-row-item">
+            <div class="info-row-label">Request rate</div>
+            <div class="info-row-value">10 per second</div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Test account credentials (environment variable names only; actual values are in GitHub secrets)</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <span class="env-name">AUDIT_STAGING_AUTOMATION_USER_A</span>
+            <span class="env-name">AUDIT_STAGING_AUTOMATION_PASS_A</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- payments-staging (disabled) -->
+      <div class="card mb-24" style="opacity:0.65;">
+        <div class="flex-between mb-10">
+          <div>
+            <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:3px;">payments-v2 (test site)</div>
+            <div style="font-family:var(--mono);font-size:12px;color:var(--text-muted);">staging.payments.breakout.dev</div>
+          </div>
+          <div>
+            <span class="flag-off">Disabled</span>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);">Not scanned. Add this site to the approved list and enable it in the config before running live checks.</div>
+      </div>
+
+      <!-- SECTION 3: Approved hosts -->
+      <hr class="section-sep">
+
+      <div class="section-heading">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+        Approved test sites
+        <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Only sites on this list can be scanned live</span>
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5;">
+        Live checks are blocked for any site not on this list. The list is empty by default. To add a site, edit the config file via a reviewed pull request.
+      </div>
+
+      <!-- One approved host -->
+      <div class="allowlist-entry mb-8">
+        <div class="allowlist-entry-host">staging.automation.breakout.dev</div>
+        <div class="allowlist-meta">
+          <div class="allowlist-meta-item">
+            <div class="allowlist-meta-label">Added by</div>
+            <div class="allowlist-meta-value">@michaelhazza</div>
+          </div>
+          <div class="allowlist-meta-item">
+            <div class="allowlist-meta-label">Added on</div>
+            <div class="allowlist-meta-value">Jun 12, 2026</div>
+          </div>
+          <div class="allowlist-meta-item">
+            <div class="allowlist-meta-label">Note</div>
+            <div class="allowlist-meta-value">automation-v1 staging</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Disabled staging host: NOT on allowlist -->
+      <div style="background:var(--bg-inset);border:1px dashed var(--border);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:20px;font-size:12px;color:var(--text-muted);">
+        <span style="font-family:var(--mono);">staging.payments.breakout.dev</span>: not on the approved list. Add it here before enabling live checks.
+      </div>
+
+      <!-- SECTION 4: Accepted risks -->
+      <hr class="section-sep">
+
+      <div class="section-heading">
+        <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Acknowledged risks
+        <span style="font-size:11px;color:var(--text-muted);font-weight:400;">Issues you have reviewed and accepted temporarily</span>
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;line-height:1.5;">
+        These issues are acknowledged and hidden from the main report until their review date. Each one has a written justification, an expiry date, and requires a pull request sign-off. Expired entries come back as live issues automatically.
+      </div>
+
+      <!-- Active accepted risk -->
+      <div class="baseline-entry mb-12">
+        <div class="baseline-entry-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span class="tag">BS-SQL-002</span>
+              <span class="pill pill-high" style="font-size:10px;">Fix soon</span>
+              <span class="pill" style="background:var(--status-success-bg);color:var(--status-success);border:1px solid var(--status-success-border);font-size:10px;">Active</span>
+            </div>
+            <div class="baseline-entry-title">Database query bypasses the multi-client data helper: test-only endpoint</div>
+            <div class="baseline-entry-id">f-2a4b6c8d0e2f4a6b · automation-v1 / server/routes/dev.ts</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-size:11px;color:var(--text-muted);">Review date</div>
+            <div class="expiry-ok" style="font-size:14px;font-weight:700;">Sep 30, 2026</div>
+            <div style="font-size:10px;color:var(--text-muted);">110 days remaining</div>
+          </div>
+        </div>
+        <div class="baseline-detail-row">
+          <div class="baseline-detail-item">
+            <div class="baseline-detail-label">Justification</div>
+            <div style="font-size:12px;color:var(--text-secondary);">Test-only endpoint (<code style="font-family:var(--mono);font-size:11px;">GET /api/dev/debug</code>) being removed in the Q3 rewrite sprint. Protected by an internal-only flag in production.</div>
+          </div>
+          <div class="baseline-detail-item" style="flex-shrink:0;">
+            <div class="baseline-detail-label">Signed off by</div>
+            <div style="font-size:12px;color:var(--text-secondary);">@michaelhazza</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXPIRED accepted risk: re-alerting at full severity -->
+      <div class="baseline-entry baseline-entry-expired mb-12">
+        <div class="baseline-entry-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+              <span class="tag">BS-JWT-001</span>
+              <span class="pill pill-high" style="font-size:10px;">Fix soon</span>
+              <span class="pill pill-failed" style="font-size:10px;">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10" style="display:inline;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                Review date passed: now active again
+              </span>
+            </div>
+            <div class="baseline-entry-title">Login token signed with a hard-coded secret: was accepted pending migration</div>
+            <div class="baseline-entry-id">f-9c3e5a1b7d0f2c4e · automation-v1 / server/auth/tokens.ts</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-size:11px;color:var(--text-muted);">Expired on</div>
+            <div class="expiry-expired" style="font-size:14px;">May 31, 2026</div>
+            <div style="font-size:10px;color:var(--sev-critical);">12 days ago. Fix or extend.</div>
+          </div>
+        </div>
+        <div style="background:var(--sev-critical-bg);border:1px solid var(--sev-critical-border);border-radius:var(--radius-sm);padding:10px 12px;margin-top:10px;font-size:12px;color:var(--sev-critical);display:flex;align-items:flex-start;gap:8px;">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;margin-top:1px;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          This acknowledged risk expired on May 31, 2026 and is now showing in the active issue list again. To suppress it, update the review date and justification via a reviewed pull request.
+        </div>
+        <div class="baseline-detail-row mt-8">
+          <div class="baseline-detail-item">
+            <div class="baseline-detail-label">Original justification</div>
+            <div style="font-size:12px;color:var(--text-muted);font-style:italic;">Environment migration scheduled for May sprint; accepted until May 31, 2026.</div>
+          </div>
+          <div class="baseline-detail-item" style="flex-shrink:0;">
+            <div class="baseline-detail-label">Original sign-off</div>
+            <div style="font-size:12px;color:var(--text-muted);">@michaelhazza</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

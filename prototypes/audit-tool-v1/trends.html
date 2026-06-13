@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Progress Over Time: Breakout Security Audit</title>
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    /* Time-series chart */
+    .trend-chart-wrap {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 20px 20px 12px;
+      margin-bottom: 20px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .trend-chart-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .trend-legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      align-items: center;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--text-secondary);
+    }
+
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Run history table */
+    .run-id-cell { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+
+    /* Unknown state styles */
+    .unknown-cell {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 12px;
+    }
+
+    /* Target selector tabs */
+    .target-tabs {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0;
+    }
+
+    .target-tab {
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      border: none;
+      background: none;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+      min-height: 44px;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    }
+
+    .target-tab.active {
+      color: #6b8cff;
+      border-bottom-color: #6b8cff;
+      background: rgba(107, 140, 255, 0.05);
+    }
+
+    .target-tab:hover:not(.active) {
+      color: var(--text-primary);
+      background: var(--bg-card);
+    }
+
+    /* Run history table: sticky first column for mobile */
+    .run-history-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+    }
+
+    .run-history-table { min-width: 560px; }
+
+    .run-history-table td { padding: 10px 14px; }
+
+    .run-history-table th:first-child,
+    .run-history-table td:first-child {
+      position: sticky;
+      left: 0;
+      background: var(--bg-inset);
+      z-index: 2;
+      border-right: 1px solid var(--border);
+    }
+
+    .run-history-table tbody tr:hover td:first-child {
+      background: var(--bg-card-hover);
+    }
+
+    @media (max-width: 768px) {
+      .trend-chart-wrap { padding: 14px 12px 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Mobile top bar -->
+<div class="mobile-topbar">
+  <div class="mobile-topbar-logo">
+    <div class="sidebar-logo-icon" style="width:26px;height:26px;">
+      <svg viewBox="0 0 20 20" fill="white" width="14" height="14"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+    </div>
+    Audit Tool
+  </div>
+</div>
+
+<!-- Mobile bottom nav (5 tabs) -->
+<nav class="mobile-bottomnav" aria-label="Mobile navigation">
+  <div class="mobile-bottomnav-inner">
+    <a href="index.html" class="mobile-nav-item" aria-label="Overview">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+      Overview
+    </a>
+    <a href="run-report.html" class="mobile-nav-item" aria-label="Findings">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+      Findings
+    </a>
+    <a href="fixes.html" class="mobile-nav-item" aria-label="Fixes">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      Fixes
+    </a>
+    <a href="trends.html" class="mobile-nav-item active" aria-label="Trends">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+      Trends
+    </a>
+    <a href="targets.html" class="mobile-nav-item" aria-label="Targets">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+      Targets
+    </a>
+  </div>
+</nav>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 20 20" fill="white" width="16" height="16"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      </div>
+      <div>
+        <div class="sidebar-logo-text">Audit Tool</div>
+        <div class="sidebar-logo-sub">Breakout Solutions</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Views</div>
+      <a href="index.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        Portfolio Overview
+      </a>
+      <a href="run-report.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+        What Needs Fixing
+        <span class="nav-badge">3</span>
+      </a>
+      <a href="fixes.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Fix Progress
+        <span class="nav-badge-fix">1</span>
+      </a>
+      <a href="trends.html" class="nav-item active">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+        Progress Over Time
+      </a>
+      <a href="targets.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+        Sites and Safety
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      Read-only view<br>
+      v1.0.0 · localhost:4173
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+    <div class="page-header">
+      <h1 class="page-title">Progress Over Time</h1>
+      <p class="page-subtitle">Are things getting better? New issues found, old ones fixed, and how many are still open across each scan.</p>
+    </div>
+
+    <div class="page-body">
+
+      <!-- Target selector tabs -->
+      <div class="target-tabs" role="tablist">
+        <button class="target-tab active" role="tab" aria-selected="true">All projects</button>
+        <button class="target-tab" role="tab" aria-selected="false">automation-v1</button>
+        <button class="target-tab" role="tab" aria-selected="false">
+          payments-v2
+          <span class="pill pill-unknown" style="font-size:9px;padding:1px 5px;margin-left:4px;">incomplete</span>
+        </button>
+        <button class="target-tab" role="tab" aria-selected="false">crm-v1</button>
+      </div>
+
+      <!-- Hero: New / Fixed / Persisting time series -->
+      <div class="trend-chart-wrap">
+        <div class="trend-chart-header">
+          <div>
+            <div class="section-heading" style="margin-bottom:4px;">New issues found, old ones fixed, still open</div>
+            <div style="font-size:12px;color:var(--text-secondary);">8 scans, Apr 1 to Jun 12 2026 · All projects</div>
+          </div>
+          <div class="trend-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#ff8c42;"></div> New</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#3dd68c;"></div> Fixed</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#8b91a8;"></div> Still open</div>
+            <div class="legend-item" style="opacity:0.6;">
+              <div class="legend-dot" style="background:#f5c842;border-radius:2px;"></div>
+              <span class="state-unknown">Scan incomplete</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- SVG multi-line time-series chart -->
+        <div style="position:relative;min-width:500px;">
+          <svg width="100%" height="200" viewBox="0 0 700 200" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <linearGradient id="g-new" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#ff8c42" stop-opacity="0.18"/>
+                <stop offset="100%" stop-color="#ff8c42" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="g-fixed" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#3dd68c" stop-opacity="0.15"/>
+                <stop offset="100%" stop-color="#3dd68c" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+
+            <!-- Y-axis grid lines -->
+            <line x1="40" y1="20" x2="680" y2="20" stroke="var(--border-subtle)" stroke-width="1"/>
+            <line x1="40" y1="60" x2="680" y2="60" stroke="var(--border-subtle)" stroke-width="1"/>
+            <line x1="40" y1="100" x2="680" y2="100" stroke="var(--border-subtle)" stroke-width="1"/>
+            <line x1="40" y1="140" x2="680" y2="140" stroke="var(--border-subtle)" stroke-width="1"/>
+            <line x1="40" y1="180" x2="680" y2="180" stroke="var(--border-subtle)" stroke-width="1"/>
+
+            <!-- Y-axis labels -->
+            <text x="34" y="24" text-anchor="end" font-size="10" fill="#555c72">20</text>
+            <text x="34" y="64" text-anchor="end" font-size="10" fill="#555c72">15</text>
+            <text x="34" y="104" text-anchor="end" font-size="10" fill="#555c72">10</text>
+            <text x="34" y="144" text-anchor="end" font-size="10" fill="#555c72">5</text>
+            <text x="34" y="184" text-anchor="end" font-size="10" fill="#555c72">0</text>
+
+            <!-- Partial run marker (last data point) -->
+            <line x1="590" y1="20" x2="590" y2="180" stroke="#f5c842" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>
+            <text x="590" y="14" text-anchor="middle" font-size="9" fill="#f5c842">incomplete</text>
+
+            <!-- X-axis labels (run dates) -->
+            <text x="100" y="196" text-anchor="middle" font-size="9" fill="#555c72">Apr 1</text>
+            <text x="180" y="196" text-anchor="middle" font-size="9" fill="#555c72">Apr 15</text>
+            <text x="260" y="196" text-anchor="middle" font-size="9" fill="#555c72">May 1</text>
+            <text x="340" y="196" text-anchor="middle" font-size="9" fill="#555c72">May 15</text>
+            <text x="420" y="196" text-anchor="middle" font-size="9" fill="#555c72">Jun 1</text>
+            <text x="500" y="196" text-anchor="middle" font-size="9" fill="#555c72">Jun 5</text>
+            <text x="590" y="196" text-anchor="middle" font-size="9" fill="#f5c842">Jun 12</text>
+
+            <!-- Still open line -->
+            <path d="M100,60 L180,56 L260,64 L340,68 L420,72 L500,64 L590,68 L680,68"
+                  fill="none" stroke="#8b91a8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 2"/>
+
+            <!-- New findings area + line -->
+            <path d="M100,148 L180,156 L260,140 L340,152 L420,144 L500,148 L590,140 L680,180 L100,180 Z"
+                  fill="url(#g-new)"/>
+            <path d="M100,148 L180,156 L260,140 L340,152 L420,144 L500,148 L590,140"
+                  fill="none" stroke="#ff8c42" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- Partial segment dotted -->
+            <path d="M590,140 L680,180"
+                  fill="none" stroke="#ff8c42" stroke-width="2" stroke-dasharray="4 3" stroke-linecap="round"/>
+
+            <!-- Fixed findings area + line -->
+            <path d="M100,164 L180,168 L260,156 L340,160 L420,160 L500,156 L590,160 L680,180 L100,180 Z"
+                  fill="url(#g-fixed)"/>
+            <path d="M100,164 L180,168 L260,156 L340,160 L420,160 L500,156 L590,160"
+                  fill="none" stroke="#3dd68c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M590,160 L680,180"
+                  fill="none" stroke="#3dd68c" stroke-width="2" stroke-dasharray="4 3" stroke-linecap="round"/>
+
+            <!-- Data points on lines -->
+            <circle cx="100" cy="148" r="3" fill="#ff8c42"/>
+            <circle cx="180" cy="156" r="3" fill="#ff8c42"/>
+            <circle cx="260" cy="140" r="3" fill="#ff8c42"/>
+            <circle cx="340" cy="152" r="3" fill="#ff8c42"/>
+            <circle cx="420" cy="144" r="3" fill="#ff8c42"/>
+            <circle cx="500" cy="148" r="3" fill="#ff8c42"/>
+            <circle cx="590" cy="140" r="4" fill="#f5c842" stroke="#ff8c42" stroke-width="1.5"/>
+            <circle cx="100" cy="164" r="3" fill="#3dd68c"/>
+            <circle cx="260" cy="156" r="3" fill="#3dd68c"/>
+            <circle cx="500" cy="156" r="3" fill="#3dd68c"/>
+            <circle cx="590" cy="160" r="4" fill="#f5c842" stroke="#3dd68c" stroke-width="1.5"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Severity mix over time (stacked) -->
+      <div class="trend-chart-wrap mb-24">
+        <div class="trend-chart-header">
+          <div>
+            <div class="section-heading" style="margin-bottom:4px;">Urgency mix over time</div>
+            <div style="font-size:12px;color:var(--text-secondary);">All open issues by urgency level per scan</div>
+          </div>
+          <div class="trend-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#ff4455;"></div> Fix now</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#ff8c42;"></div> Fix soon</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#f5c842;"></div> Plan it</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#4ecdc4;"></div> Low risk</div>
+          </div>
+        </div>
+
+        <!-- Stacked bar chart -->
+        <div style="display:flex;align-items:flex-end;gap:8px;height:120px;padding:0 8px;min-width:400px;overflow-x:auto;-webkit-overflow-scrolling:touch;">
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:8px;" title="2 Fix now"></div>
+              <div style="background:#ff8c42;height:34px;" title="8 Fix soon"></div>
+              <div style="background:#f5c842;height:51px;" title="12 Plan it"></div>
+              <div style="background:#4ecdc4;height:26px;" title="6 Low risk"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">Apr 1</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:8px;"></div>
+              <div style="background:#ff8c42;height:38px;"></div>
+              <div style="background:#f5c842;height:60px;"></div>
+              <div style="background:#4ecdc4;height:21px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">Apr 8</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:13px;"></div>
+              <div style="background:#ff8c42;height:34px;"></div>
+              <div style="background:#f5c842;height:55px;"></div>
+              <div style="background:#4ecdc4;height:26px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">Apr 15</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:9px;"></div>
+              <div style="background:#ff8c42;height:30px;"></div>
+              <div style="background:#f5c842;height:43px;"></div>
+              <div style="background:#4ecdc4;height:17px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">May 1</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:9px;"></div>
+              <div style="background:#ff8c42;height:47px;"></div>
+              <div style="background:#f5c842;height:68px;"></div>
+              <div style="background:#4ecdc4;height:30px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">May 15</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:9px;"></div>
+              <div style="background:#ff8c42;height:34px;"></div>
+              <div style="background:#f5c842;height:55px;"></div>
+              <div style="background:#4ecdc4;height:21px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">Jun 1</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;">
+              <div style="background:#ff4455;height:13px;"></div>
+              <div style="background:#ff8c42;height:47px;"></div>
+              <div style="background:#f5c842;height:77px;"></div>
+              <div style="background:#4ecdc4;height:30px;"></div>
+            </div>
+            <div style="font-size:9px;color:#555c72;margin-top:3px;">Jun 5</div>
+          </div>
+          <!-- Jun 12: incomplete run (dashed border) -->
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">
+            <div style="width:100%;display:flex;flex-direction:column;gap:1px;border-radius:3px 3px 0 0;overflow:hidden;border:1px dashed var(--status-partial);opacity:0.8;">
+              <div style="background:#ff4455;height:13px;"></div>
+              <div style="background:#ff8c42;height:47px;"></div>
+              <div style="background:#f5c842;height:77px;"></div>
+              <div style="background:#4ecdc4;height:17px;"></div>
+            </div>
+            <div style="font-size:9px;color:var(--status-partial);margin-top:3px;">Jun 12</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--status-partial);margin-top:8px;padding:0 8px;display:flex;align-items:center;gap:5px;">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          Jun 12 scan was incomplete: the dependency check for payments-v2 did not finish. That bar may be lower than the real number.
+        </div>
+      </div>
+
+      <!-- Scan history list -->
+      <div class="section-heading" style="margin-bottom:12px;">Scan history</div>
+      <div class="run-history-wrap">
+        <table class="run-history-table" style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">When</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">Result</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">New</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">Fixed</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">Still open</th>
+              <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;background:var(--bg-inset);border-bottom:1px solid var(--border);white-space:nowrap;">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+
+            <!-- Latest: partial -->
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">Jun 12, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-partial">Some checks incomplete</span></td>
+              <td><span class="delta delta-new">+5</span></td>
+              <td>
+                <div class="unknown-cell">
+                  <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12" style="flex-shrink:0;"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+                  Unknown
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);">Dep. check did not finish</div>
+              </td>
+              <td>31</td>
+              <td>39<span style="font-size:10px;color:var(--status-partial);">?</span></td>
+            </tr>
+
+            <!-- Jun 5: success -->
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">Jun 5, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-success">All checks complete</span></td>
+              <td><span class="delta delta-new">+3</span></td>
+              <td><span class="delta delta-fixed">3</span></td>
+              <td>34</td>
+              <td>37</td>
+            </tr>
+
+            <!-- Jun 1: success -->
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">Jun 1, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-success">All checks complete</span></td>
+              <td><span class="delta delta-new">+2</span></td>
+              <td><span class="delta delta-fixed">1</span></td>
+              <td>35</td>
+              <td>36</td>
+            </tr>
+
+            <!-- May 15: success -->
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">May 15, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-success">All checks complete</span></td>
+              <td><span class="delta delta-new">+4</span></td>
+              <td><span class="delta delta-fixed">2</span></td>
+              <td>33</td>
+              <td>36</td>
+            </tr>
+
+            <!-- May 1 -->
+            <tr style="border-bottom:1px solid var(--border-subtle);">
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">May 1, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-success">All checks complete</span></td>
+              <td><span class="delta delta-new">+1</span></td>
+              <td><span class="delta delta-fixed">4</span></td>
+              <td>34</td>
+              <td>31</td>
+            </tr>
+
+            <!-- Apr 15: partial -->
+            <tr>
+              <td>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">Apr 15, 2026</div>
+                <div class="run-id-cell">03:00 UTC</div>
+              </td>
+              <td><span class="pill pill-partial">Some checks incomplete</span></td>
+              <td><span class="delta delta-new">+6</span></td>
+              <td>
+                <div class="unknown-cell">
+                  <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12" style="flex-shrink:0;"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+                  Unknown
+                </div>
+                <div style="font-size:10px;color:var(--text-muted);">Live scan timed out</div>
+              </td>
+              <td>31</td>
+              <td>34<span style="font-size:10px;color:var(--status-partial);">?</span></td>
+            </tr>
+
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Partial run explanation note -->
+      <div style="margin-top:12px;padding:12px 14px;background:rgba(245,200,66,0.06);border:1px solid var(--status-partial-border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-secondary);line-height:1.6;">
+        <strong style="color:var(--status-partial);">Why "fixed" shows "unknown" on some rows:</strong> When a scanning tool fails to finish, we cannot safely say whether an issue it previously found is now gone. We only mark something "fixed" when the same tool that found it runs again and no longer finds it. This prevents a timed-out tool from making problems look resolved when they may not be.
+      </div>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Issue Detail: Breakout Security Audit</title>
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    .detail-layout {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .detail-main { min-width: 0; }
+    .detail-sidebar { min-width: 0; }
+
+    /* Severity breakdown trace */
+    .sev-trace {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .sev-trace-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .sev-trace-step:last-child { border-bottom: none; }
+
+    .sev-trace-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .sev-trace-circle {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 11px;
+      border: 2px solid;
+    }
+
+    .sev-trace-line {
+      width: 2px;
+      height: 16px;
+      background: var(--border-subtle);
+    }
+
+    .sev-trace-content { flex: 1; padding-top: 4px; }
+    .sev-trace-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 3px;
+    }
+    .sev-trace-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .sev-trace-applied {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--sev-critical);
+      margin-top: 4px;
+    }
+    .sev-trace-applied-neutral {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Correlated evidence pair */
+    .correlated-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .evidence-source-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Fix guidance */
+    .fix-guidance {
+      background: rgba(107, 140, 255, 0.05);
+      border: 1px solid rgba(107, 140, 255, 0.18);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+    }
+
+    .fix-guidance-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #6b8cff;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .fix-guidance-body {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    .fix-guidance-code {
+      background: var(--bg-inset);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      margin-top: 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: #c8cfe0;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .fix-good { color: #3dd68c; }
+    .fix-bad { color: #ff4455; }
+
+    /* Send for fixing panel */
+    .send-for-fixing-panel {
+      background: linear-gradient(135deg, rgba(61,214,140,0.06) 0%, rgba(61,214,140,0.02) 100%);
+      border: 2px solid var(--fix-verified-border);
+      border-radius: var(--radius-lg);
+      padding: 20px 22px;
+      margin-bottom: 20px;
+    }
+
+    .send-for-fixing-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .send-for-fixing-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    .fix-actions-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    /* Fix status block */
+    .fix-status-block {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-top: 14px;
+    }
+
+    .fix-status-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .fix-state-timeline {
+      display: flex;
+      gap: 0;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-subtle);
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .fix-state-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      min-width: 80px;
+      flex: 1;
+      position: relative;
+      padding: 0 4px;
+    }
+
+    .fix-state-step:not(:last-child)::after {
+      content: '';
+      position: absolute;
+      top: 9px;
+      left: calc(50% + 12px);
+      right: calc(-50% + 12px);
+      height: 2px;
+      background: var(--border-subtle);
+    }
+
+    .fix-state-step.done::after {
+      background: var(--fix-verified);
+    }
+
+    .fix-state-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--bg-inset);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .fix-state-dot.done {
+      background: var(--fix-verified);
+      border-color: var(--fix-verified);
+    }
+
+    .fix-state-dot.current {
+      background: var(--fix-inprogress-bg);
+      border-color: var(--fix-inprogress);
+    }
+
+    .fix-state-label {
+      font-size: 9px;
+      text-align: center;
+      color: var(--text-muted);
+      line-height: 1.3;
+      font-weight: 500;
+    }
+
+    .fix-state-label.current { color: var(--fix-inprogress); font-weight: 700; }
+    .fix-state-label.done { color: var(--fix-verified); }
+
+    /* Missing token state */
+    .missing-token-state {
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      margin-bottom: 20px;
+    }
+
+    @media (max-width: 768px) {
+      .detail-layout { grid-template-columns: 1fr; }
+      .correlated-pair { grid-template-columns: 1fr; }
+      .fix-actions-row { flex-direction: column; align-items: stretch; }
+      .fix-actions-row .btn { justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Mobile top bar -->
+<div class="mobile-topbar">
+  <a href="run-report.html" style="display:flex;align-items:center;gap:8px;color:var(--text-secondary);text-decoration:none;min-height:44px;min-width:44px;">
+    <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd"/></svg>
+  </a>
+  <div class="mobile-topbar-logo" style="margin-left:8px;">
+    <span class="pill pill-critical" style="font-size:11px;">Fix now</span>
+    <span style="font-size:13px;">Data isolation issue</span>
+  </div>
+</div>
+
+<!-- Mobile bottom nav (5 tabs) -->
+<nav class="mobile-bottomnav" aria-label="Mobile navigation">
+  <div class="mobile-bottomnav-inner">
+    <a href="index.html" class="mobile-nav-item" aria-label="Overview">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+      Overview
+    </a>
+    <a href="run-report.html" class="mobile-nav-item active" aria-label="Findings">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+      Findings
+    </a>
+    <a href="fixes.html" class="mobile-nav-item" aria-label="Fixes">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      Fixes
+    </a>
+    <a href="trends.html" class="mobile-nav-item" aria-label="Trends">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+      Trends
+    </a>
+    <a href="targets.html" class="mobile-nav-item" aria-label="Targets">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+      Targets
+    </a>
+  </div>
+</nav>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 20 20" fill="white" width="16" height="16"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      </div>
+      <div>
+        <div class="sidebar-logo-text">Audit Tool</div>
+        <div class="sidebar-logo-sub">Breakout Solutions</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Views</div>
+      <a href="index.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        Portfolio Overview
+      </a>
+      <a href="run-report.html" class="nav-item active">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+        What Needs Fixing
+        <span class="nav-badge">3</span>
+      </a>
+      <a href="fixes.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Fix Progress
+        <span class="nav-badge-fix">1</span>
+      </a>
+      <a href="trends.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+        Progress Over Time
+      </a>
+      <a href="targets.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+        Sites and Safety
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      Read-only view<br>
+      v1.0.0 · localhost:4173
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+    <div class="page-header">
+      <!-- Breadcrumb -->
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+        <a href="run-report.html" style="color:var(--text-muted);text-decoration:none;min-height:44px;display:flex;align-items:center;">Back to all issues</a>
+        <span>/</span>
+        <span>automation-v1</span>
+      </div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+            <span class="pill pill-critical">Fix now</span>
+            <span style="font-size:12px;color:var(--text-muted);">Critical severity</span>
+            <span class="correlated-badge" style="display:inline-flex;align-items:center;gap:4px;background:rgba(192,132,252,0.12);border:1px solid rgba(192,132,252,0.25);border-radius:20px;padding:2px 8px;font-size:10px;color:#c084fc;font-weight:600;">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/></svg>
+              Confirmed in code + live test
+            </span>
+          </div>
+          <h1 class="page-title" style="margin-bottom:4px;">Customer data from one account could be visible to another</h1>
+          <div style="font-size:13px;color:var(--text-secondary);margin-bottom:2px;">The subscriptions table has a per-client field but no database rule enforcing that separation.</div>
+          <div style="font-size:11px;color:var(--text-muted);font-family:var(--mono);">BS-RLS-001 · automation-v1 / src/db/schema/subscriptions.ts</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-body">
+
+      <!-- ============================================= -->
+      <!-- SEND FOR FIXING (primary action, above the fold) -->
+      <!-- ============================================= -->
+
+      <!-- STATE A: Not yet sent (default shown) -->
+      <div class="send-for-fixing-panel" id="fix-panel-ready">
+        <div class="send-for-fixing-title">
+          <svg viewBox="0 0 20 20" fill="#3dd68c" width="20" height="20"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+          Send this for fixing
+        </div>
+        <div class="send-for-fixing-desc">
+          This files a task in the <strong>automation-v1</strong> project. The coding assistant there writes the fix, your team reviews and approves it, and the next security scan checks whether the problem is really gone.
+          <br><br>
+          You stay in control: nothing gets merged without your team's approval. The scan confirms the fix, not just the code change.
+        </div>
+        <div class="fix-actions-row">
+          <button class="btn btn-fix" onclick="sendForFixing()" id="send-btn">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/></svg>
+            Send for fixing
+          </button>
+          <button class="btn btn-ghost" onclick="copyPrompt()" id="copy-prompt-btn" style="min-height:48px;" title="Copy a ready-to-paste instruction for the coding assistant in any project">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg>
+            Copy fix instructions
+          </button>
+          <div style="font-size:11px;color:var(--text-muted);padding:4px 0;">
+            "Copy fix instructions" pastes a ready-to-use prompt into any project's coding assistant if you prefer to apply the fix manually.
+          </div>
+        </div>
+      </div>
+
+      <!-- STATE B: Fix in progress (shown after clicking) -->
+      <div class="send-for-fixing-panel" id="fix-panel-inprogress" style="display:none;border-color:var(--fix-inprogress-border);background:linear-gradient(135deg,rgba(245,200,66,0.05) 0%,rgba(245,200,66,0.01) 100%);">
+        <div class="send-for-fixing-title">
+          <svg viewBox="0 0 20 20" fill="#f5c842" width="20" height="20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+          Fix is in progress
+        </div>
+        <div class="fix-status-block">
+          <div class="fix-status-header">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:2px;">Fix task filed in automation-v1</div>
+              <div style="font-size:12px;color:var(--text-secondary);">The coding assistant is working on it. Your team will receive a pull request to review.</div>
+            </div>
+            <a href="https://github.com/michaelhazza/automation-v1/issues/42" target="_blank" class="btn btn-ghost" style="white-space:nowrap;flex-shrink:0;min-height:36px;font-size:11px;">View task</a>
+          </div>
+          <!-- Progress timeline -->
+          <div class="fix-state-timeline">
+            <div class="fix-state-step done">
+              <div class="fix-state-dot done">
+                <svg viewBox="0 0 20 20" fill="white" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+              </div>
+              <div class="fix-state-label done">Requested</div>
+            </div>
+            <div class="fix-state-step current">
+              <div class="fix-state-dot current"></div>
+              <div class="fix-state-label current">Fix being written</div>
+            </div>
+            <div class="fix-state-step">
+              <div class="fix-state-dot"></div>
+              <div class="fix-state-label">Your team reviews</div>
+            </div>
+            <div class="fix-state-step">
+              <div class="fix-state-dot"></div>
+              <div class="fix-state-label">Merged, scan pending</div>
+            </div>
+            <div class="fix-state-step">
+              <div class="fix-state-dot"></div>
+              <div class="fix-state-label">Confirmed fixed</div>
+            </div>
+          </div>
+          <div style="margin-top:10px;font-size:11px;color:var(--text-muted);">
+            Filed Jun 12, 2026 by @michaelhazza · Task #42 in automation-v1
+          </div>
+        </div>
+      </div>
+
+      <!-- STATE C: Missing token (for documentation; shown inline as a collapsed example) -->
+      <details style="margin-bottom:20px;">
+        <summary class="collapsible-toggle">
+          <span>Example: what you see if fix-sending is not configured</span>
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        </summary>
+        <div class="missing-token-state" style="margin-top:8px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+            <svg viewBox="0 0 20 20" fill="#555c72" width="20" height="20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--text-primary);">Automatic fix-sending is not set up yet</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">This tool does not have permission to file tasks in your repositories. You can still apply the fix manually.</div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:12px;">
+            To enable one-click fix requests: add a <code style="font-family:var(--mono);font-size:11px;">AUDIT_GITHUB_FIX_TOKEN</code> GitHub access token to this tool's environment. It only needs permission to create issues, not to edit code.
+          </div>
+          <button class="btn btn-ghost" style="min-height:44px;">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg>
+            Copy fix instructions instead
+          </button>
+        </div>
+      </details>
+
+      <div class="detail-layout">
+
+        <!-- LEFT COLUMN -->
+        <div class="detail-main">
+
+          <!-- What went wrong (plain English first) -->
+          <div class="card mb-16" style="border-color:var(--sev-critical-border);background:rgba(255,68,85,0.03);">
+            <div class="card-header">
+              <div class="card-title" style="color:var(--sev-critical);">What went wrong</div>
+              <span class="pill pill-critical">Fix now</span>
+            </div>
+            <div style="font-size:14px;color:var(--text-primary);line-height:1.7;margin-bottom:12px;">
+              The subscriptions table stores records for multiple clients, but there is no database rule enforcing that each client can only see their own records. Any client query could inadvertently (or intentionally) read another client's subscriptions.
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;">
+              This was also confirmed on your live test site: a test probe logged in as one user and retrieved subscription records belonging to a different account. The fix must be applied in the database, not just the application code.
+            </div>
+          </div>
+
+          <!-- Evidence (collapsible technical section) -->
+          <details>
+            <summary class="collapsible-toggle mb-8">
+              <span>Code evidence</span>
+              <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </summary>
+            <div class="evidence-block mb-16" style="margin-top:8px;">
+              <div style="color:var(--text-muted);margin-bottom:8px;font-size:10px;font-family:var(--font);text-transform:uppercase;letter-spacing:0.06em;">src/db/schema/subscriptions.ts</div>
+<span style="color:#555c72;">// Table stores per-client records but has no row-level security rule</span>
+<span class="evidence-line-highlight">export const subscriptions = pgTable('subscriptions', {</span>
+<span class="evidence-line-highlight">  id: uuid('id').defaultRandom().primaryKey(),</span>
+<span class="evidence-line-highlight">  organisationId: uuid('organisation_id').notNull(),  // per-client field</span>
+<span class="evidence-line-highlight">  planId: text('plan_id').notNull(),</span>
+<span class="evidence-line-highlight">  status: text('status').notNull(),</span>
+<span class="evidence-line-highlight">});</span>
+<span style="color:#555c72;">// No corresponding enableRls() + createPolicy() found in any migration file</span>
+            </div>
+          </details>
+
+          <!-- Correlated static + live evidence pair -->
+          <details>
+            <summary class="collapsible-toggle mb-8">
+              <span>
+                <svg viewBox="0 0 20 20" fill="#c084fc" width="14" height="14" style="display:inline;vertical-align:-2px;margin-right:4px;"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd"/></svg>
+                Confirmed on live test site (raises urgency)
+              </span>
+              <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </summary>
+            <div style="font-size:11px;color:var(--text-muted);margin:6px 0 10px;padding:0 2px;">When the same problem appears in the code AND is confirmed on a live test site, urgency increases by one level.</div>
+            <div class="correlated-pair mb-16">
+              <div>
+                <div class="evidence-source-label">
+                  <span class="pill pill-static" style="font-size:10px;">In the code</span>
+                  automation-v1
+                </div>
+                <div class="evidence-block" style="font-size:11px;">
+<span style="color:#555c72;">// src/db/schema/subscriptions.ts</span>
+<span class="evidence-line-highlight">organisationId: uuid('organisation_id')</span>
+<span style="color:#555c72;">//  per-client field, no access rule applied</span>
+                </div>
+              </div>
+              <div>
+                <div class="evidence-source-label">
+                  <span class="pill pill-live" style="font-size:10px;">Live test site</span>
+                  staging.automation.breakout.dev
+                </div>
+                <div class="evidence-block" style="font-size:11px;">
+<span style="color:#555c72;">GET /api/subscriptions?org=other-client-id</span>
+<span class="evidence-line-highlight">HTTP 200: returned 14 subscription records</span>
+<span style="color:#555c72;">// Cross-client read confirmed: test account B</span>
+<span style="color:#555c72;">// retrieved records belonging to account A</span>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- How urgency was calculated -->
+          <details>
+            <summary class="collapsible-toggle mb-8">
+              <span>Technical details: how urgency was calculated</span>
+              <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </summary>
+            <div class="card mb-16" style="margin-top:8px;">
+              <div class="card-header">
+                <div class="card-title">Urgency breakdown</div>
+                <span class="pill pill-critical">Fix now (Critical)</span>
+              </div>
+              <div class="sev-trace">
+
+                <div class="sev-trace-step">
+                  <div class="sev-trace-node">
+                    <div class="sev-trace-circle" style="background:var(--sev-critical-bg);border-color:var(--sev-critical);color:var(--sev-critical);">CRIT</div>
+                    <div class="sev-trace-line"></div>
+                  </div>
+                  <div class="sev-trace-content">
+                    <div class="sev-trace-label">1. Base severity</div>
+                    <div class="sev-trace-desc">Rule BS-RLS-001 starts at Critical. A multi-client table with no access rule is inherently the most severe: any client query can read any other client's data at the database level.</div>
+                  </div>
+                </div>
+
+                <div class="sev-trace-step">
+                  <div class="sev-trace-node">
+                    <div class="sev-trace-circle" style="background:rgba(192,132,252,0.12);border-color:#c084fc;color:#c084fc;">+1</div>
+                    <div class="sev-trace-line"></div>
+                  </div>
+                  <div class="sev-trace-content">
+                    <div class="sev-trace-label">2. Live confirmation raises urgency</div>
+                    <div class="sev-trace-desc">A live test of <code style="font-family:var(--mono);font-size:11px;">staging.automation.breakout.dev</code> confirmed the issue is exploitable. When code and live evidence agree, urgency steps up by one level.</div>
+                    <div class="sev-trace-applied">Critical to Critical (already at maximum)</div>
+                  </div>
+                </div>
+
+                <div class="sev-trace-step">
+                  <div class="sev-trace-node">
+                    <div class="sev-trace-circle" style="background:var(--bg-inset);border-color:var(--border);color:var(--text-muted);">n/a</div>
+                    <div class="sev-trace-line"></div>
+                  </div>
+                  <div class="sev-trace-content">
+                    <div class="sev-trace-label">3. Login requirement check</div>
+                    <div class="sev-trace-desc">Routes that require no login raise urgency; admin-only routes lower it. This endpoint requires a login, so no adjustment applies.</div>
+                    <div class="sev-trace-applied-neutral">Not applied</div>
+                  </div>
+                </div>
+
+                <div class="sev-trace-step">
+                  <div class="sev-trace-node">
+                    <div class="sev-trace-circle" style="background:rgba(255,68,85,0.12);border-color:var(--sev-critical);color:var(--sev-critical);">
+                      <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+                    </div>
+                  </div>
+                  <div class="sev-trace-content">
+                    <div class="sev-trace-label">4. Data isolation floor</div>
+                    <div class="sev-trace-desc">Data isolation issues can never be rated below "Fix soon" regardless of other factors. This one is already "Fix now", so the floor has no effect.</div>
+                    <div class="sev-trace-applied">Final: <span style="color:var(--sev-critical);font-weight:800;">Fix now (Critical)</span> · confirmed</div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </details>
+
+          <!-- Fix guidance -->
+          <div class="fix-guidance mb-16">
+            <div class="fix-guidance-title">
+              <svg viewBox="0 0 20 20" fill="#6b8cff" width="16" height="16"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+              How to fix this
+            </div>
+            <div class="fix-guidance-body">
+              Add a Postgres row-level security policy to the <code style="font-family:var(--mono);font-size:12px;">subscriptions</code> table in the Drizzle migration. The policy should restrict reads and writes to rows where the per-client field matches the current user's client ID from their session token.
+            </div>
+            <div class="fix-guidance-code">
+<span class="fix-bad">// Before: no access rule, all clients can read all rows</span>
+export const subscriptions = pgTable('subscriptions', {
+  organisationId: uuid('organisation_id').notNull(),
+  ...
+});
+
+<span class="fix-good">// After: add to migration file</span>
+await sql`ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY`;
+await sql`
+  CREATE POLICY subscriptions_tenant_isolation ON subscriptions
+  USING (organisation_id = current_setting('app.current_org_id')::uuid)
+`;
+            </div>
+            <div style="margin-top:10px;font-size:11px;color:var(--text-muted);">
+              Full documentation: <span class="text-mono" style="color:var(--text-link);">docs/rules/BS-RLS-001.md</span>
+            </div>
+          </div>
+
+        </div><!-- /detail-main -->
+
+        <!-- RIGHT SIDEBAR -->
+        <div class="detail-sidebar">
+
+          <!-- Finding metadata -->
+          <div class="card mb-16">
+            <div class="card-title" style="margin-bottom:14px;">Issue details</div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <div>
+                <div class="meta-item-label">Project</div>
+                <div style="font-size:13px;font-weight:600;color:var(--text-primary);">automation-v1</div>
+              </div>
+              <div>
+                <div class="meta-item-label">First detected</div>
+                <div style="font-size:13px;font-weight:500;color:var(--text-primary);">Jun 1, 2026 (11 days ago)</div>
+              </div>
+              <div>
+                <div class="meta-item-label">Last seen</div>
+                <div style="font-size:13px;font-weight:500;color:var(--text-primary);">Jun 12, 2026 (this scan)</div>
+              </div>
+              <div>
+                <div class="meta-item-label">Status</div>
+                <span class="delta delta-persisting">Still present</span>
+              </div>
+              <hr class="divider" style="margin:4px 0;">
+              <div>
+                <div class="meta-item-label">File</div>
+                <div style="font-size:11px;font-family:var(--mono);color:var(--text-primary);">src/db/schema/subscriptions.ts</div>
+              </div>
+              <div>
+                <div class="meta-item-label">Code location</div>
+                <div style="font-size:11px;font-family:var(--mono);color:var(--text-primary);">subscriptions</div>
+              </div>
+              <hr class="divider" style="margin:4px 0;">
+              <details>
+                <summary class="collapsible-toggle" style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;">
+                  <span>Technical ID</span>
+                  <svg viewBox="0 0 20 20" fill="currentColor" width="12" height="12" style="flex-shrink:0;"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                </summary>
+                <div style="font-size:10px;font-family:var(--mono);color:var(--text-muted);word-break:break-all;margin-top:4px;">f-3f9a1c2b8d4e0a17</div>
+              </details>
+            </div>
+          </div>
+
+          <!-- Accepted risk copy affordance -->
+          <div class="card" style="border-color:rgba(107,140,255,0.2);">
+            <div class="card-title" style="color:#6b8cff;margin-bottom:10px;">Acknowledge this risk instead</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;line-height:1.5;">
+              If this is intentional or you are tracking it elsewhere, you can acknowledge the risk with a justification and a review date. Copy this template and add it to <code style="font-family:var(--mono);font-size:11px;">config/baseline.json</code> via a reviewed pull request.
+            </div>
+            <div class="evidence-block" style="font-size:10px;line-height:1.8;" id="baseline-json">{
+  "findingId": "f-3f9a1c2b8d4e0a17",
+  "ruleId": "BS-RLS-001",
+  "target": {
+    "kind": "repo",
+    "name": "automation-v1"
+  },
+  "locationKey": "subscriptions",
+  "justification": "<your justification>",
+  "expiry": "2026-09-30",
+  "approvedBy": "<your-github-handle>"
+}</div>
+            <button class="btn btn-copy" id="copy-btn-2" onclick="copyBaseline()" style="width:100%;justify-content:center;margin-top:10px;min-height:44px;">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg>
+              Copy to clipboard
+            </button>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:8px;line-height:1.5;">
+              All acknowledged risks need a justification, a review date, and a pull request approved by <strong>@michaelhazza</strong>. This tool is read-only: no in-app editing.
+            </div>
+          </div>
+
+        </div><!-- /detail-sidebar -->
+
+      </div><!-- /detail-layout -->
+
+    </div>
+  </main>
+</div>
+
+<script>
+function sendForFixing() {
+  document.getElementById('fix-panel-ready').style.display = 'none';
+  document.getElementById('fix-panel-inprogress').style.display = 'block';
+}
+
+function copyPrompt() {
+  const prompt = `Please fix the following security issue in this repository:\n\nProblem: Missing row-level security policy on the subscriptions table. Customer data from one account could be visible to another.\n\nFile: src/db/schema/subscriptions.ts\nCode location: subscriptions\nRule: BS-RLS-001\nFinding ID: f-3f9a1c2b8d4e0a17\n\nFix: Add enableRls() and createPolicy() to the Drizzle migration for the subscriptions table. The policy should restrict reads and writes to rows where organisation_id matches the current user's org claim.\n\nAcceptance criteria: The next security scan should find no finding with ID f-3f9a1c2b8d4e0a17 and no BS-RLS-001 finding on subscriptions.`;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(prompt).then(() => {
+      const btn = document.getElementById('copy-prompt-btn');
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.innerHTML = '<svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg> Copy fix instructions'; }, 2000); }
+    });
+  }
+}
+
+function copyBaseline() {
+  const json = document.getElementById('baseline-json').textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(json).then(() => {
+      const btn = document.getElementById('copy-btn-2');
+      if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.innerHTML = '<svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"/><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"/></svg> Copy to clipboard'; }, 2000); }
+    });
+  } else {
+    alert('Copy not available. Select the JSON above and copy manually.');
+  }
+}
+</script>
+
+</body>
+</html>

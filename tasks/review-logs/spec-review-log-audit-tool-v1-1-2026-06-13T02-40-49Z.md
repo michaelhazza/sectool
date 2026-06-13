@@ -79,4 +79,4 @@ None. Every finding was either a consistency/contract mechanical fix or (one) a 
   - AUTO-REJECT (convention): 0
   - AUTO-ACCEPT (convention): 0
   - AUTO-DECIDED:             0
-- Spec commit after iteration:   <set after commit>
+- Spec commit after iteration:   220f577

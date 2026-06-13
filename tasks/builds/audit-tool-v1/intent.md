@@ -31,8 +31,16 @@ positives on clean fixtures, enforced in CI via `npm run benchmark`.
 
 - Not a generic SAST/DAST product — internal use against our own assets only.
 - No scanning of production, ever. Live scanning targets staging only (safety contract).
-- No auto-remediation, no PR generation, no GitHub issue creation in v1 (schema designed so issue-sync can be added later).
-- No SaaS dashboard; report files are the product.
+- No direct code edits or PR generation by the audit tool against target
+  repos. [Amended 2026-06-13: operator directed a remediation workflow — the
+  tool files fix-request issues (plain-English remediation packs) that
+  repo-local Claude Code implements behind each repo's tests and PR review;
+  re-scan verifies the fix. Spec §5.3/P8. Code-writing by this tool remains
+  out of scope; the original "no issue creation" clause is reversed.]
+- No *hosted/multi-user* SaaS dashboard; report files remain the canonical
+  artifacts. [Amended 2026-06-12: operator directed a local-first, read-only
+  report dashboard UI + HTML export — spec §5.2/P7. The original blanket
+  "no dashboard" non-goal is reversed for the local UI only.]
 - Does not replace per-repo CI gates in target repos (see Duplication / Strategy Check).
 
 ## Affected Capability Area
@@ -45,7 +53,9 @@ Operators (Breakout Solutions engineers) get one command (`audit run`) and one
 prioritized remediation report covering every registered repo and staging URL —
 including targets with no per-repo gates. Findings carry severity, fix
 guidance, and rule docs. Baselines need justification + expiry, so accepted
-risk stays visible. No end-user-facing surface.
+risk stays visible. Operator-facing surface: the local report dashboard
+(`audit ui`, spec §5.2) and the HTML export — no end-user/customer-facing
+surface. [Amended 2026-06-12 per operator UI direction.]
 
 ## Risk Surface
 

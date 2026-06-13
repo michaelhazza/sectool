@@ -258,6 +258,18 @@ engineer-audience assumption.]
   §4 contract is therefore anchored on the no-live-engine-import +
   `issues:write`-only (never `contents:write`) properties, not on action count.
   [Amended 2026-06-13; was fully read-only.]
+- **Fix-request endpoint hardening (CSRF/origin, P8).** The single mutating
+  route (the "Send for fixing" POST) is CSRF- and origin-protected because it
+  spends the `issues:write` token. `audit ui` mints a per-process
+  `X-Audit-CSRF` nonce at startup and serves it only to the same-origin SPA;
+  the POST handler rejects — HTTP 403, **without** calling `src/fix/github.ts` —
+  any request that is missing/has the wrong nonce, OR whose `Origin` is not
+  `http://127.0.0.1:<port>`. The server never emits
+  `Access-Control-Allow-Origin: *`. Loopback binding alone is NOT treated as
+  sufficient: a page open in the operator's browser can still drive a
+  cross-origin POST to `127.0.0.1`, so the nonce + same-origin check is the
+  real guard. Acceptance: cases in `src/ui/server.test.ts`. [Operator-approved
+  2026-06-13, OAI-SPEC-004.]
 - **Charts:** Recharts. **Visual language:** one consistent set of severity
   color tokens (critical/high/medium/low) and run-status tokens
   (success/partial/failed) across every screen and the HTML export; partial
@@ -428,6 +440,27 @@ fixing" explains in plain English that fix-sending is not configured.
 **Manual fallback.** Every remediation pack is also copyable from the
 dashboard as a ready-to-paste Claude Code prompt, for repos without the
 action or for ad-hoc local fixing.
+
+### 5.4 Secret redaction boundary (output safety, operator amendment 2026-06-13)
+
+The tool discovers secrets (gitleaks, §7.2) and reads live response bodies and
+headers, so every emitter MUST redact credential material before anything is
+written to disk, printed, or transmitted. `src/report/redaction.ts` is a single
+chokepoint applied to ALL outputs: `report.json`, Markdown, SARIF, the HTML
+export, stdout/log lines, remediation packs (§5.3), and the body of any GitHub
+fix-request issue. It replaces credential values — gitleaks-detected secrets,
+`Authorization`/bearer tokens, `Set-Cookie` and cookie values, and registry
+env-derived staging credentials — with a stable `[redacted:<8hex>]` placeholder
+(the hex is a salted digest, so the same secret reads identically across
+artifacts for correlation without revealing the value). Enough non-secret
+context is retained for triage: file, line/route, rule id, and the structural
+shape of the evidence. HTML-escaping (§5.2) is anti-XSS and is NOT a substitute
+— redaction runs first, on the data, for every format, so a finding's raw
+secret value never leaves the tool (and in particular is never republished into
+an externally-filed GitHub issue). Acceptance: a redaction fixture +
+`src/report/redaction.test.ts` asserting no known-secret fixture value appears
+in any emitted format; pinned as a §10 guardrail. [Operator-approved
+2026-06-13, OAI-SPEC-005.]
 
 ## 6. Contracts
 
@@ -953,6 +986,17 @@ benchmark/
     JSON token, each count as a login *failure* and mark an `activeScan: true`
     target `failed` — never a silent unauthenticated active scan (§6.2).
     [OAI-SPEC-009.]
+  - *Secret redaction (§5.4):* a fixture carrying known secrets (a gitleaks
+    hit, a bearer token, a `Set-Cookie`) flows through every emitter
+    (`report.json`, MD, SARIF, HTML, remediation pack, fix-issue body) and the
+    test asserts no raw fixture secret appears in any output — only
+    `[redacted:<8hex>]`. Ships with the P5 emitters (`src/report/redaction.test.ts`).
+    [OAI-SPEC-005.]
+  - *UI fix-endpoint CSRF/origin guard (§5.2):* `src/ui/server.test.ts` asserts
+    the mutating "Send for fixing" route returns 403 (and never calls
+    `src/fix/github.ts`) on a missing/wrong `X-Audit-CSRF` nonce or a foreign
+    `Origin`, and that the server never emits `Access-Control-Allow-Origin: *`.
+    Ships with the P8 endpoint. [OAI-SPEC-004.]
 - **Self-scan gate:** CI statically scans this repo itself and must be clean;
   `benchmark/corpus/**` and `benchmark/live-fixture/**` are excluded via the
   self-scan config (they are intentionally vulnerable by design — exclusion
@@ -974,8 +1018,8 @@ benchmark/
 | `src/live/preflight.ts` | dry-run + mandatory preflight |
 | `src/live/scanners/{zap,nuclei}.ts`, `src/live/probes/{tls,headers,cookies,exposure}.ts` | live engine |
 | `src/correlate/{fingerprint,severity,correlate}.ts` | layer 4 core |
-| `src/report/{json,markdown,sarif,html,trend,baseline}.ts` | outputs (`html.ts` = self-contained export, §5.2) |
-| `src/ui/server.ts` | `audit ui` localhost server: static assets + read-only JSON endpoints (P7); the single §5.3 fix-request action endpoint is wired in P8 (depends on `src/fix/*`) (§5.2) |
+| `src/report/{json,markdown,sarif,html,trend,baseline,redaction}.ts` | outputs (`html.ts` = self-contained export, §5.2); `redaction.ts` = single secret-redaction chokepoint applied by all emitters (§5.4) |
+| `src/ui/server.ts` | `audit ui` localhost server: static assets + read-only JSON endpoints + per-process CSRF nonce mint (P7); the single §5.3 fix-request action endpoint, CSRF/origin-gated (§5.2), is wired in P8 (depends on `src/fix/*`) |
 | `ui/**` | React 18 + Vite SPA — 6 screens per §5.2, plain-language-first |
 | `src/fix/{pack,github,status}.ts` | remediation packs, fix-request issue filing (idempotent by fingerprint), status derivation (§5.3) |
 | `src/schemas/fix.ts` | Zod schema for `reports/fixes.json` (§5.3 state machine) |
@@ -1001,10 +1045,10 @@ RLS appears only as the SUBJECT of rules.
 | P2 | static orchestration: clone/localPath + 3 wrapper scanners + normalizers | P1 |
 | P3 | custom rule pack (11 rules) + their corpus fixtures (test-first, enforced by the P1 harness) | P1, P2 (semgrep runner) |
 | P4 | live engine: gate + preflight/dry-run FIRST, then probes, ZAP, Nuclei wrappers + live fixture app + safety-contract test | P1 |
-| P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend | P2–P4 |
+| P5 | correlation + severity + report (JSON/MD/SARIF) + baseline + trend + secret-redaction chokepoint (`src/report/redaction.ts`, applied by all emitters, §5.4) | P2–P4 |
 | P6 | benchmark completion (live-fixture integration, **engine-available §10 guardrail tests only** — partial-run trend, scoped suppression, active-scan cred failure, allowlist IP-literal rejection, carrier-aware login success; the §10 *HTML evidence inert-text matrix* guardrail is NOT a P6 deliverable because it targets the P7 HTML exporter — see P7) + Dockerfile + CI workflows + self-scan gate + rule docs sweep | P1–P5 |
 | P7 | report dashboard UI (`audit ui` server + 6-screen SPA per §5.2, shapes from the approved mockups) + HTML report export. **`src/report/html.test.ts` owns the §10 HTML evidence inert-text matrix guardrail** (it ships with the exporter it tests; required before final v1 ship). All 6 screens render in P7 from P5 data contracts; the Fixes screen and the finding-detail fix pipeline render **read-only** (Fixes shows an empty/"no fix requests yet" state until `fixes.json` exists; the "Send for fixing" button renders **disabled** with a "fix-sending wired in P8" affordance). No `src/fix/*` dependency in P7. | P5 (report.json / trend.jsonl as data contracts) |
-| P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
+| P8 | remediation orchestration: packs, `audit fix`, GitHub issue integration, fixes.json status tracking, re-scan verification, **and wiring the P7 Fixes screen + finding-detail to live data (enables the "Send for fixing" action endpoint in `src/ui/server.ts`, CSRF/origin-gated per §5.2)**, `docs/fix-workflow.md` | P5 (findings/fingerprints), P7 (UI shell) |
 
 No backward references: each phase consumes only earlier phases' outputs.
 (P7 was added by the 2026-06-12 UI addendum and P8 by the 2026-06-13

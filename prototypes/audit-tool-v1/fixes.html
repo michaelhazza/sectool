@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Fix Progress: Breakout Security Audit</title>
+  <link rel="stylesheet" href="_shared.css">
+  <style>
+    /* Fix pipeline card */
+    .fix-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 18px 20px;
+      margin-bottom: 12px;
+      transition: border-color 0.15s;
+    }
+
+    .fix-card:hover { border-color: var(--border-hover); }
+
+    .fix-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .fix-consequence {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+
+    .fix-technical {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--mono);
+    }
+
+    .fix-state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    .fix-state-requested {
+      background: rgba(107, 140, 255, 0.12);
+      color: var(--fix-requested);
+      border: 1px solid rgba(107, 140, 255, 0.25);
+    }
+
+    .fix-state-inprogress {
+      background: rgba(245, 200, 66, 0.12);
+      color: var(--fix-inprogress);
+      border: 1px solid rgba(245, 200, 66, 0.25);
+    }
+
+    .fix-state-awaiting {
+      background: rgba(255, 140, 66, 0.12);
+      color: var(--fix-awaiting);
+      border: 1px solid rgba(255, 140, 66, 0.25);
+    }
+
+    .fix-state-merged {
+      background: rgba(107, 140, 255, 0.08);
+      color: #a0b4ff;
+      border: 1px solid rgba(107, 140, 255, 0.18);
+    }
+
+    .fix-state-verified {
+      background: rgba(61, 214, 140, 0.10);
+      color: var(--fix-verified);
+      border: 1px solid rgba(61, 214, 140, 0.22);
+    }
+
+    .fix-state-reopened {
+      background: rgba(255, 68, 85, 0.10);
+      color: var(--fix-reopened);
+      border: 1px solid rgba(255, 68, 85, 0.22);
+    }
+
+    /* Progress track for mid-pipeline cards */
+    .fix-pipeline-track {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      margin: 12px 0 6px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .fix-pipeline-step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 88px;
+      flex: 1;
+      font-size: 10px;
+      text-align: center;
+    }
+
+    .fix-pipeline-dot {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      background: var(--bg-inset);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 4px;
+      flex-shrink: 0;
+    }
+
+    .fix-pipeline-dot.done {
+      background: var(--fix-verified);
+      border-color: var(--fix-verified);
+      color: #0d1a12;
+    }
+
+    .fix-pipeline-dot.active {
+      background: var(--fix-inprogress);
+      border-color: var(--fix-inprogress);
+      box-shadow: 0 0 0 3px rgba(245, 200, 66, 0.20);
+    }
+
+    .fix-pipeline-connector {
+      height: 2px;
+      flex: 1;
+      background: var(--border);
+      margin-bottom: 24px;
+      min-width: 10px;
+    }
+
+    .fix-pipeline-connector.done { background: var(--fix-verified); }
+
+    .fix-pipeline-label {
+      font-size: 9px;
+      color: var(--text-muted);
+      line-height: 1.3;
+    }
+
+    .fix-pipeline-label.active { color: var(--fix-inprogress); font-weight: 600; }
+    .fix-pipeline-label.done { color: var(--text-secondary); }
+
+    /* Link row */
+    .fix-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .fix-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: #6b8cff;
+      text-decoration: none;
+      padding: 3px 8px;
+      background: rgba(107, 140, 255, 0.08);
+      border: 1px solid rgba(107, 140, 255, 0.18);
+      border-radius: 4px;
+      transition: background 0.12s;
+    }
+
+    .fix-link:hover { background: rgba(107, 140, 255, 0.16); }
+
+    /* Summary row */
+    .fix-summary-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .fix-summary-tile {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
+      flex: 1;
+      min-width: 100px;
+      text-align: center;
+    }
+
+    .fix-summary-count {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.1;
+      margin-bottom: 3px;
+    }
+
+    .fix-summary-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Missing token banner */
+    .token-missing-banner {
+      background: rgba(245, 200, 66, 0.06);
+      border: 1px solid rgba(245, 200, 66, 0.22);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      margin-bottom: 20px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .token-missing-icon {
+      flex-shrink: 0;
+      color: var(--fix-inprogress);
+      margin-top: 1px;
+    }
+
+    .token-missing-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--fix-inprogress);
+      margin-bottom: 4px;
+    }
+
+    .token-missing-body {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .token-missing-code {
+      font-family: var(--mono);
+      font-size: 11px;
+      background: var(--bg-inset);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 6px;
+      color: var(--text-secondary);
+    }
+
+    /* Filter tabs */
+    .filter-tabs {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+
+    .filter-tab {
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      color: var(--text-secondary);
+      background: transparent;
+      transition: all 0.12s;
+      min-height: 44px;
+    }
+
+    .filter-tab:hover { background: var(--bg-inset); color: var(--text-primary); }
+
+    .filter-tab.active {
+      background: var(--bg-inset);
+      border-color: var(--border);
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .filter-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 16px;
+      border-radius: 8px;
+      padding: 0 5px;
+      font-size: 10px;
+      font-weight: 700;
+      margin-left: 4px;
+      background: var(--bg-surface);
+      color: var(--text-muted);
+    }
+
+    /* Reopened callout inline */
+    .reopened-alert {
+      background: rgba(255, 68, 85, 0.06);
+      border: 1px solid rgba(255, 68, 85, 0.22);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      font-size: 12px;
+      color: var(--fix-reopened);
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+
+    @media (max-width: 768px) {
+      .fix-card-header { flex-direction: column; }
+      .fix-summary-tile { min-width: 80px; padding: 10px 12px; }
+      .fix-summary-count { font-size: 18px; }
+      .fix-pipeline-track { gap: 0; }
+      .fix-pipeline-step { min-width: 68px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Mobile top bar -->
+<div class="mobile-topbar">
+  <div class="mobile-topbar-logo">
+    <div class="sidebar-logo-icon" style="width:26px;height:26px;">
+      <svg viewBox="0 0 20 20" fill="white" width="14" height="14"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+    </div>
+    Audit Tool
+  </div>
+</div>
+
+<!-- Mobile bottom nav (5 tabs) -->
+<nav class="mobile-bottomnav" aria-label="Mobile navigation">
+  <div class="mobile-bottomnav-inner">
+    <a href="index.html" class="mobile-nav-item" aria-label="Overview">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+      Overview
+    </a>
+    <a href="run-report.html" class="mobile-nav-item" aria-label="Findings">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+      Findings
+    </a>
+    <a href="fixes.html" class="mobile-nav-item active" aria-label="Fixes">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      Fixes
+    </a>
+    <a href="trends.html" class="mobile-nav-item" aria-label="Trends">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+      Trends
+    </a>
+    <a href="targets.html" class="mobile-nav-item" aria-label="Targets">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+      Targets
+    </a>
+  </div>
+</nav>
+
+<div class="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 20 20" fill="white" width="16" height="16"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+      </div>
+      <div>
+        <div class="sidebar-logo-text">Audit Tool</div>
+        <div class="sidebar-logo-sub">Breakout Solutions</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Views</div>
+      <a href="index.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        Portfolio Overview
+      </a>
+      <a href="run-report.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-.293.707L13 10.414V15a1 1 0 01-.553.894l-4 2A1 1 0 017 17v-6.586L3.293 6.707A1 1 0 013 6V4z" clip-rule="evenodd"/></svg>
+        What Needs Fixing
+        <span class="nav-badge">3</span>
+      </a>
+      <a href="fixes.html" class="nav-item active">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Fix Progress
+        <span class="nav-badge-fix">1</span>
+      </a>
+      <a href="trends.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+        Progress Over Time
+      </a>
+      <a href="targets.html" class="nav-item">
+        <svg class="nav-item-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg>
+        Sites and Safety
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      Read-only view<br>
+      v1.0.0 · localhost:4173
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main-content">
+    <div class="page-header">
+      <h1 class="page-title">Fix Progress</h1>
+      <p class="page-subtitle">Issues you have sent for fixing and where each one is in the process</p>
+    </div>
+
+    <div class="page-body">
+
+      <!-- Summary tiles -->
+      <div class="fix-summary-row">
+        <div class="fix-summary-tile">
+          <div class="fix-summary-count">4</div>
+          <div class="fix-summary-label">In progress</div>
+        </div>
+        <div class="fix-summary-tile">
+          <div class="fix-summary-count" style="color:var(--fix-awaiting);">1</div>
+          <div class="fix-summary-label">Awaiting your review</div>
+        </div>
+        <div class="fix-summary-tile">
+          <div class="fix-summary-count" style="color:var(--fix-verified);">6</div>
+          <div class="fix-summary-label">Confirmed fixed</div>
+        </div>
+        <div class="fix-summary-tile">
+          <div class="fix-summary-count" style="color:var(--fix-reopened);">1</div>
+          <div class="fix-summary-label">Reopened (not fixed)</div>
+        </div>
+      </div>
+
+      <!-- How this works section -->
+      <details class="collapsible mb-20">
+        <summary class="collapsible-toggle">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary);">How fix requests work</span>
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" class="collapsible-icon" style="color:var(--text-muted);"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        </summary>
+        <div class="collapsible-body">
+          <p style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin:0 0 8px;">When you click "Send for fixing" on an issue, this tool creates a GitHub issue in your repository with a pre-written description of the problem and suggested fix. Your team reviews and merges the fix. Once merged, the next scan confirms whether the problem is gone.</p>
+          <p style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin:0;">This requires a GitHub token (<code style="font-family:var(--mono);">AUDIT_GITHUB_FIX_TOKEN</code>) with permission to create issues in your repo. The token never has access to read or write code.</p>
+        </div>
+      </details>
+
+      <!-- Filter tabs -->
+      <div class="filter-tabs">
+        <button class="filter-tab active">All<span class="filter-count">6</span></button>
+        <button class="filter-tab">In progress<span class="filter-count">4</span></button>
+        <button class="filter-tab" style="color:var(--fix-awaiting);">Awaiting review<span class="filter-count" style="color:var(--fix-awaiting);">1</span></button>
+        <button class="filter-tab" style="color:var(--fix-verified);">Confirmed fixed<span class="filter-count" style="color:var(--fix-verified);">6</span></button>
+        <button class="filter-tab" style="color:var(--fix-reopened);">Reopened<span class="filter-count" style="color:var(--fix-reopened);">1</span></button>
+      </div>
+
+      <!-- === FIX 1: REOPENED === -->
+      <div class="fix-card" style="border-color:rgba(255,68,85,0.3);">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-reopened">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+                Reopened: fix did not work
+              </span>
+              <span class="pill pill-critical" style="font-size:10px;">Fix now</span>
+            </div>
+            <div class="fix-consequence">Login token signed with a hard-coded secret</div>
+            <div class="fix-technical">BS-JWT-001 · automation-v1 / server/auth/tokens.ts</div>
+          </div>
+        </div>
+
+        <div class="reopened-alert">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" style="flex-shrink:0;margin-top:1px;"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+          <div>
+            <strong>The fix was merged but the problem is still showing in the latest scan.</strong> The scan ran on Jun 12, 2026 at 14:08 and still found a hard-coded secret in this file. The merged PR may not have been complete, or the file was changed again afterwards.
+          </div>
+        </div>
+
+        <div class="fix-links" style="margin-top:12px;">
+          <a class="fix-link" href="#issue-23">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/></svg>
+            GitHub issue #23
+          </a>
+          <a class="fix-link" href="#pr-41">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
+            Merged PR #41
+          </a>
+          <a class="fix-link" href="finding-detail.html">View issue detail</a>
+        </div>
+
+        <div style="margin-top:10px;font-size:11px;color:var(--text-muted);">
+          Sent Jun 2, 2026 by @michaelhazza &middot; PR merged Jun 9, 2026 &middot; Reopened Jun 12, 2026
+        </div>
+      </div>
+
+      <!-- === FIX 2: AWAITING REVIEW === -->
+      <div class="fix-card">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-awaiting">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/><path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"/></svg>
+                Awaiting your review
+              </span>
+              <span class="pill pill-critical" style="font-size:10px;">Fix now</span>
+            </div>
+            <div class="fix-consequence">Customer data from one account could be visible to another</div>
+            <div class="fix-technical">BS-RLS-001 · automation-v1 / src/db/schema/subscriptions.ts</div>
+          </div>
+        </div>
+
+        <!-- Pipeline track: done-done-done-active-idle -->
+        <div class="fix-pipeline-track">
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Requested</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Fix written</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot active">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z"/></svg>
+            </div>
+            <div class="fix-pipeline-label active">Your review</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Scan pending</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Confirmed fixed</div>
+          </div>
+        </div>
+
+        <div style="background:rgba(255,140,66,0.06);border:1px solid rgba(255,140,66,0.18);border-radius:var(--radius-sm);padding:9px 12px;font-size:12px;color:var(--fix-awaiting);margin-top:4px;">
+          A pull request is ready for your review. Merge it to close this issue. The next scan will confirm the fix within 24 hours.
+        </div>
+
+        <div class="fix-links" style="margin-top:10px;">
+          <a class="fix-link" href="#issue-19" style="background:rgba(255,140,66,0.10);border-color:rgba(255,140,66,0.25);color:var(--fix-awaiting);">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="11" height="11"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
+            Review PR #38
+          </a>
+          <a class="fix-link" href="#issue-19">GitHub issue #19</a>
+          <a class="fix-link" href="finding-detail.html">View issue detail</a>
+        </div>
+
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+          Sent Jun 4, 2026 by @michaelhazza &middot; PR opened Jun 5, 2026
+        </div>
+      </div>
+
+      <!-- === FIX 3: IN PROGRESS (fix being written) === -->
+      <div class="fix-card">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-inprogress">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+                Fix being written
+              </span>
+              <span class="pill pill-high" style="font-size:10px;">Fix soon</span>
+            </div>
+            <div class="fix-consequence">An admin page can be opened without signing in</div>
+            <div class="fix-technical">BS-AUTH-001 · payments-v2 / server/routes/admin.ts</div>
+          </div>
+        </div>
+
+        <!-- Pipeline track: done-active-idle-idle-idle -->
+        <div class="fix-pipeline-track">
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Requested</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot active">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label active">Fix being written</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Your review</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Scan pending</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Confirmed fixed</div>
+          </div>
+        </div>
+
+        <div class="fix-links" style="margin-top:8px;">
+          <a class="fix-link" href="#issue-21">GitHub issue #21</a>
+        </div>
+
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+          Sent Jun 8, 2026 by @michaelhazza
+        </div>
+      </div>
+
+      <!-- === FIX 4: REQUESTED === -->
+      <div class="fix-card">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-requested">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
+                Requested
+              </span>
+              <span class="pill pill-medium" style="font-size:10px;">Plan it</span>
+            </div>
+            <div class="fix-consequence">The login page does not limit repeated password attempts</div>
+            <div class="fix-technical">BS-AUTH-002 · crm-v1 / server/auth/login.ts</div>
+          </div>
+        </div>
+
+        <!-- Pipeline track: active-idle-idle-idle-idle -->
+        <div class="fix-pipeline-track">
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot active">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/></svg>
+            </div>
+            <div class="fix-pipeline-label active">Requested</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Fix being written</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Your review</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Scan pending</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Confirmed fixed</div>
+          </div>
+        </div>
+
+        <div class="fix-links" style="margin-top:8px;">
+          <a class="fix-link" href="#issue-22">GitHub issue #22</a>
+        </div>
+
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+          Sent Jun 11, 2026 by @michaelhazza
+        </div>
+      </div>
+
+      <!-- === FIX 5: MERGED AWAITING VERIFICATION === -->
+      <div class="fix-card">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-merged">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+                Merged: scan confirming
+              </span>
+              <span class="pill pill-high" style="font-size:10px;">Fix soon</span>
+            </div>
+            <div class="fix-consequence">Any other website can make requests using a signed-in user's session</div>
+            <div class="fix-technical">BS-CORS-001 · crm-v1 / server/app.ts</div>
+          </div>
+        </div>
+
+        <!-- Pipeline track: done-done-done-active-idle -->
+        <div class="fix-pipeline-track">
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Requested</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Fix written</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot done">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label done">Reviewed</div>
+          </div>
+          <div class="fix-pipeline-connector done"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot active">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+            </div>
+            <div class="fix-pipeline-label active">Scan confirming</div>
+          </div>
+          <div class="fix-pipeline-connector"></div>
+          <div class="fix-pipeline-step">
+            <div class="fix-pipeline-dot"></div>
+            <div class="fix-pipeline-label">Confirmed fixed</div>
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+          The fix has been merged. The next scheduled scan will check whether the issue is gone.
+        </div>
+
+        <div class="fix-links" style="margin-top:10px;">
+          <a class="fix-link" href="#issue-18">GitHub issue #18</a>
+          <a class="fix-link" href="#pr-37">Merged PR #37</a>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+          Sent May 28, 2026 by @michaelhazza &middot; Merged Jun 10, 2026
+        </div>
+      </div>
+
+      <!-- === FIX 6: VERIFIED FIXED === -->
+      <div class="fix-card" style="opacity:0.72;">
+        <div class="fix-card-header">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;">
+              <span class="fix-state-pill fix-state-verified">
+                <svg viewBox="0 0 20 20" fill="currentColor" width="10" height="10"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+                Confirmed fixed
+              </span>
+              <span class="pill pill-medium" style="font-size:10px;">Plan it</span>
+            </div>
+            <div class="fix-consequence">Form fields accept unlimited input length</div>
+            <div class="fix-technical">BS-VAL-001 · crm-v1 / server/routes/contact.ts</div>
+          </div>
+        </div>
+
+        <div style="font-size:12px;color:var(--status-success);display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+          Scan on Jun 10, 2026 confirmed the issue is gone.
+        </div>
+
+        <div class="fix-links">
+          <a class="fix-link" href="#issue-15">GitHub issue #15</a>
+          <a class="fix-link" href="#pr-32">Merged PR #32</a>
+        </div>
+
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+          Fixed May 22, 2026 &middot; Confirmed Jun 10, 2026
+        </div>
+      </div>
+
+      <!-- Missing token example (collapsible) -->
+      <details class="collapsible mt-20" id="token-missing-example">
+        <summary class="collapsible-toggle">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary);">What you see if fix-sending is not set up</span>
+          <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14" class="collapsible-icon" style="color:var(--text-muted);"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        </summary>
+        <div class="collapsible-body">
+          <div class="token-missing-banner">
+            <div class="token-missing-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+            </div>
+            <div>
+              <div class="token-missing-title">Fix-sending is not configured</div>
+              <div class="token-missing-body">
+                To send issues for fixing, set the <span class="token-missing-code">AUDIT_GITHUB_FIX_TOKEN</span> environment variable to a GitHub personal access token with "issues:write" permission for this repository. The token never needs access to read or write code.
+                <br><br>
+                Until that is set up, use "Copy fix instructions" on any finding to paste a ready-made description into a GitHub issue manually.
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
