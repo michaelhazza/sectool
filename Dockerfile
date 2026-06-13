@@ -114,8 +114,13 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Non-root user for security. Shell is /bin/sh (not /bin/false) so that the
 # entrypoint wrapper and npm/node commands execute inside the container.
-RUN useradd --system --no-create-home --shell /bin/sh audit && \
-    chown -R audit:audit /app
+RUN useradd --system --create-home --home-dir /home/audit --shell /bin/sh audit && \
+    chown -R audit:audit /app /home/audit
+# Semgrep tries to write ~/.semgrep/ on first run; HOME must point to a
+# writable directory so it succeeds without network or root access.
+ENV HOME=/home/audit \
+    SEMGREP_SEND_METRICS=off \
+    SEMGREP_ENABLE_VERSION_CHECK=false
 USER audit
 
 ENTRYPOINT ["docker-entrypoint.sh"]

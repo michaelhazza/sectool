@@ -756,39 +756,29 @@ export async function runDetectors(
       const fixtureFile = join(sourceDir, 'package.fixture.json');
       if (!existsSync(fixtureFile)) continue;
 
+      const lockFixture = join(sourceDir, 'package-lock.fixture.json');
+
+      // For the clean fixture: if there is no lockfile, there are no resolved
+      // packages to scan → vacuously 0 CVEs. Skip entirely to avoid osv-scanner
+      // accidentally scanning the container's /app directory.
+      if (resultsBucket === cleanResults && !existsSync(lockFixture)) continue;
+
       let tmpDir: string | undefined;
       try {
         tmpDir = mkdtempSync(join(tmpdir(), 'audit-bench-osv-'));
         copyFileSync(fixtureFile, join(tmpDir, 'package.json'));
-        const lockFixture = join(sourceDir, 'package-lock.fixture.json');
-        const lockDest = join(tmpDir, 'package-lock.json');
         if (existsSync(lockFixture)) {
-          copyFileSync(lockFixture, lockDest);
+          copyFileSync(lockFixture, join(tmpDir, 'package-lock.json'));
         }
-        // Use --lockfile to scope osv-scanner to exactly this fixture's lockfile,
-        // avoiding --recursive picking up /app/node_modules from the container CWD.
-        const osvExec: ExecOsv = injections.execOsv ?? (async () => {
-          if (!existsSync(lockDest)) {
-            // No lockfile = no resolved packages = no findings.
-            return { stdout: JSON.stringify({ results: [] }) };
-          }
-          try {
-            const r = await execFileAsync('osv-scanner', [
-              '--format', 'json',
-              '--lockfile', lockDest,
-            ]);
-            return { stdout: r.stdout };
-          } catch (e) {
-            const ee = e as { code?: number; stdout?: string };
-            if (ee.code === 1 && typeof ee.stdout === 'string') return { stdout: ee.stdout };
-            throw e;
-          }
-        });
+        // Use --recursive on an isolated tmpDir (only contains the fixture
+        // package.json + optional lockfile), so osv-scanner cannot pick up
+        // any packages from the container's working directory.
         const target = corpusTarget(familyId, tmpDir);
-        const findings = await runOsv(target, tmpDir, osvExec);
+        const findings = await runOsv(target, tmpDir, injections.execOsv);
+        process.stderr.write(`[benchmark] osv ${resultsBucket === scanResults ? 'vuln' : 'clean'}: ${findings.length} findings\n`);
         resultsBucket.push(...findings.map(() => ({ ruleId: familyId })));
-      } catch {
-        // Binary absent or no vulnerabilities found.
+      } catch (err) {
+        process.stderr.write(`[benchmark] osv error: ${String(err)}\n`);
       } finally {
         if (tmpDir !== undefined) {
           try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -805,15 +795,20 @@ export async function runDetectors(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  // Diagnostic: verify scanner binaries are present
+  // Diagnostic: verify scanner binaries are present and functional
   for (const bin of ['semgrep', 'gitleaks', 'osv-scanner']) {
     try {
-      await execFileAsync(bin, ['--version']);
-      process.stderr.write(`[benchmark] ${bin}: OK\n`);
+      const r = await execFileAsync(bin, ['--version']);
+      const ver = (r.stdout + r.stderr).split('\n')[0]?.slice(0, 60) ?? '';
+      process.stderr.write(`[benchmark] ${bin}: OK (${ver})\n`);
     } catch (err) {
-      process.stderr.write(`[benchmark] ${bin}: MISSING or error — ${String(err)}\n`);
+      const e = err as { code?: string | number; stderr?: string; message?: string };
+      const detail = `code=${String(e.code)} stderr=${String(e.stderr ?? '').slice(0, 80)}`;
+      process.stderr.write(`[benchmark] ${bin}: FAIL ${detail}\n`);
     }
   }
+  // Log environment for debugging
+  process.stderr.write(`[benchmark] HOME=${process.env['HOME'] ?? 'unset'} PATH contains /usr/local/bin=${process.env['PATH']?.includes('/usr/local/bin') ?? false}\n`);
   const { scanResults, cleanResults } = await runDetectors();
   const result = runBenchmark(scanResults, cleanResults);
 

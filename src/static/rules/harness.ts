@@ -13,7 +13,15 @@ import { join } from 'node:path';
 export function createProject(repoDir: string): Project {
   const hasTsConfig = existsSync(join(repoDir, 'tsconfig.json'));
   return new Project({
-    ...(hasTsConfig ? { tsConfigFilePath: join(repoDir, 'tsconfig.json') } : {}),
+    ...(hasTsConfig
+      ? { tsConfigFilePath: join(repoDir, 'tsconfig.json') }
+      // When no local tsconfig exists, supply explicit compilerOptions so
+      // TypeScript does NOT walk up the directory tree and discover the
+      // parent project's tsconfig (e.g. /app/tsconfig.json when scanning a
+      // corpus fixture dir inside /app). Without this guard, ts-morph loads
+      // ALL source files from the ancestor tsconfig and produces false
+      // positives on corpus clean-fixture scans.
+      : { compilerOptions: { strict: false, skipLibCheck: true } }),
     skipAddingFilesFromTsConfig: !hasTsConfig,
     skipFileDependencyResolution: true,
     useInMemoryFileSystem: false,
