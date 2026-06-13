@@ -7,17 +7,26 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "audit": "./dist/cli.js"
+  },
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "schemas": "tsx src/schemas/generate.ts"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
     "eslint": "^9.20.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.24.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "zod": "^4.4.3",
+    "zod-to-json-schema": "^3.25.2"
   }
 }
