@@ -40,6 +40,9 @@ export interface ResolvedEnv {
   configBranch: string | undefined;
   /** TOTP shared secret for step-up exchange (AUDIT_TOTP_SECRET). Undefined when not set. */
   totpSecret: string | undefined;
+  /** Remote URL for config git pushes (AUDIT_GIT_REMOTE_URL). Defaults to 'origin' so
+   *  the working clone's existing remote is used when not explicitly overridden. */
+  gitRemoteUrl: string;
   /** Whether config-write write-deps are all present; lists any missing var names. */
   configWriteDeps: { ok: boolean; missing: string[] };
 }
@@ -126,6 +129,7 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
   const gitAuthor = env('AUDIT_GIT_AUTHOR') ?? undefined;
   const configBranch = env('CONFIG_BRANCH') ?? undefined;
   const totpSecret = env('AUDIT_TOTP_SECRET') ?? undefined;
+  const gitRemoteUrl = env('AUDIT_GIT_REMOTE_URL') ?? 'origin';
 
   // configWriteDeps: editing is enabled when totpSecret is present; all four
   // additional deps must also be set. Write routes degrade closed when any is missing.
@@ -156,6 +160,7 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
     configBranch,
     totpSecret,
     configWriteDeps: { ok: configWriteDepsOk, missing: configWriteMissing },
+    gitRemoteUrl,
   };
 }
 

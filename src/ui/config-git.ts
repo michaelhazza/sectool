@@ -662,3 +662,6 @@ void ensureAskpassExecutable();
 
 // Export CONFIG_PATHS for consumers that need to know the whitelist (e.g. tests).
 export { CONFIG_PATHS };
+
+// Export scrubToken so C4 can redact the token from surfaced error bodies (ImplInv-3).
+export { scrubToken };

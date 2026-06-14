@@ -57,6 +57,12 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: pre-existing mismatch noted in plan gaps as out-of-scope.
   - Approach: rename route in server.ts or update client call in a dedicated cleanup chunk.
 
+## From builder — 2026-06-14 (C4)
+
+- [ ] [origin:builder-C4:2026-06-14] [status:open] `AUDIT_GIT_REMOTE_URL` env var added to `ResolvedEnv` as the git push remote for config writes. Currently the write service passes this to `commitConfigChange` which passes it to `git push <remoteUrl>`. In production, `ensureClone` (C3) sets up the remote as `origin` in `.git/config`; the `AUDIT_GIT_REMOTE_URL` var could be omitted by defaulting to `'origin'` and having `commitConfigChange` use the symbolic remote name. Currently both approaches work since `git push origin` and `git push <URL>` are equivalent when the URL matches. No action needed unless a conflict surfaces.
+
+- [ ] [origin:builder-C4:2026-06-14] [status:open] `_addHostField` destructuring with `eslint-disable-next-line @typescript-eslint/no-unused-vars` in `handleConfigWrite` (server.ts) is needed to strip `addHost` from the request body before passing to `addStagingTarget`. If TypeScript's `noUnusedLocals` check fires at G2 build, the fix is to use `Object.fromEntries(Object.entries(p).filter(([k]) => k !== 'addHost'))` instead. Surgical fix deferred per chunk scope.
+
 ## From builder — 2026-06-13
 
 - [ ] [origin:builder-P2-3:2026-06-13] [status:open] `osv-scanner` exits 1 when vulnerabilities are found (same as gitleaks) — `defaultExecOsv` in `src/static/scanners/osv.ts` uses `execFileAsync` directly and will throw when the binary exits 1 (findings present), which the orchestrator will record as a family `failed` rather than a successful scan with findings.
