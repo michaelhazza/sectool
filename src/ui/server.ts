@@ -28,7 +28,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const CONFIG_DIR = resolve(REPO_ROOT, 'config');
 
 // SPA static assets: built output lives in ui/dist (relative to repo root)
 const SPA_DIR = resolve(REPO_ROOT, 'ui', 'dist');
@@ -141,11 +140,12 @@ function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Prom
  * fix-request issue for the given fingerprint.
  * Loads the latest report from disk to locate the finding.
  */
-function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHttpClient; env?: EnvReader }): FixHandler {
+function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHttpClient; env?: EnvReader; configDir?: string }): FixHandler {
   return async (fingerprint: string) => {
     // Load config to get the target registry (for repoUrl resolution)
-    const allowlist = loadAllowlist();
-    const registry = loadTargets(allowlist);
+    const loadOpts = opts?.configDir !== undefined ? { configDir: opts.configDir } : undefined;
+    const allowlist = loadAllowlist(loadOpts);
+    const registry = loadTargets(allowlist, loadOpts);
 
     // Find the finding in the latest report
     let report: RunReport | null = null;
@@ -209,7 +209,7 @@ function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHt
 // Read-only JSON endpoints
 // ---------------------------------------------------------------------------
 
-function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string, dataDir: string): boolean {
+function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string, dataDir: string, configDir: string): boolean {
   const { pathname } = url;
   const fixesJson = resolve(reportsDir, 'fixes.json');
 
@@ -285,7 +285,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // read `repoTargets`) AND drops the auth block from the response (less exposure).
   if (req.method === 'GET' && pathname === '/api/config/targets') {
     try {
-      const raw = readJsonFile(resolve(CONFIG_DIR, 'targets.json')) as {
+      const raw = readJsonFile(resolve(configDir, 'targets.json')) as {
         repos?: Array<{ name: string; enabled: boolean }>;
         stagingTargets?: Array<{ name: string; url: string; repo?: string; activeScan?: boolean; enabled: boolean }>;
       };
@@ -317,7 +317,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // GET /api/config/allowlist — config/allowed-staging-hosts.json
   if (req.method === 'GET' && pathname === '/api/config/allowlist') {
     try {
-      const data = readJsonFile(resolve(CONFIG_DIR, 'allowed-staging-hosts.json'));
+      const data = readJsonFile(resolve(configDir, 'allowed-staging-hosts.json'));
       jsonResponse(res, 200, data);
     } catch {
       jsonResponse(res, 200, { hosts: [] });
@@ -328,7 +328,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // GET /api/config/baseline — config/baseline.json
   if (req.method === 'GET' && pathname === '/api/config/baseline') {
     try {
-      const data = readJsonFile(resolve(CONFIG_DIR, 'baseline.json'));
+      const data = readJsonFile(resolve(configDir, 'baseline.json'));
       jsonResponse(res, 200, data);
     } catch {
       jsonResponse(res, 200, { entries: [] });
@@ -520,8 +520,9 @@ async function handleScanPost(
   let allowlist: ReturnType<typeof loadAllowlist>;
   let registry: ReturnType<typeof loadTargets>;
   try {
-    allowlist = loadAllowlist();
-    registry = loadTargets(allowlist);
+    const configOpts = { configDir: resolvedEnv.configDir };
+    allowlist = loadAllowlist(configOpts);
+    registry = loadTargets(allowlist, configOpts);
   } catch (configErr) {
     // ConfigError from registry load → 500 (server misconfig — M3).
     if (configErr instanceof ConfigError) {
@@ -981,7 +982,7 @@ function handleRequest(
   githubClient: GitHubHttpClient,
   clock: Clock,
 ): void {
-  const { allowedOrigin, reportsDir, historyDir, dataDir } = resolvedEnv;
+  const { allowedOrigin, reportsDir, historyDir, dataDir, configDir } = resolvedEnv;
   const raw = req.url ?? '/';
   let url: URL;
   try {
@@ -1048,7 +1049,7 @@ function handleRequest(
 
   // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
-    if (!handleApi(req, res, url, reportsDir, historyDir, dataDir)) {
+    if (!handleApi(req, res, url, reportsDir, historyDir, dataDir, configDir)) {
       jsonResponse(res, 404, { error: 'Not found' });
     }
     return;
@@ -1094,11 +1095,12 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
 
   const env = envReader ?? ((name: string) => process.env[name]);
   const resolved = resolveEnv(env, port);
-  const { bindHost, allowedOrigin, reportsDir } = resolved;
+  const { bindHost, allowedOrigin, reportsDir, configDir } = resolved;
 
   const handler = fixHandlerArg ?? makeProductionFixHandler(reportsDir, {
     ...(githubClientArg !== undefined ? { client: githubClientArg } : {}),
     env,
+    configDir,
   });
 
   // Production fail-closed: assert all required vars before binding.

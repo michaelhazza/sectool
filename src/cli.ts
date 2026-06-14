@@ -183,7 +183,7 @@ export type FixDeps = {
   fixesPath?: string;
 };
 
-const COMMANDS = ['scan-source', 'scan-live', 'run', 'report', 'ui', 'fix'] as const;
+const COMMANDS = ['scan-source', 'scan-live', 'run', 'report', 'ui', 'fix', 'totp-init'] as const;
 type Command = (typeof COMMANDS)[number];
 
 const USAGE = `\
@@ -196,6 +196,7 @@ Commands:
   report         Re-emit report from the last run (no scanning)
   ui             Serve the local report dashboard on 127.0.0.1
   fix            File fix-request issue(s) in the target repo
+  totp-init      Generate a TOTP shared secret for dashboard 2FA enrollment
 
 Run \`audit <command> --help\` for command-specific options.
 `;
@@ -256,6 +257,19 @@ Options:
   --min-severity <s>  Bulk-file fix requests for all unfiled findings at or above severity s
   --dry-run           Print remediation pack(s) without filing
   --help              Show this help
+`;
+
+const TOTP_INIT_USAGE = `\
+Usage: audit totp-init
+
+Generate a TOTP shared secret for dashboard 2FA enrollment.
+
+Prints the base32 secret, an otpauth:// URI, and enrollment instructions to
+stdout. Nothing is written to disk. Copy the secret and set it as the
+AUDIT_TOTP_SECRET fly secret (or equivalent env var) on your dashboard host.
+
+Options:
+  --help  Show this help
 `;
 
 function usageError(msg: string): never {
@@ -536,6 +550,47 @@ function parseFix(argv: string[]): FixArgs {
     minSeverity,
     dryRun: dryRun ?? false,
   };
+}
+
+function parseTotpInit(argv: string[]): void {
+  let help: boolean | undefined;
+  parseOrExit(() => {
+    const { values } = parseArgs({
+      args: argv,
+      options: {
+        help: { type: 'boolean', default: false },
+      },
+      strict: true,
+      allowPositionals: false,
+    });
+    help = values.help;
+  }, TOTP_INIT_USAGE);
+  if (help) {
+    process.stdout.write(TOTP_INIT_USAGE);
+    process.exit(0);
+  }
+}
+
+function doTotpInit(): void {
+  import('./ui/totp.js').then(({ generateSecret, otpauthUri, asciiQr }) => {
+    const secret = generateSecret();
+    const uri = otpauthUri(secret, 'sectool:ops', 'sectool');
+    process.stdout.write([
+      '',
+      'TOTP enrollment — dashboard 2FA setup',
+      '======================================',
+      '',
+      `Secret (base32):  ${secret}`,
+      '',
+      'Set this as the AUDIT_TOTP_SECRET environment variable / fly secret.',
+      '',
+      asciiQr(uri),
+      '',
+    ].join('\n'));
+  }).catch((err: unknown) => {
+    process.stderr.write(`audit totp-init: failed to load totp module: ${String(err)}\n`);
+    process.exit(1);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,6 +1190,11 @@ export function main(argv: string[]): void {
         }
         throw err;
       });
+      break;
+    }
+    case 'totp-init': {
+      parseTotpInit(rest);
+      doTotpInit();
       break;
     }
   }

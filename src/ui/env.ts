@@ -23,6 +23,9 @@ export interface ResolvedEnv {
   reportsDir: string;
   historyDir: string;
   configDir: string;
+  /** Root of the working config clone: REPO_ROOT locally, /data/repo on fly.io.
+   *  Config files live at configRepoDir/config/. */
+  configRepoDir: string;
   /** Undefined when AUDIT_BASIC_AUTH_USER is not set. */
   authUser: string | undefined;
   /** Undefined when AUDIT_BASIC_AUTH_PASS is not set. */
@@ -92,6 +95,11 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
   const authUser = env('AUDIT_BASIC_AUTH_USER') ?? undefined;
   const authPass = env('AUDIT_BASIC_AUTH_PASS') ?? undefined;
 
+  // configRepoDir: root of the working config clone.
+  // Explicit CONFIG_REPO_DIR wins; else /data/repo in production (FLY_APP_NAME set),
+  // else REPO_ROOT locally — mirrors how DATA_DIR/dataDir is resolved.
+  const configRepoDir = env('CONFIG_REPO_DIR') ?? (flyAppName ? '/data/repo' : REPO_ROOT);
+
   return {
     dataDir,
     bindHost,
@@ -99,7 +107,8 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
     isProduction,
     reportsDir: resolve(dataDir, 'reports'),
     historyDir: resolve(dataDir, 'history'),
-    configDir: resolve(REPO_ROOT, 'config'),
+    configDir: resolve(configRepoDir, 'config'),
+    configRepoDir,
     authUser,
     authPass,
   };

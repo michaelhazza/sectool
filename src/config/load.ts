@@ -88,11 +88,16 @@ function isLoopbackHost(host: string): boolean {
 }
 
 /**
- * Production allowlist loader. Fixed path — no override.
- * Returns a branded LoadedAllowlist mintable only here.
+ * Production allowlist loader.
+ * When opts.configDir is provided, reads from that directory instead of the
+ * module-relative default — enabling the dashboard to read from CONFIG_REPO_DIR.
+ * Omitting opts preserves the existing CLI behaviour byte-for-byte.
  */
-export function loadAllowlist(): LoadedAllowlist {
-  const data = parseAllowlistFile(ALLOWLIST_PATH);
+export function loadAllowlist(opts?: { configDir?: string }): LoadedAllowlist {
+  const path = opts?.configDir !== undefined
+    ? join(opts.configDir, 'allowed-staging-hosts.json')
+    : ALLOWLIST_PATH;
+  const data = parseAllowlistFile(path);
   return mintAllowlist(data.hosts);
 }
 
@@ -117,13 +122,20 @@ export function loadBenchmarkAllowlist(): LoadedAllowlist {
  * Load and validate config/targets.json. Runs the enabled-target cross-check:
  * every enabled staging target's URL host must appear in the allowlist — this
  * is a config error, not a scan-time skip (§6.2).
+ *
+ * When opts.configDir is provided, reads from that directory instead of the
+ * module-relative default — enabling the dashboard to read from CONFIG_REPO_DIR.
+ * Omitting opts preserves the existing CLI behaviour byte-for-byte.
  */
-export function loadTargets(allowlist: LoadedAllowlist): TargetRegistry {
+export function loadTargets(allowlist: LoadedAllowlist, opts?: { configDir?: string }): TargetRegistry {
+  const targetsPath = opts?.configDir !== undefined
+    ? join(opts.configDir, 'targets.json')
+    : TARGETS_PATH;
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(TARGETS_PATH, 'utf-8'));
+    raw = JSON.parse(readFileSync(targetsPath, 'utf-8'));
   } catch (err) {
-    throw new ConfigError(`Failed to read targets at ${TARGETS_PATH}: ${String(err)}`);
+    throw new ConfigError(`Failed to read targets at ${targetsPath}: ${String(err)}`);
   }
   const result = TargetRegistrySchema.safeParse(raw);
   if (!result.success) {
@@ -148,13 +160,20 @@ export function loadTargets(allowlist: LoadedAllowlist): TargetRegistry {
 
 /**
  * Load and validate config/baseline.json.
+ *
+ * When opts.configDir is provided, reads from that directory instead of the
+ * module-relative default — enabling the dashboard to read from CONFIG_REPO_DIR.
+ * Omitting opts preserves the existing CLI behaviour byte-for-byte.
  */
-export function loadBaseline(): Baseline {
+export function loadBaseline(opts?: { configDir?: string }): Baseline {
+  const baselinePath = opts?.configDir !== undefined
+    ? join(opts.configDir, 'baseline.json')
+    : BASELINE_PATH;
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8'));
+    raw = JSON.parse(readFileSync(baselinePath, 'utf-8'));
   } catch (err) {
-    throw new ConfigError(`Failed to read baseline at ${BASELINE_PATH}: ${String(err)}`);
+    throw new ConfigError(`Failed to read baseline at ${baselinePath}: ${String(err)}`);
   }
   const result = BaselineSchema.safeParse(raw);
   if (!result.success) {
