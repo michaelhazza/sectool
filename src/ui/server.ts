@@ -12,6 +12,7 @@ import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
 import { resolveEnv, assertProductionConfig, type ResolvedEnv } from './env.js';
 import { basicAuthGate, isAuthEnabled } from './auth.js';
+import { foldJobs } from './scan-jobs.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -195,7 +196,7 @@ function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHt
 // Read-only JSON endpoints
 // ---------------------------------------------------------------------------
 
-function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string): boolean {
+function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string, dataDir: string): boolean {
   const { pathname } = url;
   const fixesJson = resolve(reportsDir, 'fixes.json');
 
@@ -301,6 +302,20 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
     } catch {
       jsonResponse(res, 200, {});
     }
+    return true;
+  }
+
+  // GET /api/scan-jobs — folded job list, most-recent-first (§4.3, C3)
+  if (req.method === 'GET' && pathname === '/api/scan-jobs') {
+    let jobs;
+    try {
+      jobs = foldJobs(dataDir, Date.now());
+    } catch {
+      jsonResponse(res, 200, []);
+      return true;
+    }
+    jobs.sort((a, b) => (a.requestedAt < b.requestedAt ? 1 : a.requestedAt > b.requestedAt ? -1 : 0));
+    jsonResponse(res, 200, jobs);
     return true;
   }
 
@@ -443,13 +458,19 @@ function handleRequest(
   resolvedEnv: ResolvedEnv,
   fixHandler: FixHandler,
 ): void {
-  const { allowedOrigin, reportsDir, historyDir } = resolvedEnv;
+  const { allowedOrigin, reportsDir, historyDir, dataDir } = resolvedEnv;
   const raw = req.url ?? '/';
   let url: URL;
   try {
     url = new URL(raw, allowedOrigin);
   } catch {
     jsonResponse(res, 400, { error: 'Bad request' });
+    return;
+  }
+
+  // GET /healthz — unauthenticated health probe (§4.4). Static body, no data leak.
+  if (req.method === 'GET' && url.pathname === '/healthz') {
+    jsonResponse(res, 200, { ok: true });
     return;
   }
 
@@ -479,7 +500,7 @@ function handleRequest(
 
   // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
-    if (!handleApi(req, res, url, reportsDir, historyDir)) {
+    if (!handleApi(req, res, url, reportsDir, historyDir, dataDir)) {
       jsonResponse(res, 404, { error: 'Not found' });
     }
     return;

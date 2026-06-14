@@ -1,5 +1,19 @@
 # Chunk learnings — flyio-dashboard build
 
+## Chunk 4 — GET /healthz + GET /api/scan-jobs
+
+**Completed:** 2026-06-14
+
+**What was implemented:**
+- `src/ui/server.ts` (modify) — added `GET /healthz` handler directly in `handleRequest` BEFORE the auth gate (returns `200 {"ok":true}`, static, no data leak); added `GET /api/scan-jobs` handler in `handleApi` (calls `foldJobs(dataDir, Date.now())`, sorts most-recent-first by `requestedAt` desc, read error → `200 []`). Added `foldJobs` import from `./scan-jobs.js`. Extended `handleApi` signature with `dataDir: string` param; updated the one call site.
+- `src/ui/server.test.ts` (modify) — added `extraHeaders?` param to the existing `get()` helper (matched to auth.test.ts's existing helper style); added `appendEvent` import; added two describe blocks: `GET /healthz` (unauthenticated 200 + exempt from auth gate even when enabled) and `GET /api/scan-jobs` (401 without creds when gate on, 200 with correct creds, most-recent-first ordering, state/runId correctness, empty-state 200 []).
+
+**Watch-out for future chunks:**
+- `handleApi` now takes a 6th param `dataDir: string`. Any chunk that adds another call site to `handleApi` must include it.
+- The existing `get()` helper in `server.test.ts` now accepts `extraHeaders?: Record<string, string>` — no longer a zero-arity (path-only) function. Existing tests are unaffected (extra param is optional).
+- `/healthz` is handled BEFORE the auth gate check in `handleRequest` (returns early). The `isExempt` check below it still lists `/healthz` — this is harmless redundancy (the route already returned) but is left as-is per surgical-changes rule.
+- `foldJobs` is called with `Date.now()` (no injected clock in `StartServerOpts`). If a future chunk adds a `clock` injectable, the C4 call site in `handleApi` should be updated to use it.
+
 ## Chunk 2 — Basic Auth middleware (env-gated, production fail-closed)
 
 **Completed:** 2026-06-14

@@ -4,14 +4,15 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startServer, CSRF_NONCE, type AuditServer, type FixHandler } from './server.js';
+import { appendEvent } from './scan-jobs.js';
 
 // ---------------------------------------------------------------------------
 // Helpers: make GET / POST requests to the test server
 // ---------------------------------------------------------------------------
 
-function get(port: number, path: string): Promise<{ status: number; headers: import('node:http').IncomingHttpHeaders; body: string }> {
+function get(port: number, path: string, extraHeaders?: Record<string, string>): Promise<{ status: number; headers: import('node:http').IncomingHttpHeaders; body: string }> {
   return new Promise((res, rej) => {
-    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: 'GET' }, (response) => {
+    const req = httpRequest({ hostname: '127.0.0.1', port, path, method: 'GET', headers: extraHeaders ?? {} }, (response) => {
       let data = '';
       response.on('data', (chunk: Buffer | string) => { data += chunk.toString(); });
       response.on('end', () => {
@@ -496,5 +497,169 @@ describe('trend endpoint with fixture data', () => {
     expect(status).toBe(200);
     const json = JSON.parse(body) as unknown;
     expect(Array.isArray(json)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helper: make a Basic Auth header value
+// ---------------------------------------------------------------------------
+
+function basicAuthHeader(user: string, pass: string): string {
+  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+}
+
+// ---------------------------------------------------------------------------
+// GET /healthz — unauthenticated health probe (C4, §4.4)
+// ---------------------------------------------------------------------------
+
+describe('GET /healthz', () => {
+  it('returns 200 {"ok":true} without credentials (auth disabled)', async () => {
+    const { status, body } = await get(srv.port, '/healthz');
+    expect(status).toBe(200);
+    const json = JSON.parse(body) as { ok: boolean };
+    expect(json.ok).toBe(true);
+  });
+
+  it('returns 200 {"ok":true} even when Basic Auth gate is enabled and no credentials sent', async () => {
+    // Start a server with auth enabled to confirm /healthz is exempt from the gate.
+    const USER = 'gatecheck';
+    const PASS = 'h3althz!';
+    let authSrv: AuditServer | undefined;
+    try {
+      authSrv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'AUDIT_BASIC_AUTH_USER') return USER;
+          if (name === 'AUDIT_BASIC_AUTH_PASS') return PASS;
+          return undefined;
+        },
+      });
+      const { status, body } = await get(authSrv.port, '/healthz');
+      expect(status).toBe(200);
+      const json = JSON.parse(body) as { ok: boolean };
+      expect(json.ok).toBe(true);
+    } finally {
+      await authSrv?.stop();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/scan-jobs — folded job list (C4, §4.3)
+// ---------------------------------------------------------------------------
+
+describe('GET /api/scan-jobs', () => {
+  const jobsTmpDir = resolve(tmpdir(), `audit-scanjobs-test-${process.pid}`);
+  let jobsSrv: AuditServer;
+  const USER = 'jobsuser';
+  const PASS = 'jobspass!';
+
+  beforeAll(async () => {
+    mkdirSync(resolve(jobsTmpDir, 'history'), { recursive: true });
+
+    // Seed two jobs so we can verify most-recent-first ordering.
+    // Job A: requested earlier, then dispatched → in_progress
+    appendEvent(
+      { event: 'requested', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', targetRepo: 'repo-a', stagingUrl: 'https://staging-a.example.com', at: '2026-06-14T10:00:00.000Z' },
+      jobsTmpDir,
+    );
+    appendEvent(
+      { event: 'dispatched', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', at: '2026-06-14T10:00:05.000Z' },
+      jobsTmpDir,
+    );
+
+    // Job B: requested later, completed
+    appendEvent(
+      { event: 'requested', jobId: 'bbbb2222bbbb2222bbbb2222bbbb2222', targetRepo: 'repo-b', stagingUrl: 'https://staging-b.example.com', at: '2026-06-14T11:00:00.000Z' },
+      jobsTmpDir,
+    );
+    appendEvent(
+      { event: 'dispatched', jobId: 'bbbb2222bbbb2222bbbb2222bbbb2222', at: '2026-06-14T11:00:05.000Z' },
+      jobsTmpDir,
+    );
+    appendEvent(
+      { event: 'uploaded', jobId: 'bbbb2222bbbb2222bbbb2222bbbb2222', runId: '2026-06-14T11-30-00Z-cccc', at: '2026-06-14T11:30:00.000Z' },
+      jobsTmpDir,
+    );
+
+    jobsSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return jobsTmpDir;
+        if (name === 'AUDIT_BASIC_AUTH_USER') return USER;
+        if (name === 'AUDIT_BASIC_AUTH_PASS') return PASS;
+        return undefined;
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await jobsSrv.stop();
+    try {
+      rmSync(jobsTmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  });
+
+  it('returns 401 without credentials when Basic Auth gate is enabled', async () => {
+    const { status, headers } = await get(jobsSrv.port, '/api/scan-jobs');
+    expect(status).toBe(401);
+    expect(headers['www-authenticate']).toBe('Basic realm="sectool"');
+  });
+
+  it('returns 200 with folded jobs when correct credentials supplied', async () => {
+    const { status, body } = await get(jobsSrv.port, '/api/scan-jobs', {
+      Authorization: basicAuthHeader(USER, PASS),
+    });
+    expect(status).toBe(200);
+    const jobs = JSON.parse(body) as Array<{ jobId: string; state: string; requestedAt: string }>;
+    expect(Array.isArray(jobs)).toBe(true);
+    expect(jobs.length).toBe(2);
+  });
+
+  it('returns jobs most-recent-first (sorted by requestedAt desc)', async () => {
+    const { body } = await get(jobsSrv.port, '/api/scan-jobs', {
+      Authorization: basicAuthHeader(USER, PASS),
+    });
+    const jobs = JSON.parse(body) as Array<{ jobId: string; requestedAt: string }>;
+    // Job B (11:00) should come before Job A (10:00)
+    expect(jobs[0].jobId).toBe('bbbb2222bbbb2222bbbb2222bbbb2222');
+    expect(jobs[1].jobId).toBe('aaaa1111aaaa1111aaaa1111aaaa1111');
+  });
+
+  it('reflects correct state for each folded job', async () => {
+    const { body } = await get(jobsSrv.port, '/api/scan-jobs', {
+      Authorization: basicAuthHeader(USER, PASS),
+    });
+    const jobs = JSON.parse(body) as Array<{ jobId: string; state: string; runId: string | null }>;
+    const jobB = jobs.find((j) => j.jobId === 'bbbb2222bbbb2222bbbb2222bbbb2222');
+    const jobA = jobs.find((j) => j.jobId === 'aaaa1111aaaa1111aaaa1111aaaa1111');
+    expect(jobB?.state).toBe('complete');
+    expect(jobB?.runId).toBe('2026-06-14T11-30-00Z-cccc');
+    // Job A dispatched recently (within TTL) → in_progress
+    expect(jobA?.state).toBe('in_progress');
+    expect(jobA?.runId).toBeNull();
+  });
+
+  it('returns 200 [] when scan-jobs file is absent (no dataDir seeded)', async () => {
+    // Start a server pointing at an empty tmp dir with no scan-jobs file.
+    const emptyDir = resolve(tmpdir(), `audit-scanjobs-empty-${process.pid}`);
+    mkdirSync(emptyDir, { recursive: true });
+    let emptySrv: AuditServer | undefined;
+    try {
+      emptySrv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return emptyDir;
+          return undefined;
+        },
+      });
+      const { status, body } = await get(emptySrv.port, '/api/scan-jobs');
+      expect(status).toBe(200);
+      const jobs = JSON.parse(body) as unknown;
+      expect(Array.isArray(jobs)).toBe(true);
+      expect((jobs as unknown[]).length).toBe(0);
+    } finally {
+      await emptySrv?.stop();
+      try { rmSync(emptyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });
