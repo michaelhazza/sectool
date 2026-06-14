@@ -10,7 +10,8 @@ import { buildPack } from '../fix/pack.js';
 import { fileFixRequest, MissingFixTokenError } from '../fix/github.js';
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
-import { resolveEnv } from './env.js';
+import { resolveEnv, assertProductionConfig, type ResolvedEnv } from './env.js';
+import { basicAuthGate, isAuthEnabled } from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -439,17 +440,30 @@ function handleStatic(req: IncomingMessage, res: ServerResponse, url: URL): bool
 function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  allowedOrigin: string,
-  reportsDir: string,
-  historyDir: string,
+  resolvedEnv: ResolvedEnv,
   fixHandler: FixHandler,
 ): void {
+  const { allowedOrigin, reportsDir, historyDir } = resolvedEnv;
   const raw = req.url ?? '/';
   let url: URL;
   try {
     url = new URL(raw, allowedOrigin);
   } catch {
     jsonResponse(res, 400, { error: 'Bad request' });
+    return;
+  }
+
+  // Basic Auth gate — applied after URL parse, BEFORE route dispatch.
+  // Exemptions: /healthz (unauthenticated health probe) and /api/upload
+  // (uses bearer auth in C6, bypasses Basic Auth by design).
+  const isExempt = url.pathname === '/healthz' || url.pathname === '/api/upload';
+  if (!isExempt && basicAuthGate(req.headers['authorization'], resolvedEnv) === 'reject') {
+    res.writeHead(401, {
+      'WWW-Authenticate': 'Basic realm="sectool"',
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
 
@@ -509,18 +523,33 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
 
   const env = envReader ?? ((name: string) => process.env[name]);
   const resolved = resolveEnv(env, port);
-  const { bindHost, allowedOrigin, reportsDir, historyDir } = resolved;
+  const { bindHost, allowedOrigin, reportsDir } = resolved;
 
   const handler = fixHandlerArg ?? makeProductionFixHandler(reportsDir, {
     ...(githubClientArg !== undefined ? { client: githubClientArg } : {}),
     env,
   });
 
+  // Production fail-closed: assert all required vars before binding.
+  // Throws StartupConfigError (rejects the returned promise) so the server
+  // never binds when production config is incomplete.
+  try {
+    assertProductionConfig(resolved, env);
+  } catch (configErr) {
+    return Promise.reject(configErr instanceof Error ? configErr : new Error(String(configErr)));
+  }
+
+  const authState = isAuthEnabled(resolved)
+    ? `enabled (${resolved.isProduction ? 'production' : 'local dev with secrets'})`
+    : 'disabled (local dev)';
+  console.log(`Basic Auth: ${authState}`);
+
   return new Promise((resolvePromise, reject) => {
     let resolvedOrigin = allowedOrigin;
+    let currentResolved = resolved;
 
     const server = createServer((req, res) => {
-      handleRequest(req, res, resolvedOrigin, reportsDir, historyDir, handler);
+      handleRequest(req, res, currentResolved, handler);
     });
 
     server.on('error', reject);
@@ -534,7 +563,9 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
       }
       // Re-resolve allowedOrigin with the actual assigned port when port=0
       if (port === 0) {
-        resolvedOrigin = resolveEnv(env, addr.port).allowedOrigin;
+        const reResolved = resolveEnv(env, addr.port);
+        resolvedOrigin = reResolved.allowedOrigin;
+        currentResolved = reResolved;
       }
       resolvePromise({
         server,
