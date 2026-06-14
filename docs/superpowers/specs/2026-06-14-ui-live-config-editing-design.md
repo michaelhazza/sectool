@@ -78,7 +78,8 @@ git-committed allowlist exactly as before (§4.3). What is removed is *only* the
 The residual risk the operator is accepting: **anyone holding both the dashboard
 password and the TOTP device can authorise and scan any host on the internet.**
 The compensating controls are the 2FA gate (a leaked password alone is not
-enough), the git history + audit log (every change is recorded and revertable),
+enough), git history with structured audit trailers plus the hash-chained
+operational cache (every change is recorded and revertable),
 and the git-write token being the protected high-value secret (§10).
 
 ## 4. Architecture — git as the source of truth
@@ -110,20 +111,26 @@ fails" framing was false, because the operational audit append and re-read happe
    (`TargetRegistrySchema` / `AllowlistSchema`) — including the cross-check that
    every enabled staging target's host is on the (post-change) allowlist. Invalid
    → 422, nothing written.
-3. **Stage + commit (not yet pushed):** write the JSON file(s) in the working
-   clone (config paths only, §ImplInv), `git add` + `git commit`. The commit
-   message carries the **audit intent in a structured trailer** (actor, action,
-   target, UTC time) so the durable audit record is part of the atomic git object,
-   not a separate file that could diverge.
+3. **Stage + commit (not yet pushed):** record `priorHead = HEAD`. Write the JSON
+   file(s) in the working clone, then stage with an **explicit path list** —
+   `git add config/targets.json config/allowed-staging-hosts.json` — **never `git
+   add -A` / `git add .`** (§ImplInv), so the commit can only ever contain
+   whitelisted config files. `git commit` with the **audit intent in a structured
+   trailer** (actor, action, target, UTC time) so the durable audit record is part
+   of the atomic git object, not a separate file that could diverge.
 4. **Push — the commit point:** `git push` to `CONFIG_BRANCH`. Failure (token,
-   network, non-fast-forward) → **config-path-only rollback** (HIGH round 2 — NOT
-   `git reset --hard`, which would also revert unrelated tracked working-tree
-   changes the spec promises not to touch): un-commit with `git reset --soft
-   <priorHead>`, then restore ONLY the whitelisted config files from `priorHead`
-   (`git checkout <priorHead> -- config/targets.json
-   config/allowed-staging-hosts.json`). Non-config tracked/untracked files are
-   never staged and never touched. Respond 502, **config unchanged**. On a
-   non-fast-forward, `fetch` + replay-once before giving up (§7).
+   network, non-fast-forward) → **path-limited rollback** (round-3 fix — NOT `git
+   reset --hard`, and not a bare `reset --soft` that would leave the config changes
+   staged): un-commit with `git reset --soft <priorHead>`, then restore ONLY the
+   whitelisted config files in BOTH index and worktree from `priorHead`
+   (`git restore --staged --worktree --source=<priorHead> -- config/targets.json
+   config/allowed-staging-hosts.json`). Because step 3 staged only config paths,
+   nothing else was ever in the commit; any pre-existing non-config staged/worktree
+   state is preserved untouched. **Post-rollback assertion:** `git diff --cached
+   --name-only` contains none of the config paths (they're restored) — if it does,
+   the rollback failed and the route returns 500 rather than leaving a dirty index.
+   Respond 502, **config unchanged**. On a non-fast-forward, `fetch` + replay-once
+   before giving up (§7).
 5. **After the push (best-effort, never un-commits):** capture the pushed SHA,
    append an entry to the operational audit cache (§8), and re-read config from the
    working tree. If the cache append or re-read fails, the change is STILL
@@ -313,7 +320,8 @@ history.
 Extends the existing **Sites and Safety** screen (today read-only) into an editor.
 Because credentials are shared (no per-user role, §2), the editor is shown **when
 config editing is enabled and its write dependencies are healthy** (TOTP secret +
-git-write token + author + branch all present, §10); otherwise the screen renders
+step-up signing secret + git-write token + author + branch all present, §10);
+otherwise the screen renders
 read-only with a precise disabled reason (e.g. "config editing disabled —
 `AUDIT_GIT_WRITE_TOKEN` not set"). The "Read-only view" footer reflects that
 resolved state rather than implying a user role (LOW-2 from review).
@@ -394,9 +402,11 @@ violates one is wrong even if its local test passes:
    dispatch on `CONFIG_BRANCH` with the SHA as a workflow **input** (GitHub's
    `workflow_dispatch.ref` only accepts a branch/tag, not a SHA); the workflow
    checks the SHA is reachable from the branch and checks it out.
-7. **Rollback restores only whitelisted config paths** (`reset --soft` + restore
-   config files), NEVER `reset --hard` — non-config working-tree state is never
-   touched by a config write or its rollback.
+7. **Staging is an explicit config-path list, never `git add -A`/`git add .`**, so
+   a commit can only contain whitelisted config files. **Rollback restores only
+   those paths** (`reset --soft` + `restore --staged --worktree` the config files),
+   NEVER `reset --hard`; post-rollback the index has no config paths staged. Any
+   pre-existing non-config staged/worktree state is preserved untouched.
 8. **Every config mutation is auth + CSRF/origin + TOTP-step-up + schema gated**
    before the commit point; the step-up cookie is the only accepted step-up proof.
 
@@ -425,8 +435,9 @@ violates one is wrong even if its local test passes:
   add-staging-with-`addHost` writes both files in one commit; revert makes a
   reverting commit; history reads back; **dirty config worktree → 409 (no reset)**;
   **push failure rolls back config paths only, leaving a dirty NON-config tracked
-  file untouched** (HIGH round 2 — seed a modified non-config file, force a push
-  failure, assert it survives and config == priorHead); **write returns the pushed
+  file (AND a pre-staged non-config file) untouched** (round 2/3 — seed a modified
+  + a separately staged non-config file, force a push failure, assert both survive,
+  config == priorHead, and `git diff --cached` shows no config paths); **write returns the pushed
   SHA and a scan dispatched right after sends `ref=CONFIG_BRANCH` + `config_sha`
   input** (MEDIUM-3 write-then-scan consistency; assert the SHA is NOT used as the
   dispatch ref); **audit cache hash-chain break is detected on read**; **step-up
