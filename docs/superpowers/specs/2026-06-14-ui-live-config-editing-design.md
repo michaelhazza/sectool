@@ -97,21 +97,34 @@ repo exactly as on fly.io, so local and prod behave identically.
 
 ### 4.2 Write path
 
-A config write is an atomic sequence; if any step fails, nothing changes:
+A config write has a single **commit point** — the `git push`. Everything before
+the push is reversible (rollback leaves config untouched); once the push
+succeeds, **git is the durable, authoritative record** and the change has
+happened (HIGH-1 from review — the prior "atomic, nothing changes if any step
+fails" framing was false, because the operational audit append and re-read happen
+*after* the push):
 
 1. **Auth:** Basic Auth (already) + valid TOTP step-up (§5). Fail → 401/403.
 2. **Validate** the proposed config against the existing Zod schema
    (`TargetRegistrySchema` / `AllowlistSchema`) — including the cross-check that
    every enabled staging target's host is on the (post-change) allowlist. Invalid
    → 422, nothing written.
-3. **Write + commit + push:** write the JSON file(s) in the working clone, `git
-   add` + `git commit` (message names the change + "via dashboard" + timestamp) +
-   `git push` to the branch, using the git-write token. Push failure (token,
-   network, non-fast-forward) → the commit is rolled back (`git reset --hard` to
-   the prior HEAD), 502, nothing changes.
-4. **Re-read** config from the working tree → the change is now live for the
-   dashboard. Append an audit-log entry (§8).
-5. Respond 200 with the new state.
+3. **Stage + commit (not yet pushed):** write the JSON file(s) in the working
+   clone (config paths only, §ImplInv), `git add` + `git commit`. The commit
+   message carries the **audit intent in a structured trailer** (actor, action,
+   target, UTC time) so the durable audit record is part of the atomic git object,
+   not a separate file that could diverge.
+4. **Push — the commit point:** `git push` to `CONFIG_BRANCH`. Failure (token,
+   network, non-fast-forward) → roll back the local commit (`git reset --hard` to
+   the prior HEAD), respond 502, **nothing changed**. On a non-fast-forward,
+   `fetch` + replay-once before giving up (§7).
+5. **After the push (best-effort, never un-commits):** capture the pushed SHA,
+   append an entry to the operational audit cache (§8), and re-read config from the
+   working tree. If the cache append or re-read fails, the change is STILL
+   committed — respond `200` with an `auditWarning` field rather than implying it
+   was rolled back. The durable record is the git commit + its trailer; the JSONL
+   cache is an accelerator, not the source of truth.
+6. Respond 200 with the new state (+ pushed SHA).
 
 ### 4.3 How scans stay consistent
 
@@ -145,13 +158,22 @@ enrollment state is stored. Re-keying = regenerate the secret + re-enroll.
 ### 5.3 Which routes require step-up
 
 Step-up (a valid TOTP code) is required on **every config-mutating route** (§6) —
-`POST`/`PUT`/`DELETE` on repos, staging targets, and allowlist hosts. It is NOT
-required for any read route or for `/api/scan` / `/api/upload` (those keep their
-existing gates). After a successful code, a **step-up session** is granted for a
-short window (default 5 min) so a burst of edits doesn't re-prompt each time; the
-window is a signed, short-TTL cookie/token bound to the CSRF nonce, not a
-long-lived session. The code is sent in an `X-Audit-TOTP` header on the write
-request (or exchanged once for the short-TTL step-up token).
+`POST`/`PUT`/`DELETE` on repos, staging targets, and allowlist hosts, and the
+revert route. It is NOT required for any read route or for `/api/scan` /
+`/api/upload` (those keep their existing gates).
+
+**One protocol (MEDIUM-2 — no header-or-token ambiguity):** a dedicated exchange
+route `POST /api/config/step-up` takes Basic Auth + CSRF nonce + the 6-digit TOTP
+code and, on success, sets a **step-up cookie**: `HttpOnly`, `Secure`,
+`SameSite=Strict`, **5-minute TTL**, HMAC-signed (key = a server secret derived
+from `AUDIT_TOTP_SECRET`), with claims `{ principalHash, csrfNonce, scope:
+"config-write", exp }`. `principalHash` binds it to the current Basic Auth
+principal; `csrfNonce` binds it to this origin/session. Every config-mutating
+route requires a valid, unexpired step-up cookie whose `csrfNonce` matches the
+request's `X-Audit-CSRF` and whose scope is `config-write`; otherwise `403`. The
+cookie is the ONLY accepted step-up proof (no raw `X-Audit-TOTP` on write routes).
+There is no long-lived session; when the 5-minute window lapses the next write
+returns `403` and the UI re-prompts for a code.
 
 ## 6. Config-write API
 
@@ -178,41 +200,101 @@ Responses: `200` with the new state; `401` (no/invalid Basic Auth), `403`
 nothing changed). Validation reuses the existing schemas verbatim so the UI can
 never write a config the CLI would reject.
 
+**Revert is constrained, not a raw `git revert` (HIGH-3 from review).** A raw
+revert of an arbitrary SHA could undo unrelated code/docs commits or produce an
+invalid *current* config. `POST /api/config/revert/:commit` therefore:
+- accepts ONLY a commit whose message has the `config(dashboard):` prefix and
+  whose diff touches ONLY `config/*.json` (else `400` — "not a revertable config
+  commit");
+- only on `CONFIG_BRANCH`;
+- applies the inverse change to a **temp worktree first**, then runs the SAME full
+  schema + cross-check validation as a normal write against the *resulting*
+  config. If the reverted state is invalid in the current context (e.g. it would
+  re-add a host an enabled target no longer needs, or remove a host still in use)
+  → `409` with the reason, **nothing committed**;
+- on success, makes a NEW forward commit (never rewrites history), pushed and
+  audited like any other write, and is itself 2FA-gated.
+
 ## 7. Git integration
 
-A small `src/ui/config-git.ts` module wraps the working clone: `ensureClone()`
-(clone if absent, else `fetch` + fast-forward), `commitConfigChange(files,
-message)` (stage + commit + push, returning the new SHA, or rolling back on push
-failure), and `recentConfigCommits(n)` (for History). It shells `git` (already a
-runtime dependency for clones) with the `AUDIT_GIT_AUTHOR` identity and an
-`https://x-access-token:<AUDIT_GIT_WRITE_TOKEN>@github.com/...` remote. All commit
-messages are prefixed `config(dashboard):` and include the actor label + UTC time.
-Concurrent writes are serialized with the existing `withWorkspaceLock` (or a
-config-specific lock) so two simultaneous edits cannot interleave a push.
+A small `src/ui/config-git.ts` module wraps the working clone:
+- `ensureClone()` — clone if absent, else `fetch` + fast-forward.
+- `commitConfigChange(files, message)` — stage config paths only, commit, push;
+  returns the new SHA, or rolls back the local commit on push failure.
+- `recentConfigCommits(n)` — for History.
 
-**Push-failure safety:** a non-fast-forward (someone pushed to the branch
-meanwhile) triggers `fetch` + replay-once; if it still fails, roll back the local
-commit and return 502 — the UI shows "couldn't save, try again", and the live
-config is untouched.
+**Token handling (HIGH-2 — the token must never appear in the remote URL).**
+Embedding the token in `https://x-access-token:<token>@github.com/...` leaks it via
+process args, `.git/config`, error output, and crash logs. Instead the remote is
+the plain `https://github.com/<owner>/<repo>.git`, and the token is supplied
+**out-of-band** for each git call via a `GIT_ASKPASS` helper (or `git -c
+http.extraHeader=...` with the value sourced from the environment, never argv).
+The token is read from `AUDIT_GIT_WRITE_TOKEN` at call time and is **never**
+written to `.git/config`, never interpolated into a command string, and never
+included in any error, log line, audit row, or HTTP response. A redaction guard
+scrubs the token pattern from any git stderr surfaced to the caller.
+
+**Dirty-worktree handling (MEDIUM-1 — fail closed, never reset user state).**
+Before any write and before any fast-forward, the worktree MUST be clean *for the
+config paths*. The module:
+- writes ONLY `config/*.json` (the whitelist in §ImplInv); never touches other
+  paths;
+- if the worktree has uncommitted changes to `config/*.json` (a partial prior
+  write, manual edit, or interrupted run) → **fail closed with a diagnostic**
+  (`409`, "config worktree dirty — manual reconciliation needed"), NOT a
+  `reset --hard` that could destroy state;
+- if HEAD is detached or on the wrong branch → fail closed with the diagnostic;
+- uncommitted changes OUTSIDE `config/*.json` are ignored (don't block config
+  writes, aren't touched by them). For local dev, `CONFIG_REPO_DIR` may be the
+  project checkout; the same dirty-config guard applies, so local edits behave
+  identically to prod.
+
+Concurrent writes are serialized with a config-specific lock (reusing the
+`withWorkspaceLock` primitive) so two edits cannot interleave a push.
+
+**Push-failure safety:** a non-fast-forward triggers `fetch` + replay-once; if it
+still fails, roll back the local commit and return 502 — the live config is
+untouched.
+
+**Post-push SHA (MEDIUM-3 — close the propagation race).** `commitConfigChange`
+returns the pushed SHA. `/api/scan` dispatch (and the response of a config write)
+carry that SHA so a scan triggered immediately after an edit uses the **exact ref
+just pushed** (the `workflow_dispatch` `ref` is set to the SHA, not a branch name
+that might resolve stale). A write does not report success until the push is
+confirmed (the remote branch resolves to the pushed SHA).
 
 ## 8. Audit log + history / revert
 
-Two complementary records:
-- **Git history** is the durable, authoritative record — every change is a commit
-  on the branch, diffable and revertable.
-- **`/data/history/config-audit.jsonl`** is an append-only operational log:
-  `{ at, actor: "config-admin", action, target, before, after, commitSha }`, used
-  to render the History view fast without walking git, and to capture intent
-  (e.g. "added host X") alongside the raw diff.
+Two records, with a clear authority order (MEDIUM-4 — the JSONL file is NOT an
+independent tamper-proof log; the same process writes it and volume loss erases
+it):
+- **Git history is the durable, authoritative audit record.** Every change is a
+  commit on the branch with the structured audit trailer (§4.2 step 3) — actor,
+  action, target, UTC time — diffable, signed by the push, and revertable. This is
+  the source of truth for "who/what/when".
+- **`/data/history/config-audit.jsonl` is an operational audit *cache*** — a fast
+  read model for the History view so it doesn't walk git on every load. To make
+  in-place tampering detectable it is a **hash chain**: each entry carries
+  `{ at, actor, action, target, commitSha, prevHash, hash }` where
+  `hash = sha256(prevHash + canonical(entry-without-hash))`. On read the chain is
+  verified; a broken link surfaces a "config audit cache integrity warning" and
+  the History view falls back to reading git directly. The cache is never the
+  authority — git is.
 
-The **History view** (UI §9) lists recent entries (audit log joined to commit
-SHAs) with a **Revert** button → `POST /api/config/revert/:commit` makes a new
-reverting commit (also 2FA-gated, also audited). Revert never rewrites history.
+The **History view** (UI §9) lists recent entries (cache joined to commit SHAs,
+git as fallback) with a **Revert** button → the constrained `POST
+/api/config/revert/:commit` (§6), 2FA-gated and audited. Revert never rewrites
+history.
 
 ## 9. UI
 
-Extends the existing **Sites and Safety** screen (today read-only) into an editor;
-the "Read-only view" footer note is removed for config admins.
+Extends the existing **Sites and Safety** screen (today read-only) into an editor.
+Because credentials are shared (no per-user role, §2), the editor is shown **when
+config editing is enabled and its write dependencies are healthy** (TOTP secret +
+git-write token + author + branch all present, §10); otherwise the screen renders
+read-only with a precise disabled reason (e.g. "config editing disabled —
+`AUDIT_GIT_WRITE_TOKEN` not set"). The "Read-only view" footer reflects that
+resolved state rather than implying a user role (LOW-2 from review).
 
 - **Inline actions:** each repo / staging target / allowlist row gains
   Edit · Disable · Remove. A primary **Add repo** / **Add staging target** /
@@ -265,6 +347,30 @@ reader/agent hits a direct contradiction:
   change, the B2 decision, the rejected alternatives (B1 / domain-suffix bound /
   approval queue), and the residual risk accepted.
 
+## 11.5 Implementation invariants (§ImplInv)
+
+Binding rules every chunk must honour (from the spec review). A change that
+violates one is wrong even if its local test passes:
+
+1. **Config writes may only modify the known config JSON paths** — exactly
+   `config/targets.json` and `config/allowed-staging-hosts.json` (and
+   `config/baseline.json` only if/when baseline editing ships). No other path is
+   ever staged by the config-write module.
+2. **The worktree must be clean for config paths before AND after each write.** A
+   dirty config worktree fails closed (`409`) — never `reset --hard` over it.
+3. **The git-write token must never appear** in remotes/`.git/config`, process
+   args, logs, thrown errors, audit rows, or any HTTP/UI response. Supplied
+   out-of-band per call; scrubbed from surfaced git output.
+4. **Revert applies only to `config(dashboard)` commits touching only config
+   paths**, and must pass the same full schema + cross-check validation as a
+   normal write before it commits.
+5. **A pushed git commit is the durable source of truth;**
+   `config-audit.jsonl` is a (hash-chained) cache, never the authority.
+6. **An immediate scan after a config edit must use or verify the pushed SHA** —
+   dispatch with the SHA as the ref, not a possibly-stale branch name.
+7. **Every config mutation is auth + CSRF/origin + TOTP-step-up + schema gated**
+   before the commit point; the step-up cookie is the only accepted step-up proof.
+
 ## 12. Failure modes
 
 | Scenario | Behavior |
@@ -276,6 +382,10 @@ reader/agent hits a direct contradiction:
 | TOTP code replay within its 30s window | accepted (shared-secret TOTP). Mitigation: the short step-up window + audit log; per-code single-use is deferred (§14) as it needs server-side used-code tracking. Documented residual. |
 | Schema cross-check fails (e.g. enabled target whose host isn't allowlisted) | 422, nothing written — the existing `loadTargets` invariant is enforced before commit. |
 | Remove a host still in use | 409, nothing written. |
+| Dirty config worktree (partial/manual edit) | 409 + diagnostic; no write, no `reset --hard`. |
+| Audit cache append fails after a successful push | 200 + `auditWarning`; change stays committed (git is the record). |
+| Scan dispatched immediately after an edit | dispatched with the pushed SHA as the ref, so it reads the just-committed config (no branch-propagation race). |
+| Audit cache file tampered/corrupted | integrity warning on read; History falls back to git; durable record intact. |
 
 ## 13. Testing
 
@@ -284,14 +394,32 @@ reader/agent hits a direct contradiction:
   unchanged; each route's auth gate (no Basic Auth → 401; no/invalid TOTP → 403;
   CSRF/origin → 403); schema rejection → 422; host-in-use removal → 409;
   add-staging-with-`addHost` writes both files in one commit; revert makes a
-  reverting commit; history reads back.
-- **Safety-critical assertions:** a write with valid Basic Auth but NO TOTP is
-  rejected with nothing committed; the committed allowlist is what a subsequent
-  `loadTargets`/`preflight` reads (consistency); a malformed host is rejected by
-  the schema before commit.
+  reverting commit; history reads back; **dirty config worktree → 409 (no reset)**;
+  **push failure rolls back the local commit (HEAD unchanged)**; **write returns
+  the pushed SHA and a scan dispatched right after uses that SHA as the ref**
+  (MEDIUM-3 write-then-scan consistency); **audit cache hash-chain break is
+  detected on read**.
+- **Safety-critical assertions (the security boundary is server-side):** valid
+  Basic Auth + missing/invalid step-up cookie → `403`, **nothing committed**;
+  step-up cookie bound to a different CSRF nonce/principal → `403`; the committed
+  allowlist is exactly what a subsequent `loadTargets`/`preflight` reads
+  (consistency); a malformed host is rejected by the schema before commit;
+  add-staging-with-`addHost` produces ONE commit touching both files; removing an
+  in-use host → `409`, no commit; revert of a non-`config(dashboard)` commit →
+  `400`; **the git-write token never appears** in any commit, `.git/config`, error
+  string, audit row, or HTTP response (explicit assertion, HIGH-2).
+- **Frontend tests (LOW-1 — reasoned decision: deferred, not skipped).** The
+  reviewer flagged the write UI as security-sensitive. The actual security gate is
+  the API: every mutation is auth + CSRF + TOTP-step-up + schema gated *server-
+  side*, so a client that bypasses the UI and calls the API directly is still
+  fully gated — the above server tests ARE the security tests. Frontend component
+  tests would catch UX regressions (modal shows, button disables), not security
+  holes, and the repo has no React test harness today. v1 therefore keeps frontend
+  none-for-now (validated by `build:client` + review); standing up a component-test
+  harness + the reviewer's UX cases (2FA modal opens on first write, invalid code
+  blocks submit, `addHost` single payload, in-use-host 409 surfaced, revert
+  re-prompts step-up) is recorded in §14 as a fast-follow.
 - Git integration tests use a local temp bare repo as the "remote" (no network).
-- Frontend: none-for-now (per testing posture); validated by `build:client` +
-  review.
 
 ## 14. Open questions / deferred
 
@@ -307,3 +435,9 @@ reader/agent hits a direct contradiction:
 - **Domain-suffix meta-allowlist as an opt-in guardrail.** Rejected for v1 (no
   host restriction). Could be offered later as an optional toggle without changing
   the model.
+- **Frontend component-test harness (LOW-1 fast-follow).** Stand up a React test
+  harness and cover the write-UI UX cases (2FA modal opens on first write, invalid
+  code blocks submit, `addHost` single payload, in-use-host 409 surfaced, revert
+  re-prompts step-up). Deferred because the security gate is server-side and the
+  repo has no frontend harness yet; this is UX-regression coverage, not a security
+  gap.
