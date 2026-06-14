@@ -12,8 +12,8 @@ on:
         required: true
         type: string
       job_id:
-        description: "Correlation nonce issued by /api/scan (32-hex)"
-        required: true
+        description: "Correlation nonce issued by /api/scan (32-hex). Required for live on-demand scans; leave empty for a replay."
+        required: false
         type: string
       replay_run_id:
         description: "RunId to replay (leave empty for a live scan)"
@@ -88,5 +88,6 @@ jobs:
           AUDIT_UPLOAD_TOKEN: ${{ secrets.AUDIT_UPLOAD_TOKEN }}
           SOURCE_RUN_ID: ${{ inputs.replay_run_id }}
           # GITHUB_RUN_ID, GITHUB_WORKFLOW_REF, GITHUB_SHA are set automatically by Actions
+        # Replay uses sourceRunId + GitHub provenance, NOT a fly-minted jobId.
         run: |
-          node ci/upload-report.mjs replay "${{ inputs.job_id }}"
+          node ci/upload-report.mjs replay
