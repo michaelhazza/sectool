@@ -1,5 +1,24 @@
 # Chunk learnings — flyio-dashboard build
 
+## Chunk 5 — POST /api/scan (registry validation + correlation nonce + dispatch)
+
+**Completed:** 2026-06-14
+
+**What was implemented:**
+- `src/fix/github.ts` (modify) — exported `authHeaders` and `defaultGitHubClient` (previously module-private), per Plan gap 1. No other changes.
+- `src/ui/dispatch.ts` (new) — `dispatchScan(params, client)` builds the GitHub workflow_dispatch URL from `parseOwnerRepo(workflowRepo)` (AUDIT_WORKFLOW_REPO), NEVER from targetRepo. Passes `{ ref, inputs: { target_repo, staging_url, job_id } }`. Returns `{ ok: true }` on 204 or `{ ok: false, status }` otherwise. Reuses `GitHubHttpClient` + `authHeaders` + `defaultGitHubClient` + `parseOwnerRepo` from `src/fix/github.ts`.
+- `src/ui/server.ts` (modify) — Added `handleScanPost`: CSRF+origin → field validation → TWO independent registry checks (repo check + preflight URL check) → mint jobId → `appendEvent('requested')` → `dispatchScan` → `appendEvent('dispatched'/'dispatch_failed')` → 202/502. Added `handleScanPost` call in `handleRequest` (POST /api/scan route). Updated `handleRequest` signature to accept `envReader` + `githubClient` for dispatch. Updated `startServer` to resolve `dispatchGithubClient` (uses `githubClientArg ?? defaultGitHubClient`) and pass it through. Added imports: `ConfigError`, `defaultGitHubClient`, `appendEvent`, `preflight`, `dispatchScan`.
+- `src/ui/dispatch.test.ts` (new) — 9 tests covering URL construction (invariant #2), method, headers, body inputs, and all DispatchResult variants.
+- `src/ui/server.test.ts` (modify) — Added `vi.mock` for `config/load.js` and `live/preflight.js` (passthrough by default, overridable per-test). Added 11 new tests in 3 describe blocks: CSRF/origin guard (403 before any registry load), field validation (400 for missing/empty fields), registry safety gate (off-allowlist, unregistered repo, disabled repo, ConfigError→500, dispatch-to-AUDIT_WORKFLOW_REPO not scan target, happy path 202 with 32-hex jobId, dispatch failure → 502).
+
+**Watch-out for future chunks:**
+- `handleRequest` now takes 6 params: `(req, res, resolvedEnv, fixHandler, envReader, githubClient)`. Any chunk that modifies `handleRequest` must include the last two params.
+- `githubClient` passed to `startServer` opts is now used for BOTH the fix path (via `makeProductionFixHandler`) AND the scan dispatch path. Tests that inject a `githubClient` for dispatch testing should be aware it also affects fix requests. In practice, fix tests use injected `fixHandler` spies so they never reach the GitHub client.
+- `loadAllowlist` and `loadTargets` in `handleScanPost` are called with no injectable — they read from fixed config paths. Tests must use `vi.mock('../config/load.js')` + `vi.mocked(...).mockReturnValueOnce()` to control registry state. The mock is set up as a passthrough (wraps original) in server.test.ts `vi.mock` factory so existing tests are unaffected.
+- `preflight` is also mocked in server.test.ts via `vi.mock('../live/preflight.js')` passthrough pattern.
+- The `ref` hardcoded to `'main'` in `dispatchScan` call from `handleScanPost`. If a future chunk needs a configurable ref, it must be threaded through the env/request.
+- `mockReset()` in the registry safety gate `beforeEach` clears both the call history AND the default implementation. Each registry-gate test MUST provide its own `mockReturnValueOnce` / `mockImplementationOnce` for all three mocked functions it relies on.
+
 ## Chunk 4 — GET /healthz + GET /api/scan-jobs
 
 **Completed:** 2026-06-14

@@ -1,10 +1,37 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startServer, CSRF_NONCE, type AuditServer, type FixHandler } from './server.js';
 import { appendEvent } from './scan-jobs.js';
+import { loadAllowlist, loadTargets, ConfigError } from '../config/load.js';
+import { preflight } from '../live/preflight.js';
+import type { GitHubRequest, GitHubResponse } from '../fix/github.js';
+import type { AllowedTarget } from '../live/gate.js';
+
+// ---------------------------------------------------------------------------
+// Module mocks for registry/preflight — used by POST /api/scan tests only.
+// The mocks are set to passthrough defaults so existing tests are unaffected;
+// scan-route tests override per-test via mockImplementationOnce.
+// ---------------------------------------------------------------------------
+
+vi.mock('../config/load.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../config/load.js')>();
+  return {
+    ...original,
+    loadAllowlist: vi.fn(original.loadAllowlist),
+    loadTargets: vi.fn(original.loadTargets),
+  };
+});
+
+vi.mock('../live/preflight.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../live/preflight.js')>();
+  return {
+    ...original,
+    preflight: vi.fn(original.preflight),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Helpers: make GET / POST requests to the test server
@@ -660,6 +687,389 @@ describe('GET /api/scan-jobs', () => {
     } finally {
       await emptySrv?.stop();
       try { rmSync(emptyDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/scan — CSRF/origin gate + registry safety gate (Chunk 5, §4.1)
+// ---------------------------------------------------------------------------
+
+// Shared helpers for scan-route tests.
+// Fake allowlist/registry factories — let tests control registry state without
+// touching the on-disk config files.
+
+type FakeAllowlist = ReturnType<typeof loadAllowlist>;
+type FakeRegistry = ReturnType<typeof loadTargets>;
+
+function makeAllowlist(hosts: string[]): FakeAllowlist {
+  return {
+    hosts: hosts.map((h) => ({ host: h, owner: 'test', addedAt: '2026-01-01' })),
+  } as unknown as FakeAllowlist;
+}
+
+function makeRegistry(
+  repos: Array<{ name: string; enabled: boolean }>,
+  stagingTargets: Array<{ name: string; url: string; enabled: boolean }>,
+): FakeRegistry {
+  return {
+    repos: repos.map((r) => ({
+      name: r.name,
+      gitUrl: `https://github.com/test/${r.name}.git`,
+      localPath: null,
+      stackTags: [],
+      publicRoutes: [],
+      enabled: r.enabled,
+    })),
+    stagingTargets: stagingTargets.map((t) => ({
+      name: t.name,
+      url: t.url,
+      repo: t.name,
+      activeScan: false,
+      rateLimitRps: 10,
+      enabled: t.enabled,
+    })),
+  };
+}
+
+describe('POST /api/scan — CSRF/origin guard', () => {
+  // Server with a no-op dispatch client (won't be reached for CSRF rejects)
+  let scanSrv: AuditServer;
+  const scanTmpDir = resolve(tmpdir(), `audit-scan-csrf-${process.pid}`);
+
+  beforeAll(async () => {
+    mkdirSync(resolve(scanTmpDir, 'history'), { recursive: true });
+    scanSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return scanTmpDir;
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 204, body: {} }),
+    });
+  });
+
+  afterAll(async () => {
+    await scanSrv.stop();
+    try { rmSync(scanTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('returns 403 when X-Audit-CSRF header is missing — NO registry load or dispatch', async () => {
+    const loadAllowlistMock = vi.mocked(loadAllowlist);
+    loadAllowlistMock.mockClear();
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      { 'Origin': `http://127.0.0.1:${scanSrv.port}` },
+    );
+    expect(status).toBe(403);
+    // Registry load must NOT have been called (CSRF gate fires first)
+    expect(loadAllowlistMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 when Origin is wrong — before registry load', async () => {
+    const loadAllowlistMock = vi.mocked(loadAllowlist);
+    loadAllowlistMock.mockClear();
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      {
+        'X-Audit-CSRF': CSRF_NONCE,
+        'Origin': 'http://evil.example.com',
+      },
+    );
+    expect(status).toBe(403);
+    expect(loadAllowlistMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/scan — field validation', () => {
+  let scanSrv: AuditServer;
+  const scanTmpDir = resolve(tmpdir(), `audit-scan-fields-${process.pid}`);
+
+  beforeAll(async () => {
+    mkdirSync(resolve(scanTmpDir, 'history'), { recursive: true });
+    scanSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return scanTmpDir;
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 204, body: {} }),
+    });
+  });
+
+  afterAll(async () => {
+    await scanSrv.stop();
+    try { rmSync(scanTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  function validHeaders(port: number): Record<string, string> {
+    return {
+      'X-Audit-CSRF': CSRF_NONCE,
+      'Origin': `http://127.0.0.1:${port}`,
+    };
+  }
+
+  it('returns 400 when both repo and stagingUrl are missing', async () => {
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({}),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when only repo is provided (stagingUrl missing)', async () => {
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when only stagingUrl is provided (repo missing)', async () => {
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when repo is empty string', async () => {
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: '', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+  });
+
+  it('returns 400 when stagingUrl is empty string', async () => {
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: '' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+  });
+});
+
+describe('POST /api/scan — registry safety gate', () => {
+  let scanSrv: AuditServer;
+  const scanTmpDir = resolve(tmpdir(), `audit-scan-registry-${process.pid}`);
+  let dispatchCalls: GitHubRequest[];
+
+  beforeAll(async () => {
+    mkdirSync(resolve(scanTmpDir, 'history'), { recursive: true });
+    dispatchCalls = [];
+    scanSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return scanTmpDir;
+        if (name === 'AUDIT_WORKFLOW_REPO') return 'https://github.com/acme/audit-workflows';
+        if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+        return undefined;
+      },
+      githubClient: (req: GitHubRequest): Promise<GitHubResponse> => {
+        dispatchCalls.push(req);
+        return Promise.resolve({ status: 204, body: {} });
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await scanSrv.stop();
+    try { rmSync(scanTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  beforeEach(() => {
+    dispatchCalls = [];
+    vi.mocked(loadAllowlist).mockReset();
+    vi.mocked(loadTargets).mockReset();
+    vi.mocked(preflight).mockReset();
+  });
+
+  function validHeaders(port: number): Record<string, string> {
+    return {
+      'X-Audit-CSRF': CSRF_NONCE,
+      'Origin': `http://127.0.0.1:${port}`,
+    };
+  }
+
+  it('returns 400 for off-allowlist stagingUrl — no dispatch', async () => {
+    // Real allowlist is empty → any URL will be rejected by preflight
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist([]));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'audit-tool', enabled: true }],
+      [],
+    ));
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://off-allowlist.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+    expect(dispatchCalls.length).toBe(0);
+  });
+
+  it('returns 400 for unregistered repo — no dispatch (M2: repo check is independent of URL preflight)', async () => {
+    // URL would pass the allowlist and preflight, but the repo is not in registry
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'other-repo', enabled: true }], // 'audit-tool' is NOT here
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'staging', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+    expect(dispatchCalls.length).toBe(0);
+  });
+
+  it('returns 400 for disabled repo — no dispatch (M2: valid allowlisted URL + disabled repo → 400)', async () => {
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'audit-tool', enabled: false }], // disabled
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'staging', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+    expect(dispatchCalls.length).toBe(0);
+  });
+
+  it('returns 500 when ConfigError thrown by loadAllowlist (M3: server misconfig ≠ caller error)', async () => {
+    vi.mocked(loadAllowlist).mockImplementationOnce(() => {
+      throw new ConfigError('test config error');
+    });
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(500);
+    expect(dispatchCalls.length).toBe(0);
+  });
+
+  it('dispatches to AUDIT_WORKFLOW_REPO, not the scan target repo (invariant #2)', async () => {
+    // Both repo and URL are valid — dispatch should go to the workflow repo URL
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'my-app', enabled: true }],
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'my-app', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    const { status, body } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'my-app', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(202);
+    const json = JSON.parse(body) as { jobId: string };
+    expect(typeof json.jobId).toBe('string');
+    // Dispatch URL must reference AUDIT_WORKFLOW_REPO (acme/audit-workflows), not my-app
+    expect(dispatchCalls.length).toBe(1);
+    expect(dispatchCalls[0].url).toContain('/repos/acme/audit-workflows/actions/workflows/on-demand-scan.yml/dispatches');
+    expect(dispatchCalls[0].url).not.toContain('my-app');
+  });
+
+  it('happy path: valid repo+url → requested+dispatched appended, 202 {jobId}, jobId is 32 hex', async () => {
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'audit-tool', enabled: true }],
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    const { status, body } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(202);
+    const json = JSON.parse(body) as { jobId: string };
+    expect(/^[0-9a-f]{32}$/.test(json.jobId)).toBe(true);
+    expect(dispatchCalls.length).toBe(1);
+  });
+
+  it('dispatch failure records dispatch_failed event and returns 502', async () => {
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'audit-tool', enabled: true }],
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    // Inject a failing GitHub client (non-204)
+    let failSrv: AuditServer | undefined;
+    const failDir = resolve(tmpdir(), `audit-scan-fail-${process.pid}`);
+    mkdirSync(resolve(failDir, 'history'), { recursive: true });
+    try {
+      failSrv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return failDir;
+          if (name === 'AUDIT_WORKFLOW_REPO') return 'https://github.com/acme/audit-workflows';
+          if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+          return undefined;
+        },
+        githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 401, body: {} }),
+      });
+      // Need to re-mock for this server's request too
+      vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+      vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+        [{ name: 'audit-tool', enabled: true }],
+        [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+      ));
+      vi.mocked(preflight).mockReturnValueOnce({
+        target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+        registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+      });
+      const { status } = await post(
+        failSrv.port,
+        '/api/scan',
+        JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+        {
+          'X-Audit-CSRF': CSRF_NONCE,
+          'Origin': `http://127.0.0.1:${failSrv.port}`,
+        },
+      );
+      expect(status).toBe(502);
+    } finally {
+      await failSrv?.stop();
+      try { rmSync(failDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 });

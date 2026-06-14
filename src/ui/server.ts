@@ -4,15 +4,17 @@ import { createHash, randomBytes } from 'node:crypto';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
-import { loadAllowlist, loadTargets } from '../config/load.js';
+import { loadAllowlist, loadTargets, ConfigError } from '../config/load.js';
 import type { RunReport } from '../schemas/report.js';
 import { buildPack } from '../fix/pack.js';
-import { fileFixRequest, MissingFixTokenError } from '../fix/github.js';
+import { fileFixRequest, MissingFixTokenError, defaultGitHubClient } from '../fix/github.js';
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
 import { resolveEnv, assertProductionConfig, type ResolvedEnv } from './env.js';
 import { basicAuthGate, isAuthEnabled } from './auth.js';
-import { foldJobs } from './scan-jobs.js';
+import { foldJobs, appendEvent } from './scan-jobs.js';
+import { preflight } from '../live/preflight.js';
+import { dispatchScan } from './dispatch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -398,6 +400,150 @@ async function handleFixPost(
 }
 
 // ---------------------------------------------------------------------------
+// Mutating POST /api/scan — CSRF/origin-gated + registry safety gate
+// (System invariants 1 and 2 — §4.1, §7.1, §7.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle POST /api/scan.
+ *
+ * Safety gates (in order):
+ * 1. CSRF nonce + origin check → 403 BEFORE any registry access or dispatch.
+ * 2. Body parse — both `repo` and `stagingUrl` required → 400.
+ * 3. Registry safety gate — TWO independent checks (M2):
+ *    a. Repo check: registry.repos.find(r => r.name === repo && r.enabled) → 400.
+ *       preflight() checks only the staging URL/host; it does NOT validate repos.
+ *    b. URL check: preflight(stagingUrl, allowlist, registry) → 400 on failure.
+ *    ConfigError from the registry load → 500 (server misconfig, not caller error — M3).
+ *    Any registry miss → 400, NO dispatch, NO `requested` event.
+ * 4. Mint jobId, append `requested` event.
+ * 5. dispatchScan() with AUDIT_WORKFLOW_REPO + AUDIT_GH_DISPATCH_TOKEN:
+ *    204 → append `dispatched` → 202 { jobId }.
+ *    failure → append `dispatch_failed` (reason) → 502.
+ */
+async function handleScanPost(
+  req: IncomingMessage,
+  res: ServerResponse,
+  resolvedEnv: ResolvedEnv,
+  envReader: EnvReader,
+  githubClient: GitHubHttpClient,
+): Promise<void> {
+  const { allowedOrigin, dataDir } = resolvedEnv;
+
+  // Step 1: CSRF nonce + origin — BEFORE any registry access or dispatch.
+  const csrfHeader = req.headers['x-audit-csrf'];
+  const originHeader = req.headers['origin'];
+
+  if (typeof csrfHeader !== 'string' || csrfHeader !== CSRF_NONCE) {
+    jsonResponse(res, 403, { error: 'Forbidden: missing or invalid X-Audit-CSRF nonce' });
+    return;
+  }
+  if (typeof originHeader !== 'string' || originHeader !== allowedOrigin) {
+    jsonResponse(res, 403, { error: 'Forbidden: Origin not allowed' });
+    return;
+  }
+
+  // Step 2: Read and parse body. Both fields required and non-empty.
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch (bodyErr) {
+    const isTooLarge = typeof bodyErr === 'object' && bodyErr !== null && (bodyErr as { tooLarge?: boolean }).tooLarge === true;
+    if (isTooLarge) {
+      jsonResponse(res, 413, { error: 'Request body too large' });
+    } else {
+      jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+    }
+    return;
+  }
+
+  let repo: string;
+  let stagingUrl: string;
+  try {
+    const parsed = JSON.parse(body) as { repo?: unknown; stagingUrl?: unknown };
+    if (typeof parsed.repo !== 'string' || parsed.repo.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: repo required' });
+      return;
+    }
+    if (typeof parsed.stagingUrl !== 'string' || parsed.stagingUrl.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: stagingUrl required' });
+      return;
+    }
+    repo = parsed.repo;
+    stagingUrl = parsed.stagingUrl;
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: invalid JSON' });
+    return;
+  }
+
+  // Step 3: Registry safety gate — TWO independent checks (M2).
+  let allowlist: ReturnType<typeof loadAllowlist>;
+  let registry: ReturnType<typeof loadTargets>;
+  try {
+    allowlist = loadAllowlist();
+    registry = loadTargets(allowlist);
+  } catch (configErr) {
+    // ConfigError from registry load → 500 (server misconfig — M3).
+    if (configErr instanceof ConfigError) {
+      jsonResponse(res, 500, { error: 'Server configuration error: registry could not be loaded' });
+      return;
+    }
+    jsonResponse(res, 500, { error: 'Internal error loading registry' });
+    return;
+  }
+
+  // Check 3a: Repo check — explicit, NOT covered by preflight.
+  // preflight() validates only the staging URL/host; it never inspects repos.
+  const repoEntry = registry.repos.find((r) => r.name === repo && r.enabled);
+  if (repoEntry === undefined) {
+    jsonResponse(res, 400, { error: 'Bad request: repo is not registered or not enabled' });
+    return;
+  }
+
+  // Check 3b: URL check — reuses the exact preflight gate the CLI uses.
+  try {
+    preflight(stagingUrl, allowlist, registry);
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: stagingUrl is not on the allowlist or not registered' });
+    return;
+  }
+
+  // Step 4: Mint jobId, append `requested` event BEFORE the GitHub call.
+  const jobId = randomBytes(16).toString('hex');
+  const now = new Date().toISOString();
+  appendEvent({ event: 'requested', jobId, targetRepo: repo, stagingUrl, at: now }, dataDir);
+
+  // Step 5: Dispatch to AUDIT_WORKFLOW_REPO (invariant #2 — never the scan target).
+  const workflowRepo = envReader('AUDIT_WORKFLOW_REPO') ?? '';
+  const token = envReader('AUDIT_GH_DISPATCH_TOKEN') ?? '';
+
+  let result: Awaited<ReturnType<typeof dispatchScan>>;
+  try {
+    result = await dispatchScan(
+      { workflowRepo, targetRepo: repo, stagingUrl, jobId, token, ref: 'main' },
+      githubClient,
+    );
+  } catch (dispatchErr) {
+    // parseOwnerRepo throws when AUDIT_WORKFLOW_REPO is missing or malformed.
+    const reason = dispatchErr instanceof Error ? dispatchErr.message : 'dispatch error';
+    appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
+    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end('Scan dispatch failed: AUDIT_WORKFLOW_REPO is missing or invalid.');
+    return;
+  }
+
+  if (result.ok) {
+    appendEvent({ event: 'dispatched', jobId, at: new Date().toISOString() }, dataDir);
+    jsonResponse(res, 202, { jobId });
+  } else {
+    const reason = `github ${result.status}`;
+    appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
+    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end('Scan dispatch failed: GitHub returned an error. Check AUDIT_WORKFLOW_REPO and AUDIT_GH_DISPATCH_TOKEN.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Static SPA asset serving (graceful when ui/dist not built yet)
 // ---------------------------------------------------------------------------
 
@@ -457,6 +603,8 @@ function handleRequest(
   res: ServerResponse,
   resolvedEnv: ResolvedEnv,
   fixHandler: FixHandler,
+  envReader: EnvReader,
+  githubClient: GitHubHttpClient,
 ): void {
   const { allowedOrigin, reportsDir, historyDir, dataDir } = resolvedEnv;
   const raw = req.url ?? '/';
@@ -491,6 +639,16 @@ function handleRequest(
   // Mutating POST /api/fix (CSRF/origin-gated)
   if (req.method === 'POST' && url.pathname === '/api/fix') {
     handleFixPost(req, res, allowedOrigin, fixHandler).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
+  // Mutating POST /api/scan (CSRF/origin-gated + registry safety gate — §4.1)
+  if (req.method === 'POST' && url.pathname === '/api/scan') {
+    handleScanPost(req, res, resolvedEnv, envReader, githubClient).catch(() => {
       if (!res.headersSent) {
         jsonResponse(res, 500, { error: 'Internal error' });
       }
@@ -569,8 +727,13 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
     let resolvedOrigin = allowedOrigin;
     let currentResolved = resolved;
 
+    // The dispatch GitHub client is separate from the fix GitHub client.
+    // In production both default to the fetch-based defaultGitHubClient.
+    // Tests inject githubClientArg to spy on the dispatch URL.
+    const dispatchGithubClient = githubClientArg ?? defaultGitHubClient;
+
     const server = createServer((req, res) => {
-      handleRequest(req, res, currentResolved, handler);
+      handleRequest(req, res, currentResolved, handler, env, dispatchGithubClient);
     });
 
     server.on('error', reject);

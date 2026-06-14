@@ -118,7 +118,7 @@ export function parseOwnerRepo(repoUrl: string): { owner: string; repo: string }
   throw new Error(`Cannot parse owner/repo from URL: ${repoUrl}`);
 }
 
-function authHeaders(token: string): Record<string, string> {
+export function authHeaders(token: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${token}`,
     'Accept': 'application/vnd.github+json',
@@ -403,7 +403,7 @@ export async function fileFixRequest(
 // Default HTTP client (production — uses Node fetch)
 // ---------------------------------------------------------------------------
 
-const defaultGitHubClient: GitHubHttpClient = async (req) => {
+export const defaultGitHubClient: GitHubHttpClient = async (req) => {
   const response = await fetch(req.url, {
     method: req.method,
     headers: req.headers,
