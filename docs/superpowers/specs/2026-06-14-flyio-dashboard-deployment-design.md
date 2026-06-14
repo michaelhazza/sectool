@@ -57,7 +57,7 @@ on-demand path reuses that exact machinery.
 │  Persistent volume  /data                                │
 │   ├── reports/  (CI writes via /api/upload)              │
 │   ├── history/  (trend.jsonl, appended on upload)        │
-│   └── scan-jobs.json  (trigger audit log)               │
+│   └── scan-jobs.jsonl  (trigger audit log)               │
 └──────────────────────────────────────────────────────────┘
       │ workflow_dispatch (GitHub REST API)         ▲ POST report
       ▼                                             │ (bearer)
@@ -82,7 +82,7 @@ second, lightweight image for fly.io:
 Config files (`targets.json`, `allowed-staging-hosts.json`, `baseline.json`) are
 version-controlled and baked into the image. They are read-only on fly.io — the
 dashboard never mutates them. Only runtime artifacts (`reports/`, `history/`,
-`scan-jobs.json`) live on the persistent volume.
+`scan-jobs.jsonl`) live on the persistent volume.
 
 ### 3.2 Path configuration
 
@@ -96,8 +96,8 @@ stay relative to the image (read-only, baked in).
 
 ### 4.1 POST /api/scan — trigger a scan
 
-Triggered by the UI "Run a scan" form. Body (all fields optional, but at least
-one required):
+Triggered by the UI "Run a scan" form. Body — **both fields required** in v1
+(see "Scan scope semantics" below):
 
 ```jsonc
 { "repo": "<registered-repo-name>", "stagingUrl": "<registered-staging-url>" }
@@ -109,19 +109,48 @@ Server-side flow:
 2. **CSRF/origin:** same nonce + `ALLOWED_ORIGIN` check as `/api/fix`.
 3. **Validate against registry — the safety gate.** `repo` must match an
    `enabled` repo in `targets.json`; `stagingUrl` must match an `enabled`
-   staging target whose host is on the allowlist. Anything else → `400`, no
-   dispatch. This is enforced with the SAME `loadAllowlist` / `loadTargets`
-   functions the CLI uses, so the UI cannot express a scan the CLI would refuse.
-4. **Dispatch:** call GitHub `POST /repos/{owner}/{repo}/actions/workflows/
-   on-demand-scan.yml/dispatches` with `ref` + `inputs: { repo, staging_url }`,
-   using a fine-grained PAT (`AUDIT_GH_DISPATCH_TOKEN`, fly.io secret,
-   `actions:write` on this repo only).
-5. **Record:** append a row to `scan-jobs.json` (`{ id, requestedBy: "team",
-   repo, stagingUrl, dispatchedAt, status: "dispatched" }`). Respond `202` with
-   the job id.
+   staging target whose host is on the allowlist. Both required and non-empty.
+   Anything else → `400`, no dispatch. This is enforced with the SAME
+   `loadAllowlist` / `loadTargets` functions the CLI uses, so the UI cannot
+   express a scan the CLI would refuse.
+4. **Mint a correlation job.** Generate a random `jobId` (crypto, 16+ bytes hex).
+   This is the provenance token that binds the eventual upload back to THIS
+   dispatch (§4.2). Append a `dispatched` event to the scan-jobs log (§4.3)
+   BEFORE dispatching, so a crash mid-dispatch still leaves a record.
+5. **Dispatch:** call GitHub `POST /repos/{owner}/{repo}/actions/workflows/
+   on-demand-scan.yml/dispatches` with `ref` + `inputs: { repo, staging_url,
+   job_id }`, using a fine-grained PAT (`AUDIT_GH_DISPATCH_TOKEN`, fly.io secret,
+   `actions:write` on this repo only). The `job_id` input is the correlation
+   nonce — CI echoes it back in the upload envelope.
+6. Respond `202 { jobId }`.
 
-The UI shows the dispatched job as "in progress" and polls `/api/reports` (or
-`/api/scan-jobs`) until a newer report appears.
+> **Why a correlation nonce, not a run id?** GitHub's `workflow_dispatch` REST
+> call returns `204 No Content` — it does NOT return the id of the workflow run
+> it triggered. fly.io therefore cannot learn the run id at dispatch time to
+> correlate the later upload. The fly-generated `jobId`, passed as a workflow
+> input and echoed back by CI, is the binding instead. (§4.2 enforces the match.)
+
+The UI shows the dispatched job as "in progress" and polls `/api/scan-jobs`
+until that `jobId` flips to `uploaded`.
+
+### Scan scope semantics — why both fields are required
+
+`audit run --repo X` with **no** `--url` scans X statically **and live-scans
+every enabled staging target** (`doRun`, cli.ts: when `--url` is absent the
+staging filter falls through to all enabled targets). An on-demand endpoint that
+passed through a repo-only request would therefore fan a live scan across the
+whole portfolio — a broad-scan footgun. v1 closes this by requiring **both**
+`repo` and `stagingUrl`, so the dispatched CI command is always the fully-scoped
+`audit run --repo <repo> --url <stagingUrl>` (exactly one repo, exactly one
+staging host).
+
+`repo` and `stagingUrl` are **independent** selections — they need not be
+related. This tool models static repo scanning and live staging scanning as
+separate surfaces with no 1:1 mapping, so the endpoint does NOT require the URL
+to "belong to" the repo; it only requires each to be independently registered,
+enabled, and (for the URL) allowlisted. Static-only and live-only on-demand
+modes are a deliberate **future enhancement** (§11), not v1 — the weekly cron
+already covers full-portfolio scanning.
 
 > **Note on selection UI:** the form presents **dropdowns populated from
 > `/api/config/targets` and `/api/config/allowlist`** — never free-text. Free-text
@@ -130,7 +159,23 @@ The UI shows the dispatched job as "in progress" and polls `/api/reports` (or
 
 ### 4.2 POST /api/upload — CI pushes a finished report
 
-The one new **inbound trust boundary**. Called by CI at the end of a scan.
+The one new **inbound trust boundary**. Called by CI at the end of a scan. The
+bearer token authenticates the *caller*; the envelope's `jobId`/`trigger` fields
+authenticate the *report↔run relationship* (the HIGH finding from review — a
+leaked token must not be able to inject an arbitrary report into the trusted
+dashboard).
+
+Envelope:
+
+```jsonc
+{
+  "trigger": "on-demand" | "scheduled",
+  "jobId": "<correlation nonce from /api/scan>",   // required when trigger=on-demand
+  "repo": "<repo>", "stagingUrl": "<url>",          // echoed back for cross-check
+  "runId": "<RUN_ID_RE>",
+  "report": { /* RunReport */ }, "markdown": "...", "sarif": "...", "trendLine": { }
+}
+```
 
 1. **Auth:** `Authorization: Bearer <AUDIT_UPLOAD_TOKEN>` — a secret DISTINCT
    from the human Basic Auth password. Constant-time compared. Missing/wrong →
@@ -138,24 +183,51 @@ The one new **inbound trust boundary**. Called by CI at the end of a scan.
    uses bearer instead), so CI never needs the human password.
 2. **Body cap:** larger than `/api/fix` (reports can be MBs) — cap at e.g. 25 MiB;
    over → `413`.
-3. **Schema validation:** parse against the existing Zod `RunReport` schema.
-   Invalid → `422`, nothing written.
-4. **Write:** atomically write `reports/<runId>/report.json` (+ `.md`, `.sarif`
-   if included in the payload) to the volume, and append the trend line to
+3. **Provenance binding (the HIGH fix):**
+   - `trigger: "on-demand"` → `jobId` MUST match a scan-jobs entry currently in
+     `dispatched` state, and the envelope `repo`/`stagingUrl` MUST equal that
+     entry's recorded values. No match, already-`uploaded`, or mismatched
+     target → `409 Conflict`, nothing written. (Already-uploaded guard makes the
+     endpoint idempotent-safe and blocks replay of a captured envelope.)
+   - `trigger: "scheduled"` → the weekly cron has no fly-issued `jobId`; accepted
+     on bearer auth alone, but recorded and surfaced in the UI as a scheduled
+     run (distinct provenance class from operator-triggered runs).
+4. **Schema validation:** parse `report` against the existing Zod `RunReport`
+   schema. Invalid → `422`, nothing written.
+5. **Write:** atomically write `reports/<runId>/report.json` (+ `.md`, `.sarif`
+   if included) to the volume, and append the trend line to
    `history/trend.jsonl`. Reuses the existing `writeReport` / `writeTrend` logic
-   where possible. `runId` is validated to match `RUN_ID_RE` to prevent path
-   traversal.
-5. Respond `200 { runId }`.
+   (now `DATA_DIR`-aware, §3.2). `runId` is validated to match `RUN_ID_RE`
+   before any path is built, to prevent traversal.
+6. **Mark job uploaded:** append an `uploaded` event for `jobId` to the
+   scan-jobs log (§4.3). Respond `200 { runId, jobId }`.
 
-> The CI→fly.io payload is a multi-file bundle (report.json + report.md +
-> report.sarif + the trend line). Decision: POST a single JSON envelope
-> `{ runId, report, markdown, sarif, trendLine }` rather than multipart — simpler
-> to validate and matches how the data already exists in memory at the end of a run.
+> The CI→fly.io payload is a single JSON envelope (above) rather than multipart —
+> simpler to validate and matches how the data already exists in memory at the
+> end of a run.
 
 ### 4.3 GET /api/scan-jobs — trigger history
 
-Returns the `scan-jobs.json` rows (most recent first) so the UI can show
+Returns the current state of each job (most recent first) so the UI can show
 "Scan dispatched 2m ago — waiting for results." Read-only, Basic-Auth-gated.
+
+**Storage is an append-only event log, not a mutable JSON object** (the
+concurrency MEDIUM from review). Two scans dispatched concurrently, plus the
+later `uploaded` events, are all just line appends to `history/scan-jobs.jsonll`:
+
+```jsonc
+{"event":"dispatched","jobId":"a1b2…","repo":"X","stagingUrl":"https://…","at":"…"}
+{"event":"dispatched","jobId":"c3d4…","repo":"Y","stagingUrl":"https://…","at":"…"}
+{"event":"uploaded","jobId":"a1b2…","runId":"2026-…","at":"…"}
+```
+
+Current job state is derived by folding events on read (last event per `jobId`
+wins). Append-only means parallel dispatches and the upload-time status flip
+never race on a read-modify-write — each is an atomic `appendFileSync`. No lock
+needed. (`withWorkspaceLock` exists in `src/report/lock.ts` if a stronger
+guarantee is ever wanted, but append-only is sufficient and simpler here.)
+A stale `dispatched` job with no `uploaded` event after a TTL is shown as
+"timed out" in the UI (derived, not a stored state).
 
 ### 4.4 GET /healthz — fly.io health check
 
@@ -172,9 +244,23 @@ A global middleware in front of all routes except `/healthz` and `/api/upload`
 Missing/wrong → `401` with `WWW-Authenticate: Basic realm="sectool"`.
 
 When these env vars are UNSET (local dev), the gate is disabled — preserving the
-current `audit ui` localhost experience with zero friction. The gate activates
-only when the secrets are present (i.e. on fly.io). This is logged at startup
-("Basic Auth: enabled/disabled") so the state is never ambiguous.
+current `audit ui` localhost experience with zero friction.
+
+**Fail-closed in production (the auth MEDIUM from review).** "Disabled when
+unset" is convenient locally but dangerous on fly.io: a missing or mid-rotation
+secret could silently publish the dashboard unauthenticated — especially since
+`BIND_HOST=0.0.0.0` is deliberately allowed there. Rule:
+
+- **Production is inferred from `FLY_APP_NAME` being set** (fly.io sets this
+  automatically), or explicitly from `REQUIRE_AUTH=true`.
+- In production mode, **missing Basic Auth secrets is a hard startup failure** —
+  the server refuses to listen and exits non-zero. The dashboard never comes up
+  unauthenticated on fly.io.
+- Outside production (no `FLY_APP_NAME`, no `REQUIRE_AUTH`), unset secrets just
+  disable the gate as today.
+
+Startup logs the resolved state explicitly ("Basic Auth: enabled (production)" /
+"disabled (local dev)") so it is never ambiguous.
 
 ### 5.2 Secrets summary
 
@@ -203,10 +289,16 @@ no raw port exposure). Recorded as an ADR (§9).
 ### 6.1 New workflow — on-demand-scan.yml
 
 `.github/workflows/on-demand-scan.yml`: `workflow_dispatch` with inputs `repo`
-(string, optional) and `staging_url` (string, optional). Mirrors
-`weekly-audit.yml`'s build+run, but scopes the `audit run` to the provided
-`--repo` / `--url`. Ends with the upload step (§6.3). The same staging-auth
+(string, required), `staging_url` (string, required), and `job_id` (string,
+required — the correlation nonce from §4.1). Mirrors `weekly-audit.yml`'s
+build+run, scoping `audit run --repo <repo> --url <staging_url>` (always fully
+scoped — never the bare-`--repo` fan-out, §4.1). Ends with the upload step (§6.3)
+called with `trigger=on-demand` and the echoed `job_id`. The same staging-auth
 secrets as the weekly workflow are wired in.
+
+A second `workflow_dispatch` input `replay_run_id` (string, optional) supports
+operator replay (§6.3, the replay LOW from review): when set, the workflow skips
+scanning and re-uploads the named prior run's artifacts in `scheduled` mode.
 
 > **Safety note:** even though `staging_url` arrives as a workflow input, the
 > `audit run` command re-validates it against the checked-in allowlist (existing
@@ -222,11 +314,20 @@ dashboard. (Reuses the §6.3 uploader.)
 
 ### 6.3 Upload step
 
-A small step (inline `node` script or `curl`) that reads the run's
-`report.json` / `.md` / `.sarif` + computes the trend line, packages the §4.2
-envelope, and POSTs it. Lives once, called by both workflows. Failure to upload
-is **non-fatal** to the scan (the artifact is still in GH Actions) but is logged
-loudly.
+A small reusable script (`scripts/upload-report.mjs` or inline `node`) that reads
+the run's `report.json` / `.md` / `.sarif` + computes the trend line, packages
+the §4.2 envelope (with `trigger` + `jobId`), and POSTs it. Called by:
+
+- **on-demand-scan.yml** — `trigger=on-demand`, passing the dispatched `job_id`.
+- **weekly-audit.yml** — `trigger=scheduled`, no `jobId`.
+- **Replay** — `on-demand-scan.yml` with `replay_run_id` set re-POSTs a prior
+  run's stored artifacts as `trigger=scheduled` (the operator replay path for
+  when fly.io was down at original upload time). The artifacts come from the
+  GH Actions artifact retained for that run, or from a committed report dir.
+
+Failure to upload is **non-fatal** to the scan (the artifact is still in GH
+Actions) but is logged loudly and surfaces as a non-zero step (visible in the
+Actions UI) without failing the scan job overall.
 
 ## 7. Safety contract — explicit preservation
 
@@ -243,6 +344,11 @@ Restating the non-negotiable, because this change widens the attack surface:
    known-shape files at computed paths are written.
 4. **The allowlist file is read-only on fly.io** (baked into the image, on no
    writable volume path). The dashboard exposes no endpoint that edits it.
+5. **Upload provenance, not just upload auth.** `/api/upload` binds each report
+   to a legitimate run: an `on-demand` upload must carry a `jobId` matching a
+   live `dispatched` job with the same target, and an already-uploaded job is
+   rejected (replay guard). A leaked `AUDIT_UPLOAD_TOKEN` alone cannot inject a
+   fabricated report for an arbitrary run. (§4.2.)
 
 ## 8. UI changes
 
@@ -260,21 +366,35 @@ Restating the non-negotiable, because this change widens the attack surface:
 - [ ] `fly.toml` (app config, volume mount `/data`, health check `/healthz`,
       internal port, `[http_service]` with forced HTTPS)
 - [ ] `DATA_DIR` / `BIND_HOST` / `ALLOWED_ORIGIN` env plumbing in `server.ts`
-- [ ] Basic Auth middleware (env-gated)
-- [ ] `POST /api/scan` + registry validation + workflow_dispatch
-- [ ] `POST /api/upload` + bearer auth + schema validation + atomic write
-- [ ] `GET /api/scan-jobs` + `GET /healthz`
-- [ ] `scan-jobs.json` store helper
-- [ ] `.github/workflows/on-demand-scan.yml`
-- [ ] `weekly-audit.yml` upload step
-- [ ] Shared CI uploader script
-- [ ] UI: Run-a-scan panel + nav + api helpers
-- [ ] Unit tests: auth gate, registry validation rejects off-allowlist,
-      upload schema rejection, runId traversal rejection, origin guard
+      (and `DATA_DIR`-awareness in `src/report/json.ts` + `src/report/trend.ts`,
+      which currently hardcode `REPO_ROOT` paths)
+- [ ] Basic Auth middleware (env-gated, fail-closed in production §5.1)
+- [ ] `POST /api/scan` + registry validation + correlation-nonce mint +
+      workflow_dispatch (both fields required §4.1)
+- [ ] `POST /api/upload` + bearer auth + provenance binding (§4.2) +
+      schema validation + atomic write
+- [ ] `GET /api/scan-jobs` (fold append-only event log) + `GET /healthz`
+- [ ] `scan-jobs.jsonll` append-only event store + fold helper
+- [ ] `.github/workflows/on-demand-scan.yml` (job_id + replay_run_id inputs)
+- [ ] `weekly-audit.yml` upload step (`trigger=scheduled`)
+- [ ] Shared CI uploader script (`scripts/upload-report.mjs`)
+- [ ] UI: Run-a-scan panel + nav + api helpers + scheduled-vs-operator badge
+- [ ] Unit tests (the review-required set):
+      - auth gate rejects when unauthenticated
+      - **production fail-closed:** startup fails when `FLY_APP_NAME` set (or
+        `REQUIRE_AUTH=true`) and Basic Auth secrets missing
+      - registry validation rejects off-allowlist / unregistered / disabled
+      - **`/api/scan` rejects repo-only and URL-only payloads** (both required)
+      - **`/api/upload` rejects a valid report for unknown/mismatched `jobId`**
+        (409) and for already-`uploaded` jobId (replay guard)
+      - **`/api/upload` flips the matching job `dispatched`→`uploaded`**
+      - upload schema rejection (422) + runId traversal rejection
+      - **parallel `/api/scan` dispatches don't drop/corrupt scan-jobs entries**
+      - origin guard (ALLOWED_ORIGIN)
 - [ ] ADR: "fly.io deployment relaxes loopback-only binding; compensated by
-      Basic Auth + fly proxy"
-- [ ] Docs: `docs/deployment.md` (deploy steps, secret setup, first-run)
-- [ ] KNOWLEDGE.md note on the two-image split
+      Basic Auth + fly proxy + production fail-closed"
+- [ ] Docs: `docs/deployment.md` (deploy steps, secret setup, first-run, replay)
+- [ ] KNOWLEDGE.md note on the two-image split + workflow_dispatch-has-no-run-id
 
 ## 10. Failure modes
 
@@ -287,9 +407,15 @@ Restating the non-negotiable, because this change widens the attack surface:
 | Two scans dispatched at once | Each gets a job id; CI runs them as separate workflow runs; uploads are independent (distinct runIds). |
 | Volume full | Write fails → `500` on upload; alert via logs. (Volume sized with headroom; reports are small.) |
 
-## 11. Open questions
+## 11. Open questions / deferred
 
-- **fly.io region** — default to the region nearest the team (e.g. `lhr`)?
-  Assumed yes; trivial to change.
+- **fly.io region** — default `syd` (Sydney; Breakout is AU-based). Confirm
+  there's no fly.io constraint pushing elsewhere; trivial to change.
 - **Report retention on the volume** — keep all, or prune to last N runs? v1:
   keep all (reports are small); revisit if volume pressure appears.
+- **Static-only / live-only on-demand modes** (deferred, not v1). v1 requires
+  both `repo` and `stagingUrl` to avoid the bare-`--repo` all-staging fan-out
+  (§4.1). A future iteration can add an explicit `mode: static|live|full` field
+  and the corresponding scoped CI commands once the report-writing path for
+  single-surface runs is designed (`audit run` currently always scans both
+  surfaces it's given; `scan-source`/`scan-live` don't emit reports).
