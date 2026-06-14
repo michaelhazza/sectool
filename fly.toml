@@ -1,0 +1,53 @@
+# fly.toml — sectool UI dashboard deployment
+# App: https://sectool.fly.dev
+# Image: Dockerfile.ui (lightweight — no scanner binaries)
+# Primary region: syd (spec §11 default; confirm with operator before changing)
+
+app = "sectool"
+primary_region = "syd"
+
+[build]
+  dockerfile = "Dockerfile.ui"
+
+[env]
+  # Runtime-writable data (reports/, history/, scan-jobs.jsonl) lives on the
+  # mounted volume; config/ and ui/dist/ stay baked into the image (read-only).
+  DATA_DIR = "/data"
+
+  # fly's proxy terminates TLS and reaches the container on 0.0.0.0; the
+  # server's production fail-closed check (§5.1) requires BIND_HOST to be set.
+  BIND_HOST = "0.0.0.0"
+
+  # ALLOWED_ORIGIN is not sensitive but is deployment-specific; set via fly secrets
+  # so it can be updated without a redeploy:
+  #   fly secrets set ALLOWED_ORIGIN=https://sectool.fly.dev
+  #
+  # Required secrets (set via `fly secrets set`, NOT stored here):
+  #   AUDIT_BASIC_AUTH_USER   — Basic Auth username
+  #   AUDIT_BASIC_AUTH_PASS   — Basic Auth password
+  #   ALLOWED_ORIGIN          — e.g. https://sectool.fly.dev
+  #   AUDIT_UPLOAD_TOKEN      — bearer token accepted by /api/upload (CI → fly)
+  #   AUDIT_GH_DISPATCH_TOKEN — fine-grained PAT scoped to AUDIT_WORKFLOW_REPO
+  #                             (Actions read+write only; used to dispatch and
+  #                             verify runs — must NOT have broader repo/org perms)
+  #   AUDIT_WORKFLOW_REPO     — owner/repo that holds on-demand-scan.yml
+
+[mounts]
+  source = "sectool_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 4173
+  force_https = true
+  # Keep at least one machine running so that the volume is always reachable
+  # and in-flight uploads from CI are not lost during machine sleep/wake cycles.
+  min_machines_running = 1
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"

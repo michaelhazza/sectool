@@ -36,6 +36,22 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: all 5 context packs reference `architecture.md` anchors; the doc doesn't exist yet (fresh adoption).
   - Approach: author after audit-tool v1 lands its real architecture; anchor IDs per framework convention.
 
+## From builder — 2026-06-14
+
+- [ ] [origin:builder-C9:2026-06-14] [status:open] Pre-existing: `Sidebar.tsx` line 56 has an unused `cls: string` parameter in the `navBtn` curried function — flagged by `@typescript-eslint/no-unused-vars` when linted with `--no-ignore`. Not introduced by C9; in unchanged code.
+  - Why: The main `eslint.config.js` intentionally ignores `ui/**`, so this never fires in `npm run lint`. Surfaced only under `--no-ignore` G1 checks on this chunk. Not fixed per surgical-changes rule.
+  - Approach: remove the unused `cls` parameter from the `navBtn` helper (or prefix with `_cls`) in a future cleanup chunk scoped to Sidebar.tsx.
+  - Risk: low — lint-only, no functional impact.
+
+- [ ] [origin:builder-C6:2026-06-14] [status:open] `withWorkspaceLock` (src/report/lock.ts) is fail-fast on contention (throws WorkspaceLockedError immediately when held by a live process), NOT a queuing mutex. C6 works around this with an in-process `withUploadQueue` promise chain that ensures only one upload enters the lock at a time. Future chunks or refactors should be aware: `withWorkspaceLock` is cross-process protection only; it does NOT serialize same-process callers.
+  - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
+  - Approach: in-process layer already added (withUploadQueue). No action needed unless cross-process real queueing is required.
+
+- [x] [origin:builder-C6:2026-06-14] [status:resolved 2026-06-14] Pre-existing `/api/trend` vs `/api/history/trend` route mismatch (plan gap #5) — `ui/src/api.ts` calls `/api/history/trend` but `server.ts` serves `/api/trend`.
+  - **RESOLVED during local UI testing:** it broke the Portfolio Overview screen (404 from `/api/history/trend`). Aligned the client `fetchTrend()` to the server's actual `/api/trend` route.
+  - Why: pre-existing mismatch noted in plan gaps as out-of-scope.
+  - Approach: rename route in server.ts or update client call in a dedicated cleanup chunk.
+
 ## From builder — 2026-06-13
 
 - [ ] [origin:builder-P2-3:2026-06-13] [status:open] `osv-scanner` exits 1 when vulnerabilities are found (same as gitleaks) — `defaultExecOsv` in `src/static/scanners/osv.ts` uses `execFileAsync` directly and will throw when the binary exits 1 (findings present), which the orchestrator will record as a family `failed` rather than a successful scan with findings.
@@ -62,6 +78,18 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Approach (recommended conservative default): redact gitleaks secret values, `Set-Cookie`/bearer-token values, and env-derived credentials to a stable hash/placeholder in every emitted artifact (`report.json`, Markdown, SARIF, HTML, stdout logs, remediation packs), retaining enough context for triage. Acceptance: a redaction fixture + `src/report/redaction.test.ts` (or benchmark harness) per the reviewer's `acceptance_check`.
   - Risk: high — a security tool currently re-exports the very secrets it finds into shareable artifacts and external issues.
 
+
+## From builder — 2026-06-14
+
+- [x] [origin:builder-chunk1:2026-06-14] [status:resolved 2026-06-14] Pre-existing: `/api/trend` route mismatch — duplicate of the C6 entry above; fixed by aligning `fetchTrend()` to `/api/trend`.
+  - Why: Plan gap 5 explicitly flagged this as pre-existing. Noticed during Chunk 1 work but NOT fixed per surgical-changes rule.
+  - Approach: confirm which path is correct (server or client) and fix the mismatch; add a route test.
+  - Risk: medium — Trends view shows empty array in production.
+
+- [ ] [origin:builder-chunk1:2026-06-14] [status:open] Pre-existing: esbuild native binary missing at `node_modules/esbuild/node_modules/@esbuild/` — vitest fails to load config in local dev environment.
+  - Why: `npm ci` likely did not populate the nested `node_modules/esbuild/node_modules/@esbuild/win32-x64` directory. All vitest runs fail locally; CI (fresh `npm ci`) presumably works.
+  - Approach: run `npm ci` in this workspace to fix; or investigate npm hoisting; log for next developer.
+  - Risk: low (CI unaffected) / high (blocks local test execution for all developers).
 
 ## PR Review deferred items
 
@@ -138,3 +166,20 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: `main()` calls `runBenchmark()` with empty `scanResults`/`cleanResults`/`liveFixtureResults`; the harness only reads EXPECTED.json and computes metrics from caller-supplied arrays — it never runs the audit engine over the corpus. A fixture with empty/unreadable/malformed EXPECTED.json contributes recall=1 with zero actual findings, so the CLAUDE.md recall/precision base gate can pass without exercising detection.
   - Approach: wire the static/live engine over `benchmark/corpus` + `benchmark/live-fixture` inside `main()` and feed real ScanResults; assert corpus non-empty.
   - Risk: medium — a base gate that does not actually gate detection quality.
+
+## Deferred from spec-conformance review — flyio-dashboard (2026-06-14)
+
+**Captured:** 2026-06-14T00:00:00Z
+**Source log:** (returned inline by spec-conformance; no log file written per harness convention)
+**Spec:** `docs/superpowers/specs/2026-06-14-flyio-dashboard-deployment-design.md`
+
+- [x] [origin:spec-conformance:2026-06-14] [status:resolved 2026-06-14] RunAScan repo dropdown reads `config.repoTargets` but `/api/config/targets` serves the raw `targets.json` whose top-level key is `repos` — repo dropdown is always empty
+  - **RESOLVED in the branch-level review pass:** `/api/config/targets` now projects the registry to the UI's `{ repoTargets, stagingTargets }` shape server-side (also drops auth/rateLimit detail). RunAScan + the pre-existing Sites/Safety screen both work; test updated. See `tasks/builds/flyio-dashboard/review-pass-log.md`.
+- [ ] [origin:adversarial-reviewer-3-B:2026-06-14] [status:deferred] `history/scan-jobs.jsonl` grows unbounded; `foldJobs` reads the whole file on every `GET /api/scan-jobs`.
+  - Why: no compaction/rotation/size cap. Structurally unbounded on a long-lived deployment, though benign for an internal tool at expected scan volumes.
+  - Approach: rotate/compact the event log (e.g. drop events for jobs older than N days, or cap line count) — aligns with the spec §11 deferred "report retention / volume pruning" decision; tackle together.
+  - Risk: low — internal tool, low scan volume; deferred per spec §11.
+  - Spec section: §8 (UI changes — "two dropdowns (repo, staging target) sourced from existing `/api/config/*` endpoints") and §4.1 selection-UI note.
+  - Gap: `ui/src/screens/RunAScan.tsx:67` reads `config.repoTargets`; `src/ui/server.ts:278-286` serves `config/targets.json` verbatim, whose top-level keys are `repos` + `stagingTargets` (confirmed against the on-disk file). `stagingTargets` matches; `repoTargets` does not exist on the served object, so `repos` resolves to `[]` and the repo `<select>` shows only the placeholder. The "Run scan" button can never be enabled (canSubmit requires a selected repo). The staging-target half works.
+  - Suggested approach: pick one contract and align both ends — either map the served object to `{ repoTargets, stagingTargets }` server-side in the `/api/config/targets` handler, or change the UI to read `config.repos` and adjust the `TargetsConfig` type. This is a UI↔server contract divergence requiring a design choice (which side owns the field name), so it is routed rather than auto-fixed. Not a safety-contract issue — the server-side §7 registry gate on `/api/scan` is independent of this dropdown and remains intact.
+  - Risk: medium — the primary on-demand-scan entry point (§1 goal "trigger scans on demand from the UI") is non-functional for the repo selector until aligned. The server-side safety gate is unaffected.

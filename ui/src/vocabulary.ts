@@ -71,4 +71,12 @@ export const NAV_LABELS = {
   fixes: 'Fix Progress',
   trends: 'Progress Over Time',
   targets: 'Sites and Safety',
+  runAScan: 'Run a Scan',
+} as const;
+
+// Trigger-provenance labels — shown on job/report rows
+export const TRIGGER_LABELS = {
+  'on-demand': 'Operator',
+  scheduled: 'Scheduled',
+  replay: 'Replay',
 } as const;
