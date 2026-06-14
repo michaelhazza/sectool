@@ -1118,12 +1118,12 @@ describe('POST /api/scan — dispatch ref uses CONFIG_BRANCH (C6/H2)', () => {
   const c6TmpDir = resolve(tmpdir(), `audit-scan-c6-${process.pid}`);
   let c6DispatchCalls: GitHubRequest[];
 
-  beforeAll(async () => {
+  beforeAll(() => {
     mkdirSync(resolve(c6TmpDir, 'history'), { recursive: true });
     c6DispatchCalls = [];
   });
 
-  afterAll(async () => {
+  afterAll(() => {
     try { rmSync(c6TmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
