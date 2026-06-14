@@ -53,8 +53,9 @@ reviewed PR. **This spec removes that review gate.**
 > is editable through the dashboard by an operator who holds BOTH the shared
 > dashboard credential AND a valid TOTP second factor. Every allowlist (and
 > registry) change is (a) schema-validated, (b) committed to git as the single
-> source of truth before it takes effect, and (c) recorded in an append-only
-> audit log. There is no code path that scans a host absent from the allowlist at
+> source of truth before it takes effect, with a structured audit trailer in the
+> commit, and (c) reflected in a hash-chained operational audit cache (git is the
+> authoritative record). There is no code path that scans a host absent from the allowlist at
 > scan time — the allowlist is still the sole authority; what changed is that
 > authoring it moved from PR-review to 2FA-gated live edit with git history.**
 
@@ -115,9 +116,14 @@ fails" framing was false, because the operational audit append and re-read happe
    target, UTC time) so the durable audit record is part of the atomic git object,
    not a separate file that could diverge.
 4. **Push — the commit point:** `git push` to `CONFIG_BRANCH`. Failure (token,
-   network, non-fast-forward) → roll back the local commit (`git reset --hard` to
-   the prior HEAD), respond 502, **nothing changed**. On a non-fast-forward,
-   `fetch` + replay-once before giving up (§7).
+   network, non-fast-forward) → **config-path-only rollback** (HIGH round 2 — NOT
+   `git reset --hard`, which would also revert unrelated tracked working-tree
+   changes the spec promises not to touch): un-commit with `git reset --soft
+   <priorHead>`, then restore ONLY the whitelisted config files from `priorHead`
+   (`git checkout <priorHead> -- config/targets.json
+   config/allowed-staging-hosts.json`). Non-config tracked/untracked files are
+   never staged and never touched. Respond 502, **config unchanged**. On a
+   non-fast-forward, `fetch` + replay-once before giving up (§7).
 5. **After the push (best-effort, never un-commits):** capture the pushed SHA,
    append an entry to the operational audit cache (§8), and re-read config from the
    working tree. If the cache append or re-read fails, the change is STILL
@@ -165,9 +171,13 @@ revert route. It is NOT required for any read route or for `/api/scan` /
 **One protocol (MEDIUM-2 — no header-or-token ambiguity):** a dedicated exchange
 route `POST /api/config/step-up` takes Basic Auth + CSRF nonce + the 6-digit TOTP
 code and, on success, sets a **step-up cookie**: `HttpOnly`, `Secure`,
-`SameSite=Strict`, **5-minute TTL**, HMAC-signed (key = a server secret derived
-from `AUDIT_TOTP_SECRET`), with claims `{ principalHash, csrfNonce, scope:
-"config-write", exp }`. `principalHash` binds it to the current Basic Auth
+`SameSite=Strict`, **5-minute TTL**, HMAC-signed with a **dedicated
+`AUDIT_STEPUP_SIGNING_SECRET`** — NOT derived from `AUDIT_TOTP_SECRET` (MEDIUM
+round 2: keep the possession-factor domain and the session-signing domain
+separate, so a leak/bug in one doesn't compromise both). The signing secret is its
+own fly secret; when config editing is enabled it must be present or the write
+routes are disabled (fail closed, §10). Claims: `{ principalHash, csrfNonce,
+scope: "config-write", exp }`. `principalHash` binds it to the current Basic Auth
 principal; `csrfNonce` binds it to this origin/session. Every config-mutating
 route requires a valid, unexpired step-up cookie whose `csrfNonce` matches the
 request's `X-Audit-CSRF` and whose scope is `config-write`; otherwise `403`. The
@@ -227,12 +237,15 @@ A small `src/ui/config-git.ts` module wraps the working clone:
 Embedding the token in `https://x-access-token:<token>@github.com/...` leaks it via
 process args, `.git/config`, error output, and crash logs. Instead the remote is
 the plain `https://github.com/<owner>/<repo>.git`, and the token is supplied
-**out-of-band** for each git call via a `GIT_ASKPASS` helper (or `git -c
-http.extraHeader=...` with the value sourced from the environment, never argv).
-The token is read from `AUDIT_GIT_WRITE_TOKEN` at call time and is **never**
-written to `.git/config`, never interpolated into a command string, and never
-included in any error, log line, audit row, or HTTP response. A redaction guard
-scrubs the token pattern from any git stderr surfaced to the caller.
+**out-of-band via a `GIT_ASKPASS` helper** (or a temporary credential-helper file
+created with `0600` permissions and deleted in a `finally`). The `git -c
+http.extraHeader=…` alternative is **explicitly disallowed** (MEDIUM round 2 — the
+header value lands in git's argv). The token is read from `AUDIT_GIT_WRITE_TOKEN`
+at call time, passed to git only through the askpass/helper channel (an env var
+the helper reads, never on the command line), and is **never** written to
+`.git/config`, never interpolated into a command string, and never included in any
+error, log line, audit row, or HTTP response. A redaction guard scrubs the token
+pattern from any git stderr surfaced to the caller.
 
 **Dirty-worktree handling (MEDIUM-1 — fail closed, never reset user state).**
 Before any write and before any fast-forward, the worktree MUST be clean *for the
@@ -253,15 +266,24 @@ Concurrent writes are serialized with a config-specific lock (reusing the
 `withWorkspaceLock` primitive) so two edits cannot interleave a push.
 
 **Push-failure safety:** a non-fast-forward triggers `fetch` + replay-once; if it
-still fails, roll back the local commit and return 502 — the live config is
-untouched.
+still fails, do the config-path-only rollback (§4.2 step 4 — `reset --soft
+priorHead` + restore the whitelisted config files; never `reset --hard`) and
+return 502 — the live config and all non-config working-tree state are untouched.
 
-**Post-push SHA (MEDIUM-3 — close the propagation race).** `commitConfigChange`
-returns the pushed SHA. `/api/scan` dispatch (and the response of a config write)
-carry that SHA so a scan triggered immediately after an edit uses the **exact ref
-just pushed** (the `workflow_dispatch` `ref` is set to the SHA, not a branch name
-that might resolve stale). A write does not report success until the push is
-confirmed (the remote branch resolves to the pushed SHA).
+**Post-push SHA (MEDIUM-3 — close the propagation race; corrected for the GitHub
+API).** `commitConfigChange` returns the pushed SHA. GitHub's *Create a workflow
+dispatch event* requires `ref` to be a **branch or tag name — NOT a raw commit
+SHA** (HIGH from review round 2). So the dispatch is:
+- `ref = CONFIG_BRANCH` (a real branch), AND
+- a new workflow input `config_sha = <pushed SHA>`;
+- the workflow, after checkout, **verifies `config_sha` is reachable from
+  `CONFIG_BRANCH`** and then `git checkout <config_sha>` so the scan reads the
+  exact committed config (not whatever the branch tip drifted to).
+
+A config write does not report success until the push is confirmed (the remote
+branch resolves to the pushed SHA). This requires a small change to
+`on-demand-scan.yml`: add the `config_sha` input + the reachability-check &
+checkout step.
 
 ## 8. Audit log + history / revert
 
@@ -322,16 +344,18 @@ resolved state rather than implying a user role (LOW-2 from review).
 | Name | Where | Purpose |
 |---|---|---|
 | `AUDIT_GIT_WRITE_TOKEN` | fly.io | **NEW high-value secret** — push access to this repo for config commits. Fine-grained PAT, `contents:write` on THIS repo only. The primary thing 2FA + audit protect. |
-| `AUDIT_TOTP_SECRET` | fly.io | shared TOTP base32 secret for step-up |
+| `AUDIT_TOTP_SECRET` | fly.io | shared TOTP base32 secret for step-up (possession factor) |
+| `AUDIT_STEPUP_SIGNING_SECRET` | fly.io | HMAC key for the step-up cookie — separate domain from the TOTP secret (MEDIUM round 2) |
 | `AUDIT_GIT_AUTHOR` | fly.io | commit identity, e.g. `sectool-dashboard <ops@breakoutsolutions.com>` |
 | `CONFIG_REPO_DIR` | fly.io env | working-clone path (default `/data/repo`; `REPO_ROOT` locally) |
 | `CONFIG_BRANCH` | fly.io env | branch the dashboard commits to (e.g. the repo default branch) |
 
 Production fail-closed (§5.1 of the flyio-dashboard spec) extends: when config
 editing is enabled (TOTP secret present), `AUDIT_GIT_WRITE_TOKEN` +
-`AUDIT_GIT_AUTHOR` + `CONFIG_BRANCH` must be present or the **write routes are
-disabled** (read-only dashboard still serves) — editing degrades closed, it never
-silently commits with a missing identity.
+`AUDIT_STEPUP_SIGNING_SECRET` + `AUDIT_GIT_AUTHOR` + `CONFIG_BRANCH` must ALL be
+present or the **write routes are disabled** (read-only dashboard still serves) —
+editing degrades closed, it never silently commits with a missing identity or
+signs step-up cookies with a missing key.
 
 ## 11. Contract documentation rewrite (CLAUDE.md + v1 spec)
 
@@ -367,8 +391,13 @@ violates one is wrong even if its local test passes:
 5. **A pushed git commit is the durable source of truth;**
    `config-audit.jsonl` is a (hash-chained) cache, never the authority.
 6. **An immediate scan after a config edit must use or verify the pushed SHA** —
-   dispatch with the SHA as the ref, not a possibly-stale branch name.
-7. **Every config mutation is auth + CSRF/origin + TOTP-step-up + schema gated**
+   dispatch on `CONFIG_BRANCH` with the SHA as a workflow **input** (GitHub's
+   `workflow_dispatch.ref` only accepts a branch/tag, not a SHA); the workflow
+   checks the SHA is reachable from the branch and checks it out.
+7. **Rollback restores only whitelisted config paths** (`reset --soft` + restore
+   config files), NEVER `reset --hard` — non-config working-tree state is never
+   touched by a config write or its rollback.
+8. **Every config mutation is auth + CSRF/origin + TOTP-step-up + schema gated**
    before the commit point; the step-up cookie is the only accepted step-up proof.
 
 ## 12. Failure modes
@@ -384,7 +413,7 @@ violates one is wrong even if its local test passes:
 | Remove a host still in use | 409, nothing written. |
 | Dirty config worktree (partial/manual edit) | 409 + diagnostic; no write, no `reset --hard`. |
 | Audit cache append fails after a successful push | 200 + `auditWarning`; change stays committed (git is the record). |
-| Scan dispatched immediately after an edit | dispatched with the pushed SHA as the ref, so it reads the just-committed config (no branch-propagation race). |
+| Scan dispatched immediately after an edit | dispatched on `CONFIG_BRANCH` with `config_sha` as an input; the workflow checks out that SHA, so it reads the just-committed config (no branch-propagation race, and valid against GitHub's branch-only `ref`). |
 | Audit cache file tampered/corrupted | integrity warning on read; History falls back to git; durable record intact. |
 
 ## 13. Testing
@@ -395,10 +424,13 @@ violates one is wrong even if its local test passes:
   CSRF/origin → 403); schema rejection → 422; host-in-use removal → 409;
   add-staging-with-`addHost` writes both files in one commit; revert makes a
   reverting commit; history reads back; **dirty config worktree → 409 (no reset)**;
-  **push failure rolls back the local commit (HEAD unchanged)**; **write returns
-  the pushed SHA and a scan dispatched right after uses that SHA as the ref**
-  (MEDIUM-3 write-then-scan consistency); **audit cache hash-chain break is
-  detected on read**.
+  **push failure rolls back config paths only, leaving a dirty NON-config tracked
+  file untouched** (HIGH round 2 — seed a modified non-config file, force a push
+  failure, assert it survives and config == priorHead); **write returns the pushed
+  SHA and a scan dispatched right after sends `ref=CONFIG_BRANCH` + `config_sha`
+  input** (MEDIUM-3 write-then-scan consistency; assert the SHA is NOT used as the
+  dispatch ref); **audit cache hash-chain break is detected on read**; **step-up
+  cookie is signed with `AUDIT_STEPUP_SIGNING_SECRET`, not the TOTP secret**.
 - **Safety-critical assertions (the security boundary is server-side):** valid
   Basic Auth + missing/invalid step-up cookie → `403`, **nothing committed**;
   step-up cookie bound to a different CSRF nonce/principal → `403`; the committed
