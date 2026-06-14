@@ -118,9 +118,9 @@ describe('appendEvent', () => {
       .split('\n')
       .filter(Boolean);
     expect(lines).toHaveLength(3);
-    expect(JSON.parse(lines[0])).toMatchObject({ event: 'requested' });
-    expect(JSON.parse(lines[1])).toMatchObject({ event: 'dispatched' });
-    expect(JSON.parse(lines[2])).toMatchObject({ event: 'uploaded' });
+    expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'requested' });
+    expect(JSON.parse(lines[1]!)).toMatchObject({ event: 'dispatched' });
+    expect(JSON.parse(lines[2]!)).toMatchObject({ event: 'uploaded' });
   });
 });
 
@@ -151,9 +151,9 @@ describe('foldJobs — §4.3 identity carry-forward (named test)', () => {
     const jobs = foldJobs(dir, BASE_TIME + 2000);
     expect(jobs).toHaveLength(1);
     // Identity MUST come from requested, not be lost to last-event-wins.
-    expect(jobs[0].targetRepo).toBe('original-repo');
-    expect(jobs[0].stagingUrl).toBe('https://original.example.com');
-    expect(jobs[0].state).toBe('in_progress');
+    expect(jobs[0]!.targetRepo).toBe('original-repo');
+    expect(jobs[0]!.stagingUrl).toBe('https://original.example.com');
+    expect(jobs[0]!.state).toBe('in_progress');
   });
 
   it('preserves targetRepo/stagingUrl from requested event through uploaded state', () => {
@@ -166,10 +166,10 @@ describe('foldJobs — §4.3 identity carry-forward (named test)', () => {
 
     const jobs = foldJobs(dir, BASE_TIME + 6000);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].targetRepo).toBe('original-repo');
-    expect(jobs[0].stagingUrl).toBe('https://original.example.com');
-    expect(jobs[0].state).toBe('complete');
-    expect(jobs[0].runId).toBe('2026-06-14T10-05-00Z-abcd');
+    expect(jobs[0]!.targetRepo).toBe('original-repo');
+    expect(jobs[0]!.stagingUrl).toBe('https://original.example.com');
+    expect(jobs[0]!.state).toBe('complete');
+    expect(jobs[0]!.runId).toBe('2026-06-14T10-05-00Z-abcd');
   });
 
   it('requestedAt comes from the requested event at field', () => {
@@ -178,7 +178,7 @@ describe('foldJobs — §4.3 identity carry-forward (named test)', () => {
     appendEvent(dispatched('job3'), dir);
 
     const jobs = foldJobs(dir, BASE_TIME + 2000);
-    expect(jobs[0].requestedAt).toBe(requestedAt);
+    expect(jobs[0]!.requestedAt).toBe(requestedAt);
   });
 });
 
@@ -191,7 +191,7 @@ describe('foldJobs — state machine', () => {
   it('requested-only → pre_dispatch', () => {
     appendEvent(requested('job1'), dir);
     const jobs = foldJobs(dir, BASE_TIME + 1000);
-    expect(jobs[0].state).toBe('pre_dispatch');
+    expect(jobs[0]!.state).toBe('pre_dispatch');
   });
 
   it('dispatched (within TTL) → in_progress', () => {
@@ -199,14 +199,14 @@ describe('foldJobs — state machine', () => {
     appendEvent(dispatched('job1', BASE_TIME + 1000), dir);
     // nowMs is 2 seconds after dispatch — well within TTL
     const jobs = foldJobs(dir, BASE_TIME + 2000);
-    expect(jobs[0].state).toBe('in_progress');
+    expect(jobs[0]!.state).toBe('in_progress');
   });
 
   it('dispatch_failed → failed, never in_progress', () => {
     appendEvent(requested('job1'), dir);
     appendEvent(dispatchFailed('job1'), dir);
     const jobs = foldJobs(dir, BASE_TIME + 1000);
-    expect(jobs[0].state).toBe('failed');
+    expect(jobs[0]!.state).toBe('failed');
   });
 
   it('uploaded → complete', () => {
@@ -214,7 +214,7 @@ describe('foldJobs — state machine', () => {
     appendEvent(dispatched('job1'), dir);
     appendEvent(uploaded('job1'), dir);
     const jobs = foldJobs(dir, BASE_TIME + 6000);
-    expect(jobs[0].state).toBe('complete');
+    expect(jobs[0]!.state).toBe('complete');
   });
 
   it('dispatched with no uploaded past TTL → timed_out', () => {
@@ -224,7 +224,7 @@ describe('foldJobs — state machine', () => {
     // nowMs is TTL + 1ms after dispatch → timed_out
     const nowMs = dispatchedAt + DISPATCH_TTL_MS + 1;
     const jobs = foldJobs(dir, nowMs);
-    expect(jobs[0].state).toBe('timed_out');
+    expect(jobs[0]!.state).toBe('timed_out');
   });
 
   it('dispatched exactly at TTL boundary is still in_progress', () => {
@@ -234,7 +234,7 @@ describe('foldJobs — state machine', () => {
     // Exactly at TTL — not past it; should remain in_progress.
     const nowMs = dispatchedAt + DISPATCH_TTL_MS;
     const jobs = foldJobs(dir, nowMs);
-    expect(jobs[0].state).toBe('in_progress');
+    expect(jobs[0]!.state).toBe('in_progress');
   });
 });
 
@@ -252,8 +252,8 @@ describe('foldJobs — malformed lines', () => {
 
     const jobs = foldJobs(dir, BASE_TIME + 2000);
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].state).toBe('in_progress');
-    expect(jobs[0].targetRepo).toBe('my-app');
+    expect(jobs[0]!.state).toBe('in_progress');
+    expect(jobs[0]!.targetRepo).toBe('my-app');
   });
 
   it('malformed interior line does NOT corrupt the fold of valid lines', () => {
@@ -294,7 +294,7 @@ describe('foldJobs — report_ingested excluded', () => {
     const jobs = foldJobs(dir, BASE_TIME + 2000);
     // Only the on-demand job appears; report_ingested has no jobId and is excluded.
     expect(jobs).toHaveLength(1);
-    expect(jobs[0].jobId).toBe('job1');
+    expect(jobs[0]!.jobId).toBe('job1');
   });
 
   it('a file with only report_ingested events produces []', () => {

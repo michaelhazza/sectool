@@ -37,8 +37,8 @@ describe('dispatchScan — URL construction', () => {
     await dispatchScan(BASE_PARAMS, client);
     expect(calls.length).toBe(1);
     // URL must reference the workflow repo owner/repo, not the scan target
-    expect(calls[0].url).toContain('/repos/breakout/audit-workflows/actions/workflows/on-demand-scan.yml/dispatches');
-    expect(calls[0].url).not.toContain('my-app');
+    expect(calls[0]!.url).toContain('/repos/breakout/audit-workflows/actions/workflows/on-demand-scan.yml/dispatches');
+    expect(calls[0]!.url).not.toContain('my-app');
   });
 
   it('dispatches to a different workflowRepo than targetRepo without including targetRepo in the URL', async () => {
@@ -52,26 +52,26 @@ describe('dispatchScan — URL construction', () => {
       client,
     );
     expect(calls.length).toBe(1);
-    expect(calls[0].url).toContain('/repos/acme/workflow-repo/actions/workflows/on-demand-scan.yml/dispatches');
-    expect(calls[0].url).not.toContain('completely-different-repo');
+    expect(calls[0]!.url).toContain('/repos/acme/workflow-repo/actions/workflows/on-demand-scan.yml/dispatches');
+    expect(calls[0]!.url).not.toContain('completely-different-repo');
   });
 
   it('sets method to POST', async () => {
     const { client, calls } = makeSpy(204);
     await dispatchScan(BASE_PARAMS, client);
-    expect(calls[0].method).toBe('POST');
+    expect(calls[0]!.method).toBe('POST');
   });
 
   it('includes the correct Authorization Bearer header', async () => {
     const { client, calls } = makeSpy(204);
     await dispatchScan(BASE_PARAMS, client);
-    expect(calls[0].headers['Authorization']).toBe('Bearer ghp_test_token');
+    expect(calls[0]!.headers['Authorization']).toBe('Bearer ghp_test_token');
   });
 
   it('sends ref and inputs (target_repo, staging_url, job_id) in the body', async () => {
     const { client, calls } = makeSpy(204);
     await dispatchScan(BASE_PARAMS, client);
-    const body = calls[0].body as { ref: string; inputs: Record<string, string> };
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
     expect(body.ref).toBe('main');
     expect(body.inputs.target_repo).toBe('my-app');
     expect(body.inputs.staging_url).toBe('https://staging.my-app.com');

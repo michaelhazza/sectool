@@ -123,8 +123,8 @@ export function foldJobs(dataDir: string, nowMs: number): FoldedJob[] {
 
   // Parse lines; tolerate a single malformed trailing partial line.
   const events: ScanJobEvent[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
     if (line === '') continue;
 
     let parsed: unknown;

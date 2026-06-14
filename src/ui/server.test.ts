@@ -649,8 +649,8 @@ describe('GET /api/scan-jobs', () => {
     });
     const jobs = JSON.parse(body) as Array<{ jobId: string; requestedAt: string }>;
     // Job B (11:00) should come before Job A (10:00)
-    expect(jobs[0].jobId).toBe('bbbb2222bbbb2222bbbb2222bbbb2222');
-    expect(jobs[1].jobId).toBe('aaaa1111aaaa1111aaaa1111aaaa1111');
+    expect(jobs[0]!.jobId).toBe('bbbb2222bbbb2222bbbb2222bbbb2222');
+    expect(jobs[1]!.jobId).toBe('aaaa1111aaaa1111aaaa1111aaaa1111');
   });
 
   it('reflects correct state for each folded job', async () => {
@@ -997,8 +997,8 @@ describe('POST /api/scan — registry safety gate', () => {
     expect(typeof json.jobId).toBe('string');
     // Dispatch URL must reference AUDIT_WORKFLOW_REPO (acme/audit-workflows), not my-app
     expect(dispatchCalls.length).toBe(1);
-    expect(dispatchCalls[0].url).toContain('/repos/acme/audit-workflows/actions/workflows/on-demand-scan.yml/dispatches');
-    expect(dispatchCalls[0].url).not.toContain('my-app');
+    expect(dispatchCalls[0]!.url).toContain('/repos/acme/audit-workflows/actions/workflows/on-demand-scan.yml/dispatches');
+    expect(dispatchCalls[0]!.url).not.toContain('my-app');
   });
 
   it('happy path: valid repo+url → requested+dispatched appended, 202 {jobId}, jobId is 32 hex', async () => {
