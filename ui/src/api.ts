@@ -10,6 +10,8 @@ import type {
   AllowlistConfig,
   BaselineConfig,
   ScanJob,
+  ConfigHistoryEntry,
+  ConfigHealthResponse,
 } from './types.js';
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -115,4 +117,121 @@ export async function triggerScan(repo: string, stagingUrl: string): Promise<{ j
  */
 export async function fetchScanJobs(): Promise<ScanJob[]> {
   return fetchJson<ScanJob[]>('/api/scan-jobs');
+}
+
+/**
+ * Fetch config write dependency health from GET /api/config/health.
+ * Returns whether editing is enabled and the list of missing secrets.
+ */
+export async function fetchConfigHealth(): Promise<ConfigHealthResponse> {
+  return fetchJson<ConfigHealthResponse>('/api/config/health');
+}
+
+/**
+ * Exchange a TOTP code for a step-up session cookie.
+ * On success, the server sets the step-up cookie (credentials:'same-origin').
+ * Returns 200 on success; throws on wrong/expired code (403) or other errors.
+ */
+export async function stepUp(code: string): Promise<void> {
+  const csrfToken = await fetchCsrfToken();
+  const res = await fetch('/api/config/step-up', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Audit-CSRF': csrfToken,
+    },
+    credentials: 'same-origin',
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+}
+
+/**
+ * Generic config-write helper — mirrors sendForFixing's CSRF pattern.
+ * Returns the parsed JSON response, or throws with a plain-language message.
+ * A 403 is re-thrown as-is so callers can detect and open the step-up modal.
+ */
+async function configWrite<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const csrfToken = await fetchCsrfToken();
+  const res = await fetch(path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Audit-CSRF': csrfToken,
+    },
+    credentials: 'same-origin',
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string; issues?: unknown };
+    const msg = err.error ?? `HTTP ${res.status}`;
+    const e = new Error(msg) as Error & { status: number; issues?: unknown };
+    e.status = res.status;
+    e.issues = err.issues;
+    throw e;
+  }
+  return res.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------------------
+// Repo mutations
+// ---------------------------------------------------------------------------
+
+export async function addRepo(entry: Record<string, unknown>): Promise<unknown> {
+  return configWrite('POST', '/api/config/repos', entry);
+}
+
+export async function editRepo(name: string, patch: Record<string, unknown>): Promise<unknown> {
+  return configWrite('PUT', `/api/config/repos/${encodeURIComponent(name)}`, patch);
+}
+
+export async function removeRepo(name: string): Promise<unknown> {
+  return configWrite('DELETE', `/api/config/repos/${encodeURIComponent(name)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Staging target mutations
+// ---------------------------------------------------------------------------
+
+export async function addStagingTarget(
+  entry: Record<string, unknown>,
+  opts?: { addHost?: boolean },
+): Promise<unknown> {
+  const payload = opts?.addHost === true ? { ...entry, addHost: true } : entry;
+  return configWrite('POST', '/api/config/staging-targets', payload);
+}
+
+export async function editStagingTarget(name: string, patch: Record<string, unknown>): Promise<unknown> {
+  return configWrite('PUT', `/api/config/staging-targets/${encodeURIComponent(name)}`, patch);
+}
+
+export async function removeStagingTarget(name: string): Promise<unknown> {
+  return configWrite('DELETE', `/api/config/staging-targets/${encodeURIComponent(name)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Allowlist host mutations
+// ---------------------------------------------------------------------------
+
+export async function addHost(entry: Record<string, unknown>): Promise<unknown> {
+  return configWrite('POST', '/api/config/allowlist', entry);
+}
+
+export async function removeHost(host: string): Promise<unknown> {
+  return configWrite('DELETE', `/api/config/allowlist/${encodeURIComponent(host)}`);
+}
+
+// ---------------------------------------------------------------------------
+// History + revert
+// ---------------------------------------------------------------------------
+
+export async function fetchConfigHistory(n = 20): Promise<{ entries: ConfigHistoryEntry[]; integrityOk: boolean }> {
+  return fetchJson<{ entries: ConfigHistoryEntry[]; integrityOk: boolean }>(`/api/config/history?n=${n}`);
+}
+
+export async function revertConfig(commitSha: string): Promise<unknown> {
+  return configWrite('POST', `/api/config/revert/${encodeURIComponent(commitSha)}`);
 }

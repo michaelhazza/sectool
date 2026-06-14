@@ -590,7 +590,16 @@ async function handleScanPost(
   let result: Awaited<ReturnType<typeof dispatchScan>>;
   try {
     result = await dispatchScan(
-      { workflowRepo, targetRepo: repo, stagingUrl, jobId, token, ref: 'main' },
+      {
+        workflowRepo,
+        targetRepo: repo,
+        stagingUrl,
+        jobId,
+        token,
+        // H2: use CONFIG_BRANCH so non-main branches dispatch correctly (ImplInv-6).
+        // GitHub workflow_dispatch requires a branch/tag, never a raw SHA.
+        ref: resolvedEnv.configBranch ?? 'main',
+      },
       githubClient,
     );
   } catch (dispatchErr) {
@@ -1046,6 +1055,16 @@ async function handleConfigWrite(
 ): Promise<boolean> {
   const { pathname } = url;
   const { allowedOrigin, configRepoDir, configDir, historyDir, configWriteDeps, gitWriteToken, gitAuthor, configBranch } = resolvedEnv;
+
+  // GET /api/config/health — READ route; exposes configWriteDeps so the UI
+  // can render the precise disabled reason without requiring step-up.
+  if (req.method === 'GET' && pathname === '/api/config/health') {
+    jsonResponse(res, 200, {
+      editingEnabled: !!resolvedEnv.totpSecret,
+      configWriteDeps: resolvedEnv.configWriteDeps,
+    });
+    return true;
+  }
 
   // ---------------------------------------------------------------------------
   // GET /api/config/history — READ route, no step-up required

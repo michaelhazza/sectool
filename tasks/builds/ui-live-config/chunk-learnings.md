@@ -24,6 +24,23 @@
 - The `ensureAskpassExecutable()` call is a module-level side-effect that runs on import. On Windows this is a no-op. No caller needs to await it.
 - ESM import: `import { ... } from './config-git.js'` (`.js` extension required).
 
+## C6 — /api/scan + on-demand-scan.yml config_sha wiring (2026-06-14)
+
+**What was implemented.**
+`src/ui/dispatch.ts` — added optional `configSha?: string` to `DispatchParams`. When provided and non-empty, it is included in `inputs` as `inputs['config_sha']`. The `ref` field remains the branch name (never the SHA). Both the interface JSDoc and a module-level comment note that the key name `config_sha` MUST match the YAML `inputs.config_sha:` declaration exactly (a mismatch is a CI-only 422).
+`src/ui/server.ts` `handleScanPost` — replaced hardcoded `ref: 'main'` with `ref: resolvedEnv.configBranch ?? 'main'` (H2 fix). No `configSha` is threaded here because `handleScanPost` is triggered from the UI independently of a config edit; C4's config-write routes would need to pass it post-push.
+`.github/workflows/on-demand-scan.yml` — added `config_sha` optional string input (with mismatch-warning comment). Changed `checkout@v4` to `fetch-depth: 0` so full history is available for `merge-base`. Added "Verify and pin config SHA (ImplInv-6)" step that runs when `config_sha != ''`: fetches `CONFIG_BRANCH` from `vars.CONFIG_BRANCH || 'main'`, runs `git merge-base --is-ancestor`, fails loudly if unreachable, then `git checkout <sha>`.
+`src/ui/dispatch.test.ts` — added 6 C6 tests: configSha sends `ref === configBranch` (not SHA), `inputs.config_sha === sha`, ref !== sha; omitting configSha produces no `config_sha` key; undefined configSha same; all base inputs still present.
+`src/ui/server.test.ts` — added 2 server tests: `CONFIG_BRANCH=staging-config` → dispatch ref is `'staging-config'` not `'main'`; no `CONFIG_BRANCH` → ref defaults to `'main'`.
+
+**`fetch-depth: 0` note.** The existing `checkout@v4` step used default `fetch-depth: 1` (shallow clone). The `git merge-base --is-ancestor` command requires full history to determine reachability. Changed to `fetch-depth: 0` on the Checkout step. This is a load-bearing change for the verify step; without it, `merge-base` would fail for commits not in the shallow window.
+
+**`vars.CONFIG_BRANCH` note.** The workflow uses `${{ vars.CONFIG_BRANCH || 'main' }}` (a repository variable, not a secret) to read the branch. If the operator doesn't set `CONFIG_BRANCH` as a repo var, it falls back to `'main'`. This must match what the server's `resolvedEnv.configBranch` resolves to.
+
+**Watch-out for future chunks.**
+- C4 and C7: when the config-write flow returns the pushed SHA, threading it to the immediately-following scan dispatch (via a `configSha` field on the post-config-write scan trigger) closes the full write-then-scan race. The current C6 change only fixes the `ref` field; `configSha` is not yet threaded from C4's `commitConfigChange` result to `handleScanPost`. The plan note ("at minimum make handleScanPost capable of accepting/forwarding a configSha") is met — `dispatchScan` now accepts it; the threading from C4→scan is a C7/C4 integration step.
+- The `CONFIG_BRANCH` repo variable must be set in the GitHub repo settings to match the `CONFIG_BRANCH` env var on fly.io. Document in C8's deployment.md.
+
 ## C2 — Step-up cookie protocol (2026-06-14)
 
 **What was implemented.**

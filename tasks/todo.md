@@ -48,6 +48,11 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Approach: remove the unused `cls` parameter from the `navBtn` helper (or prefix with `_cls`) in a future cleanup chunk scoped to Sidebar.tsx.
   - Risk: low — lint-only, no functional impact.
 
+- [ ] [origin:builder-C7:2026-06-14] [status:open] `RowAction` defined as nested function component inside `TargetsSafety` — `react/no-unstable-nested-components` may fire at G2 build:client.
+  - Why: RowAction is defined inside TargetsSafety's render and passed as JSX. No hook rules violation, but eslint react rules may flag it. Not fixed per surgical-changes rule (extracting it would require passing onClick via prop, which is its current interface — extracting to module level is fine but out of scope for this chunk).
+  - Approach: lift `RowAction` to module level, outside the `TargetsSafety` function, in a future cleanup chunk or at G2 if the build:client step flags it.
+  - Risk: low — functional impact is zero; lint/build issue only.
+
 - [ ] [origin:builder-C6:2026-06-14] [status:open] `withWorkspaceLock` (src/report/lock.ts) is fail-fast on contention (throws WorkspaceLockedError immediately when held by a live process), NOT a queuing mutex. C6 works around this with an in-process `withUploadQueue` promise chain that ensures only one upload enters the lock at a time. Future chunks or refactors should be aware: `withWorkspaceLock` is cross-process protection only; it does NOT serialize same-process callers.
   - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
   - Approach: in-process layer already added (withUploadQueue). No action needed unless cross-process real queueing is required.

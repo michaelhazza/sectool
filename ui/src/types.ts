@@ -176,3 +176,25 @@ export interface ScanJob {
 
 // Trigger provenance — matches the trigger field on scan-jobs events and upload envelopes
 export type TriggerKind = 'on-demand' | 'scheduled' | 'replay';
+
+// Config edit history entry (from GET /api/config/history)
+export interface ConfigHistoryEntry {
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  commitSha: string;
+  integrityOk?: boolean | undefined;
+}
+
+// Config write dependency health (from GET /api/config/health)
+export interface ConfigWriteDeps {
+  ok: boolean;
+  missing: string[];
+}
+
+// Response shape from GET /api/config/health
+export interface ConfigHealthResponse {
+  editingEnabled: boolean;
+  configWriteDeps: ConfigWriteDeps;
+}

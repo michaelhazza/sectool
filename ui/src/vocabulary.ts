@@ -29,6 +29,10 @@ export const BASELINE_LABELS = {
 
 export const ALLOWLIST_LABEL = 'Approved test sites';
 
+// Config editing state labels
+export const CONFIG_EDIT_DISABLED_LABEL = 'Config editing disabled';
+export const CONFIG_EDIT_ENABLED_LABEL = 'Live editing enabled';
+
 export const PARTIAL_RUN_LABEL = 'Some checks did not finish';
 export const PARTIAL_RUN_PILL = 'Incomplete run';
 
