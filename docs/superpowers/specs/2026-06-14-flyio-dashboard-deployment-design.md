@@ -206,8 +206,11 @@ Envelope:
      `githubWorkflow` + `githubSha`, and these are **verified server-side against
      `AUDIT_WORKFLOW_REPO` via the GitHub API** (using `AUDIT_GH_DISPATCH_TOKEN`,
      which gains `actions:read`): the run must exist, belong to the expected
-     workflow, be `status=completed`, and be recent (within a freshness window).
-     The fields are **proof checked against GitHub, not self-asserted metadata**.
+     workflow **matched by workflow file path or numeric workflow id — never the
+     mutable display name** (a renamed workflow must not bypass the check), be
+     `status=completed`, have a matching head SHA, and be recent (freshness
+     window). The fields are **proof checked against GitHub, not self-asserted
+     metadata**.
      Mismatch/unknown run → `409`. Its `runId` MUST also be new (duplicate on the
      volume → `409`). (OIDC is the stronger option, deferred as overkill — §11.)
    - `trigger: "replay"` → operator-initiated re-upload of a prior run (§6.3).
@@ -467,6 +470,8 @@ Restating the non-negotiable, because this change widens the attack surface:
       - **`scheduled`/`replay` upload rejected when GitHub run-verification fails
         (unknown run / wrong workflow / not completed), and duplicate `runId`
         rejected (409); response is `{ runId, jobId: null }` for these triggers**
+      - **upload with a valid run id but WRONG workflow path/id rejected**
+        (verification matches by path/id, not display name)
       - **scan-job fold preserves `targetRepo`/`stagingUrl` from the `requested`
         event through `dispatched`/`uploaded` (not lost to last-event-wins)**
       - **production startup fails when `ALLOWED_ORIGIN` or `BIND_HOST` unset**
@@ -478,7 +483,10 @@ Restating the non-negotiable, because this change widens the attack surface:
       - origin guard (ALLOWED_ORIGIN)
 - [ ] ADR: "fly.io deployment relaxes loopback-only binding; compensated by
       Basic Auth + fly proxy + production fail-closed"
-- [ ] Docs: `docs/deployment.md` (deploy steps, secret setup, first-run, replay)
+- [ ] Docs: `docs/deployment.md` (deploy steps, secret setup, first-run, replay).
+      **`AUDIT_GH_DISPATCH_TOKEN` must be a fine-grained PAT scoped to ONLY
+      `AUDIT_WORKFLOW_REPO`, Actions read+write only — no broader repo or org
+      permissions** (it both dispatches and verifies upload provenance, §4.2/§5.2).
 - [ ] KNOWLEDGE.md note on the two-image split + workflow_dispatch-has-no-run-id
 
 ## 10. Failure modes
