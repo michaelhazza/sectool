@@ -68,6 +68,33 @@ with a shell script (`docker-entrypoint.sh`) that passes `npm`, `node`, `sh`,
 then `docker run` with secrets passed via `--env`, and mounts `./reports` to
 capture artifacts.
 
+## fly.io dashboard deployment (2026-06-14)
+
+### Two-image split
+
+The repo ships two Docker images with entirely different roles:
+
+- **`Dockerfile`** — the heavy scanner image used by CI only. Contains Semgrep,
+  gitleaks, osv-scanner, OWASP ZAP, Nuclei, and their runtimes (Python, JRE).
+  Never deployed to fly.io.
+- **`Dockerfile.ui`** — a lightweight dashboard image (`node:20-bookworm-slim`).
+  Contains only the compiled Node server (`dist/`), the SPA (`ui/dist/`), and
+  checked-in config. No scanner binaries. This is what fly.io runs.
+
+When updating scanner versions, update `Dockerfile` only. When updating the
+dashboard server or UI, `Dockerfile.ui` rebuilds automatically on `fly deploy`.
+
+### workflow_dispatch has no run id
+
+GitHub's `POST /repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches`
+REST call returns **HTTP 204 with an empty body** — it does NOT return the run id
+of the workflow run it creates. This is why a correlation nonce (`jobId`, a
+32-hex random string minted by `/api/scan`) is passed as a workflow input and
+echoed back by CI in the upload envelope. The server uses this `jobId` to bind
+an upload back to the dispatch that triggered it (on-demand provenance, §4.1–§4.2).
+Without this nonce, there would be no reliable way to correlate a CI upload with
+the specific dashboard request that triggered it.
+
 ## Corrections
 
 - (none yet)
