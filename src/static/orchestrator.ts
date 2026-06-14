@@ -282,8 +282,13 @@ export async function scanRepos(
         let acquired: { dir: string; commit: string | undefined; cleanup: () => Promise<void> };
         try {
           acquired = await acquire(target);
-        } catch {
+        } catch (err) {
           // Clone failure: fail all families for this target only; others continue.
+          // Surface the reason (e.g. "git: not found", "403", missing token) so a
+          // failed static scan is diagnosable from the run logs, not silent.
+          process.stderr.write(
+            `[static] repo acquisition failed for ${target.name}: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
           const families = Object.keys(scanners) as ScannerFamily[];
           return {
             findings: [],

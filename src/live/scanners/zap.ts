@@ -414,6 +414,10 @@ function yamlQuote(value: string): string {
 
 export function buildZapAutomationYaml(targetUrl: string, activeMode: boolean, rateLimitRps: number, reportFilePath: string): string {
   const quotedUrl = yamlQuote(targetUrl);
+  // The include-path regex suffix MUST be inside the quotes — quoting the URL
+  // and then appending `.*` produces `"https://host/".*`, which is invalid YAML
+  // (a quoted scalar followed by a bare scalar) and aborts the ZAP plan parse.
+  const quotedIncludePath = yamlQuote(`${targetUrl}.*`);
   const scanPolicy = activeMode
     ? `    - type: activeScan
       parameters:
@@ -427,7 +431,7 @@ env:
       urls:
         - ${quotedUrl}
       includePaths:
-        - ${quotedUrl}.*
+        - ${quotedIncludePath}
   parameters:
     maxRequestsPerSecond: ${rateLimitRps}
 jobs:
