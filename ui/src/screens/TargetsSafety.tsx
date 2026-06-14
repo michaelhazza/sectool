@@ -114,6 +114,7 @@ function RepoForm({ initial, onSave, onCancel }: RepoFormProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!isEdit && name.trim() === '') { setError('Name is required.'); return; }
+    if (!isEdit && gitUrl.trim() === '') { setError('Git URL is required.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -135,8 +136,8 @@ function RepoForm({ initial, onSave, onCancel }: RepoFormProps) {
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="my-app" required />
         </FieldRow>
       )}
-      <FieldRow label="Git URL (optional)">
-        <input type="url" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="https://github.com/org/repo" />
+      <FieldRow label="Git URL">
+        <input type="url" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="https://github.com/org/repo" required />
       </FieldRow>
       {error && <ActionError message={error} onDismiss={() => setError(null)} />}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -182,6 +183,7 @@ function StagingForm({ initial, allowlistHosts, onSave, onCancel }: StagingFormP
     e.preventDefault();
     if (!isEdit && name.trim() === '') { setError('Name is required.'); return; }
     if (!isEdit && url.trim() === '') { setError('URL is required.'); return; }
+    if (repo.trim() === '') { setError('Linked repo is required (the code repo this staging site belongs to).'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -209,8 +211,8 @@ function StagingForm({ initial, allowlistHosts, onSave, onCancel }: StagingFormP
           </FieldRow>
         </>
       )}
-      <FieldRow label="Linked repo (optional)">
-        <input type="text" value={repo} onChange={(e) => setRepo(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="my-app" />
+      <FieldRow label="Linked repo">
+        <input type="text" value={repo} onChange={(e) => setRepo(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="my-app" required />
       </FieldRow>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44 }}>
         <input

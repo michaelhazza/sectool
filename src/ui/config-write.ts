@@ -266,23 +266,35 @@ async function executeWrite(
 // ---------------------------------------------------------------------------
 
 export async function addRepo(
-  repo: RepoTarget,
+  repo: Partial<RepoTarget> & { name: string },
   opts: WriteServiceOpts,
 ): Promise<WriteResult> {
   const { configDir } = opts;
   const targets = readTargets(configDir);
   const allowlist = readAllowlist(configDir);
 
+  // Normalise a minimal UI payload ({ name, gitUrl }) into a schema-valid repo
+  // entry by filling the fields the form doesn't collect. executeWrite still
+  // validates the result, so an invalid gitUrl etc. is rejected before commit.
+  const fullRepo: RepoTarget = {
+    name: repo.name,
+    gitUrl: repo.gitUrl ?? '',
+    localPath: repo.localPath ?? null,
+    stackTags: repo.stackTags ?? [],
+    publicRoutes: repo.publicRoutes ?? [],
+    enabled: repo.enabled ?? true,
+  };
+
   const newTargets: TargetRegistry = {
     ...targets,
-    repos: [...targets.repos, repo],
+    repos: [...targets.repos, fullRepo],
   };
 
   const files = [targetsFile(newTargets)];
   return executeWrite(
     files, newTargets, allowlist,
-    `config(dashboard): add repo ${repo.name}`,
-    'add-repo', repo.name, opts,
+    `config(dashboard): add repo ${fullRepo.name}`,
+    'add-repo', fullRepo.name, opts,
   );
 }
 
@@ -334,7 +346,7 @@ export async function removeRepo(
  * the allowlist in the SAME commitConfigChange call (one commit, two files).
  */
 export async function addStagingTarget(
-  stagingTarget: StagingTarget,
+  stagingTarget: Partial<StagingTarget> & { name: string; url: string },
   addHost: boolean,
   opts: WriteServiceOpts,
 ): Promise<WriteResult> {
@@ -342,20 +354,32 @@ export async function addStagingTarget(
   const targets = readTargets(configDir);
   const allowlist = readAllowlist(configDir);
 
+  // Normalise the minimal UI payload into a schema-valid staging target. `repo`
+  // and `url` are genuinely required by the schema (validated in executeWrite).
+  const fullTarget: StagingTarget = {
+    name: stagingTarget.name,
+    url: stagingTarget.url,
+    repo: stagingTarget.repo ?? '',
+    activeScan: stagingTarget.activeScan ?? false,
+    rateLimitRps: stagingTarget.rateLimitRps ?? 10,
+    enabled: stagingTarget.enabled ?? true,
+    ...(stagingTarget.auth !== undefined ? { auth: stagingTarget.auth } : {}),
+  };
+
   const newTargets: TargetRegistry = {
     ...targets,
-    stagingTargets: [...targets.stagingTargets, stagingTarget],
+    stagingTargets: [...targets.stagingTargets, fullTarget],
   };
 
   let newAllowlist = allowlist;
   if (addHost) {
-    const host = new URL(stagingTarget.url).hostname;
+    const host = new URL(fullTarget.url).hostname;
     const alreadyPresent = allowlist.hosts.some((e) => e.host === host);
     if (!alreadyPresent) {
       const newEntry: AllowlistEntry = {
         host,
         owner: opts.actor,
-        addedAt: new Date().toISOString(),
+        addedAt: new Date().toISOString().slice(0, 10),
       };
       newAllowlist = { hosts: [...allowlist.hosts, newEntry] };
     }
@@ -416,22 +440,31 @@ export async function removeStagingTarget(
 }
 
 export async function addHost(
-  entry: AllowlistEntry,
+  entry: Partial<AllowlistEntry> & { host: string },
   opts: WriteServiceOpts,
 ): Promise<WriteResult> {
   const { configDir } = opts;
   const targets = readTargets(configDir);
   const allowlist = readAllowlist(configDir);
 
+  // Normalise the minimal UI payload: owner + addedAt are schema-required, so
+  // default them when the form leaves them blank.
+  const fullEntry: AllowlistEntry = {
+    host: entry.host,
+    owner: entry.owner !== undefined && entry.owner !== '' ? entry.owner : opts.actor,
+    addedAt: entry.addedAt ?? new Date().toISOString().slice(0, 10),
+    ...(entry.note !== undefined && entry.note !== '' ? { note: entry.note } : {}),
+  };
+
   const newAllowlist: Allowlist = {
-    hosts: [...allowlist.hosts, entry],
+    hosts: [...allowlist.hosts, fullEntry],
   };
 
   const files = [allowlistFile(newAllowlist)];
   return executeWrite(
     files, targets, newAllowlist,
-    `config(dashboard): add host ${entry.host}`,
-    'add-host', entry.host, opts,
+    `config(dashboard): add host ${fullEntry.host}`,
+    'add-host', fullEntry.host, opts,
   );
 }
 
