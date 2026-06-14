@@ -64,8 +64,8 @@ export function RunAScan() {
     };
   }, [activeJobId]);
 
-  const repos = config?.repoTargets.filter((r) => r.enabled) ?? [];
-  const stagingTargets = config?.stagingTargets.filter((s) => s.enabled) ?? [];
+  const repos = (config?.repoTargets ?? []).filter((r) => r.enabled);
+  const stagingTargets = (config?.stagingTargets ?? []).filter((s) => s.enabled);
 
   const hasRepos = repos.length > 0;
   const hasStagingTargets = stagingTargets.length > 0;

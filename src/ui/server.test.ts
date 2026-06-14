@@ -236,11 +236,23 @@ describe('read-only endpoints — file state', () => {
     expect(status).toBe(404);
   });
 
-  it('GET /api/config/targets returns repos array', async () => {
+  it('GET /api/reports/:runId rejects a non-RUN_ID segment without building a path (6-A traversal guard)', async () => {
+    // A `..` segment matches the single-segment route regex; RUN_ID_RE validation
+    // must reject it (404) before resolve() could escape reportsDir.
+    const { status } = await get(srv.port, '/api/reports/..%2F..%2Fconfig/report.json');
+    expect(status).toBe(404);
+    const plain = await get(srv.port, '/api/reports/not-a-valid-runid/report.json');
+    expect(plain.status).toBe(404);
+  });
+
+  it('GET /api/config/targets returns the projected UI shape (repoTargets/stagingTargets)', async () => {
     const { status, body } = await get(srv.port, '/api/config/targets');
     expect(status).toBe(200);
-    const json = JSON.parse(body) as { repos: unknown[] };
-    expect(Array.isArray(json.repos)).toBe(true);
+    // Projected to the SPA's TargetsConfig shape (not the raw `repos` key), with
+    // the auth/rateLimit detail dropped. See the /api/config/targets handler.
+    const json = JSON.parse(body) as { repoTargets: unknown[]; stagingTargets: unknown[] };
+    expect(Array.isArray(json.repoTargets)).toBe(true);
+    expect(Array.isArray(json.stagingTargets)).toBe(true);
   });
 });
 
@@ -1023,6 +1035,30 @@ describe('POST /api/scan — registry safety gate', () => {
     expect(dispatchCalls.length).toBe(1);
   });
 
+  it('returns 400 for an allowlisted host with an UNREGISTERED sub-path (4-C: exact-URL match)', async () => {
+    // Host is allowlisted + preflight passes, but the submitted URL has a path the
+    // registered target does not — must be rejected, never dispatched.
+    vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+    vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+      [{ name: 'audit-tool', enabled: true }],
+      [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+    ));
+    vi.mocked(preflight).mockReturnValueOnce({
+      target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+      registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+    });
+    const callsBefore = dispatchCalls.length;
+    const { status } = await post(
+      scanSrv.port,
+      '/api/scan',
+      JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com/admin' }),
+      validHeaders(scanSrv.port),
+    );
+    expect(status).toBe(400);
+    // No dispatch occurred for the sub-path request.
+    expect(dispatchCalls.length).toBe(callsBefore);
+  });
+
   it('dispatch failure records dispatch_failed event and returns 502', async () => {
     vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
     vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
@@ -1288,6 +1324,24 @@ describe('POST /api/upload — on-demand provenance', () => {
     const envelope = makeOnDemandEnvelope(newRunId, JOB_ID);
     const { status } = await post(
       uploadSrv.port, '/api/upload', JSON.stringify(envelope),
+      bearerHeader(),
+    );
+    expect(status).toBe(409);
+  });
+
+  it('returns 409 when the runId dir already exists, even for a fresh dispatched job (3-A in-lock dedup)', async () => {
+    // A DISTINCT dispatched job whose verifyOnDemand would pass, but the
+    // happy-path test already wrote reports/<VALID_RUN_ID>/. The in-lock
+    // runIdExistsOnVolume guard must reject the duplicate runId on the on-demand
+    // path (not just scheduled/replay) — no silent overwrite.
+    const JOB_ID_2 = 'ccddeeff5566778899ccddeeff556677';
+    appendEvent(
+      { event: 'requested', jobId: JOB_ID_2, targetRepo: 'my-app', stagingUrl: 'https://staging.example.com', at: DISPATCH_AT },
+      uploadTmpDir,
+    );
+    appendEvent({ event: 'dispatched', jobId: JOB_ID_2, at: DISPATCH_AT }, uploadTmpDir);
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(makeOnDemandEnvelope(VALID_RUN_ID, JOB_ID_2)),
       bearerHeader(),
     );
     expect(status).toBe(409);

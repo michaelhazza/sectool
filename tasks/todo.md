@@ -165,3 +165,15 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: `main()` calls `runBenchmark()` with empty `scanResults`/`cleanResults`/`liveFixtureResults`; the harness only reads EXPECTED.json and computes metrics from caller-supplied arrays — it never runs the audit engine over the corpus. A fixture with empty/unreadable/malformed EXPECTED.json contributes recall=1 with zero actual findings, so the CLAUDE.md recall/precision base gate can pass without exercising detection.
   - Approach: wire the static/live engine over `benchmark/corpus` + `benchmark/live-fixture` inside `main()` and feed real ScanResults; assert corpus non-empty.
   - Risk: medium — a base gate that does not actually gate detection quality.
+
+## Deferred from spec-conformance review — flyio-dashboard (2026-06-14)
+
+**Captured:** 2026-06-14T00:00:00Z
+**Source log:** (returned inline by spec-conformance; no log file written per harness convention)
+**Spec:** `docs/superpowers/specs/2026-06-14-flyio-dashboard-deployment-design.md`
+
+- [ ] [origin:spec-conformance:2026-06-14] [status:open] RunAScan repo dropdown reads `config.repoTargets` but `/api/config/targets` serves the raw `targets.json` whose top-level key is `repos` — repo dropdown is always empty
+  - Spec section: §8 (UI changes — "two dropdowns (repo, staging target) sourced from existing `/api/config/*` endpoints") and §4.1 selection-UI note.
+  - Gap: `ui/src/screens/RunAScan.tsx:67` reads `config.repoTargets`; `src/ui/server.ts:278-286` serves `config/targets.json` verbatim, whose top-level keys are `repos` + `stagingTargets` (confirmed against the on-disk file). `stagingTargets` matches; `repoTargets` does not exist on the served object, so `repos` resolves to `[]` and the repo `<select>` shows only the placeholder. The "Run scan" button can never be enabled (canSubmit requires a selected repo). The staging-target half works.
+  - Suggested approach: pick one contract and align both ends — either map the served object to `{ repoTargets, stagingTargets }` server-side in the `/api/config/targets` handler, or change the UI to read `config.repos` and adjust the `TargetsConfig` type. This is a UI↔server contract divergence requiring a design choice (which side owns the field name), so it is routed rather than auto-fixed. Not a safety-contract issue — the server-side §7 registry gate on `/api/scan` is independent of this dropdown and remains intact.
+  - Risk: medium — the primary on-demand-scan entry point (§1 goal "trigger scans on demand from the UI") is non-functional for the repo selector until aligned. The server-side safety gate is unaffected.

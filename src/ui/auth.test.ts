@@ -17,10 +17,11 @@ function get(
   port: number,
   path: string,
   extraHeaders?: Record<string, string>,
+  method = 'GET',
 ): Promise<{ status: number; body: string; headers: import('node:http').IncomingHttpHeaders }> {
   return new Promise((res, rej) => {
     const req = httpRequest(
-      { hostname: '127.0.0.1', port, path, method: 'GET', headers: extraHeaders ?? {} },
+      { hostname: '127.0.0.1', port, path, method, headers: extraHeaders ?? {} },
       (response) => {
         let data = '';
         response.on('data', (chunk: Buffer | string) => { data += chunk.toString(); });
@@ -308,15 +309,20 @@ describe('HTTP auth gate — gate enabled with secrets', () => {
     expect(status).not.toBe(401);
   });
 
-  it('/api/upload is reachable without Basic Auth credentials (bearer-only route)', async () => {
-    // /api/upload is not yet implemented (C6) but is exempt from Basic Auth.
-    // Without the bearer token it will eventually return 401 from a different
-    // check, but it must not be rejected by the Basic Auth gate (no WWW-Authenticate).
-    const { status, headers } = await get(srv.port, '/api/upload');
-    // Must not have the Basic Auth WWW-Authenticate response
+  it('POST /api/upload bypasses Basic Auth (bearer-only route)', async () => {
+    // POST /api/upload is exempt from Basic Auth and handled by the bearer check.
+    // Without the bearer token it returns a 401 from the bearer check — NOT the
+    // Basic Auth gate (no WWW-Authenticate: Basic header).
+    const { headers } = await get(srv.port, '/api/upload', {}, 'POST');
     expect(headers['www-authenticate']).not.toBe('Basic realm="sectool"');
-    // Status from the Basic Auth gate is exactly 401 with that header; any
-    // other status means the gate was bypassed correctly (404 until C6 exists).
-    expect(status).not.toBe(401);
+  });
+
+  it('non-POST /api/upload is NOT exempt — goes through Basic Auth (2-B method scoping)', async () => {
+    // The exemption is scoped to POST. A GET to /api/upload must hit the Basic
+    // Auth gate (401 + WWW-Authenticate) rather than reaching an unauthenticated
+    // code path.
+    const { status, headers } = await get(srv.port, '/api/upload');
+    expect(status).toBe(401);
+    expect(headers['www-authenticate']).toBe('Basic realm="sectool"');
   });
 });

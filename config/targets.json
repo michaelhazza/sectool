@@ -1,1 +1,1 @@
-{"repos":[{"name":"audit-tool","gitUrl":"https://github.com/michaelhazza/sectool.git","localPath":".","stackTags":["express"],"publicRoutes":[],"enabled":true},{"name":"automation-v1","gitUrl":"https://github.com/breakoutsolutions/automation-v1.git","localPath":null,"stackTags":["express"],"publicRoutes":[],"enabled":true}],"stagingTargets":[]}
+{"repos":[{"name":"automation-v1","gitUrl":"https://github.com/breakoutsolutions/automation-v1.git","localPath":null,"stackTags":["express"],"publicRoutes":[],"enabled":true}],"stagingTargets":[]}

@@ -243,7 +243,11 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   const reportMatch = /^\/api\/reports\/([^/]+)\/report\.json$/.exec(pathname);
   if (req.method === 'GET' && reportMatch !== null) {
     const runId = reportMatch[1];
-    if (runId === undefined) {
+    // Validate runId shape before building any path (adversarial-reviewer 6-A —
+    // parity with the upload write path). The route regex allows a single
+    // non-slash segment, so a `..` segment would otherwise resolve to the parent
+    // of reportsDir. RUN_ID_RE rejects it before resolve() is reached.
+    if (runId === undefined || !RUN_ID_RE.test(runId)) {
       jsonResponse(res, 404, { error: 'Not found' });
       return true;
     }
@@ -274,13 +278,38 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
     return true;
   }
 
-  // GET /api/config/targets — config/targets.json
+  // GET /api/config/targets — config/targets.json, projected to the UI's
+  // TargetsConfig shape ({ repoTargets, stagingTargets } of TargetRegistryEntry).
+  // The raw file uses key `repos` and carries auth/rateLimit detail the SPA never
+  // needs; projecting here fixes the UI contract (RunAScan + Sites/Safety both
+  // read `repoTargets`) AND drops the auth block from the response (less exposure).
   if (req.method === 'GET' && pathname === '/api/config/targets') {
     try {
-      const data = readJsonFile(resolve(CONFIG_DIR, 'targets.json'));
-      jsonResponse(res, 200, data);
+      const raw = readJsonFile(resolve(CONFIG_DIR, 'targets.json')) as {
+        repos?: Array<{ name: string; enabled: boolean }>;
+        stagingTargets?: Array<{ name: string; url: string; repo?: string; activeScan?: boolean; enabled: boolean }>;
+      };
+      const repoTargets = (raw.repos ?? []).map((r) => ({
+        name: r.name,
+        kind: 'repo' as const,
+        enabled: r.enabled,
+      }));
+      const stagingTargets = (raw.stagingTargets ?? []).map((s) => {
+        let host: string | undefined;
+        try { host = new URL(s.url).hostname; } catch { host = undefined; }
+        return {
+          name: s.name,
+          kind: 'staging' as const,
+          enabled: s.enabled,
+          url: s.url,
+          host,
+          repo: s.repo,
+          activeScan: s.activeScan ?? false,
+        };
+      });
+      jsonResponse(res, 200, { repoTargets, stagingTargets });
     } catch {
-      jsonResponse(res, 200, { repos: [], stagingTargets: [] });
+      jsonResponse(res, 200, { repoTargets: [], stagingTargets: [] });
     }
     return true;
   }
@@ -512,10 +541,27 @@ async function handleScanPost(
   }
 
   // Check 3b: URL check — reuses the exact preflight gate the CLI uses.
+  let stagingRegistryEntry: ReturnType<typeof preflight>['registryEntry'];
   try {
-    preflight(stagingUrl, allowlist, registry);
+    stagingRegistryEntry = preflight(stagingUrl, allowlist, registry).registryEntry;
   } catch {
     jsonResponse(res, 400, { error: 'Bad request: stagingUrl is not on the allowlist or not registered' });
+    return;
+  }
+
+  // Check 3c: exact-URL match (adversarial-reviewer 4-C). preflight matches by
+  // HOSTNAME only, so an allowlisted host with an unregistered sub-path
+  // (e.g. https://staging.example.com/admin) would otherwise pass and be scanned.
+  // The dropdown always submits a registered target's exact URL, so require the
+  // submitted URL to equal the registered target URL (normalised via URL.href —
+  // tolerates only a trailing-slash difference, never a different path).
+  try {
+    if (new URL(stagingUrl).href !== new URL(stagingRegistryEntry.url).href) {
+      jsonResponse(res, 400, { error: 'Bad request: stagingUrl must exactly match a registered staging target URL' });
+      return;
+    }
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: stagingUrl is not a valid URL' });
     return;
   }
 
@@ -620,11 +666,13 @@ async function handleUploadPost(
   let tokenMatch = false;
   if (uploadToken.length > 0 && providedToken.length > 0) {
     const expected = Buffer.from(uploadToken, 'utf8');
-    const actual = Buffer.alloc(expected.length);
     const providedBuf = Buffer.from(providedToken, 'utf8');
-    // Pad/truncate to the same length to prevent length-leak
-    providedBuf.copy(actual, 0, 0, Math.min(providedBuf.length, actual.length));
-    tokenMatch = timingSafeEqual(expected, actual) && providedToken === uploadToken;
+    // Constant-time compare for equal-length buffers. A length mismatch is an
+    // immediate reject (length is not a useful secret to protect, and the prior
+    // pad + `providedToken === uploadToken` introduced a NON-constant-time
+    // string comparison — removed). timingSafeEqual requires equal lengths.
+    tokenMatch =
+      expected.length === providedBuf.length && timingSafeEqual(expected, providedBuf);
   }
 
   if (!tokenMatch) {
@@ -800,10 +848,21 @@ async function handleUploadPost(
   const trendPath = resolve(historyDir, 'trend.jsonl');
   const lockPath = resolve(reportsDir, '.upload-lock');
   let writeError: Error | undefined;
+  let duplicate = false;
 
   try {
     await withUploadQueue(reportsDir, async () => {
       await withWorkspaceLock(async () => {
+        // TOCTOU close (adversarial-reviewer 3-A): the AUTHORITATIVE duplicate
+        // check runs INSIDE the serialized critical section for ALL triggers.
+        // On-demand's pre-lock verifyOnDemand reads the folded state before any
+        // `uploaded` event is appended, so two concurrent same-jobId/same-runId
+        // POSTs both pass it; here the second sees the first's run dir and aborts
+        // rather than overwriting report.json via a last-rename-wins race.
+        if (runIdExistsOnVolume(canonicalRunId, reportsDir)) {
+          duplicate = true;
+          return;
+        }
         await writeReport(report, reportsDir);
 
         // Write optional markdown/sarif (if present in envelope — no signature change to writeReport).
@@ -827,6 +886,10 @@ async function handleUploadPost(
     writeError = err instanceof Error ? err : new Error(String(err));
   }
 
+  if (duplicate) {
+    jsonResponse(res, 409, { error: `Duplicate runId: ${canonicalRunId} already ingested` });
+    return;
+  }
   if (writeError !== undefined) {
     jsonResponse(res, 500, { error: `Write failed: ${writeError.message}` });
     return;
@@ -935,9 +998,14 @@ function handleRequest(
   }
 
   // Basic Auth gate — applied after URL parse, BEFORE route dispatch.
-  // Exemptions: /healthz (unauthenticated health probe) and /api/upload
-  // (uses bearer auth in C6, bypasses Basic Auth by design).
-  const isExempt = url.pathname === '/healthz' || url.pathname === '/api/upload';
+  // Exemptions: /healthz (unauthenticated health probe) and POST /api/upload
+  // (uses bearer auth in C6, bypasses Basic Auth by design). The /api/upload
+  // exemption is scoped to POST (adversarial-reviewer 2-B) — a non-POST method
+  // to that path is NOT exempt, so it goes through Basic Auth and then 404s
+  // rather than reaching an unauthenticated code path.
+  const isExempt =
+    url.pathname === '/healthz' ||
+    (url.pathname === '/api/upload' && req.method === 'POST');
   if (!isExempt && basicAuthGate(req.headers['authorization'], resolvedEnv) === 'reject') {
     res.writeHead(401, {
       'WWW-Authenticate': 'Basic realm="sectool"',
@@ -1062,6 +1130,12 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
     const server = createServer((req, res) => {
       handleRequest(req, res, currentResolved, handler, env, dispatchGithubClient, serverClock);
     });
+
+    // Connection hardening (adversarial-reviewer 5-A): bound how long a client
+    // (even an authenticated one holding the upload token) may hold a connection
+    // while trickling a body, so a slow-loris cannot pin sockets indefinitely.
+    server.requestTimeout = 60_000; // whole request must complete within 60s
+    server.headersTimeout = 15_000; // headers must arrive within 15s
 
     server.on('error', reject);
 
