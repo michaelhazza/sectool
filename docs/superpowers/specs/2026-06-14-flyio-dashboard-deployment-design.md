@@ -202,16 +202,27 @@ Envelope:
      target → `409 Conflict`, nothing written. (Already-uploaded guard makes the
      endpoint idempotent-safe and blocks replay of a captured envelope.)
    - `trigger: "scheduled"` → the weekly cron has no fly-issued `jobId`. It is
-     NOT accepted on bearer auth alone (that would let a leaked token inject a
-     fabricated scheduled run): it MUST carry `githubRunId` + `githubWorkflow` +
-     `githubSha`, and its `runId` MUST be new (duplicate `runId` already on the
-     volume → `409`). This binds the upload to a real Actions run and blocks
-     replay of a captured scheduled envelope. (OIDC verification is the stronger
-     option but deferred as overkill for v1 — noted in §11.)
+     NOT accepted on bearer auth alone. It MUST carry `githubRunId` +
+     `githubWorkflow` + `githubSha`, and these are **verified server-side against
+     `AUDIT_WORKFLOW_REPO` via the GitHub API** (using `AUDIT_GH_DISPATCH_TOKEN`,
+     which gains `actions:read`): the run must exist, belong to the expected
+     workflow, be `status=completed`, and be recent (within a freshness window).
+     The fields are **proof checked against GitHub, not self-asserted metadata**.
+     Mismatch/unknown run → `409`. Its `runId` MUST also be new (duplicate on the
+     volume → `409`). (OIDC is the stronger option, deferred as overkill — §11.)
    - `trigger: "replay"` → operator-initiated re-upload of a prior run (§6.3).
-     Carries `sourceRunId` (the original) + the same GitHub provenance fields as
-     scheduled; recorded with `replayed: true` so history distinguishes it from
-     both cron and operator-triggered scans. Duplicate live `runId` → `409`.
+     Carries `sourceRunId` (the original) + the same GitHub provenance fields,
+     verified the same way (the freshness window is relaxed for replay since the
+     run may be old, but existence + workflow + completion are still checked);
+     recorded with `replayed: true` so history distinguishes it from both cron
+     and operator-triggered scans. Duplicate live `runId` → `409`.
+
+   > **Residual risk (stated honestly).** Server-side verification proves a real
+   > matching CI run happened; it does NOT cryptographically prove the report
+   > *body* came from that run ("real run, fabricated body" remains theoretically
+   > possible for a holder of both the upload token AND knowledge of a real
+   > run id). This is acceptable for an internal tool where the token is a
+   > CI-only secret; OIDC would close it (§11). The §7 claim is scoped to match.
 4. **Schema validation:** parse `report` against the existing Zod `RunReport`
    schema. Invalid → `422`, nothing written.
 5. **Write:** atomically write `reports/<runId>/report.json` (+ `.md`, `.sarif`
@@ -219,8 +230,15 @@ Envelope:
    `history/trend.jsonl`. Reuses the existing `writeReport` / `writeTrend` logic
    (now `DATA_DIR`-aware, §3.2). `runId` is validated to match `RUN_ID_RE`
    before any path is built, to prevent traversal.
-6. **Mark job uploaded:** append an `uploaded` event for `jobId` to the
-   scan-jobs log (§4.3). Respond `200 { runId, jobId }`.
+6. **Record ingest — by trigger** (scheduled/replay have NO fly-issued `jobId`):
+   - `on-demand` → append an `uploaded` event for `jobId`; respond
+     `200 { runId, jobId }`.
+   - `scheduled` / `replay` → append a separate `report_ingested` event
+     (`{ event, trigger, runId, githubRunId, replayed?, at }`) — no `jobId`;
+     respond `200 { runId, jobId: null }`.
+
+   The response shape is `{ runId, jobId: string | null }` — `jobId` is present
+   only for on-demand uploads.
 
 > The CI→fly.io payload is a single JSON envelope (above) rather than multipart —
 > simpler to validate and matches how the data already exists in memory at the
@@ -243,7 +261,15 @@ concurrency MEDIUM from review). Every state change is a line append to
 {"event":"uploaded","jobId":"a1b2…","runId":"2026-…","at":"…"}
 ```
 
-**State machine** (folded on read, last event per `jobId` wins):
+**Folding rule.** Group events by `jobId`. **Immutable identity fields
+(`targetRepo`, `stagingUrl`, first `at`) are taken from the `requested` event;
+the current state is the latest status event.** This is NOT a naive "last event
+wins" — later events (`dispatched`, `uploaded`) deliberately omit the target
+metadata to keep records small, so a completed job must still surface its
+`targetRepo`/`stagingUrl` from its `requested` event. (A test asserts a
+completed job still shows its target.)
+
+**State machine** (state = latest status event per `jobId`):
 
 | Last event | UI state |
 |---|---|
@@ -285,11 +311,14 @@ secret could silently publish the dashboard unauthenticated — especially since
 
 - **Production is inferred from `FLY_APP_NAME` being set** (fly.io sets this
   automatically), or explicitly from `REQUIRE_AUTH=true`.
-- In production mode, **missing Basic Auth secrets is a hard startup failure** —
+- In production mode, **missing required config is a hard startup failure** —
   the server refuses to listen and exits non-zero. The dashboard never comes up
-  unauthenticated on fly.io.
+  unauthenticated or misconfigured on fly.io. Required in production:
+  `AUDIT_BASIC_AUTH_USER`/`PASS`, **`ALLOWED_ORIGIN`** (no localhost default —
+  the origin guard must be explicit), and **`BIND_HOST`**. Any missing → refuse
+  to start, naming the missing var.
 - Outside production (no `FLY_APP_NAME`, no `REQUIRE_AUTH`), unset secrets just
-  disable the gate as today.
+  disable the gate and fall back to the localhost defaults as today.
 
 Startup logs the resolved state explicitly ("Basic Auth: enabled (production)" /
 "disabled (local dev)") so it is never ambiguous.
@@ -300,7 +329,7 @@ Startup logs the resolved state explicitly ("Basic Auth: enabled (production)" /
 |---|---|---|
 | `AUDIT_BASIC_AUTH_USER/PASS` | fly.io | Human dashboard login |
 | `AUDIT_UPLOAD_TOKEN` | fly.io **and** GitHub Actions | CI → fly.io upload auth |
-| `AUDIT_GH_DISPATCH_TOKEN` | fly.io | fly.io → GitHub workflow_dispatch (`actions:write` on the audit-tool repo only) |
+| `AUDIT_GH_DISPATCH_TOKEN` | fly.io | fly.io → GitHub workflow_dispatch + upload run-verification (`actions:read`+`write` on the audit-tool repo only, §4.2) |
 | `AUDIT_WORKFLOW_REPO` | fly.io | Fixed `owner/repo` the dispatch targets (the audit-tool repo, e.g. `breakoutsolutions/sectool`) — NOT the scan target |
 | `FLY_UPLOAD_URL` | GitHub Actions | Where CI POSTs results (`https://sectool.fly.dev/api/upload`) |
 
@@ -312,8 +341,10 @@ Startup logs the resolved state explicitly ("Basic Auth: enabled (production)" /
 `https://sectool.fly.dev` on fly.io). Applies to `/api/fix` and the new
 `/api/scan`. **Loopback binding is also generalized:** the server currently binds
 `127.0.0.1` only; on fly.io it must bind `0.0.0.0` so fly's proxy can reach it.
-Introduce `BIND_HOST` env (default `127.0.0.1`; `0.0.0.0` on fly.io). The §5.2
-"never 0.0.0.0" invariant from v1 is **consciously relaxed for the fly.io
+Introduce `BIND_HOST` env (default `127.0.0.1`; `0.0.0.0` on fly.io). In
+production both `ALLOWED_ORIGIN` and `BIND_HOST` are **required** (§5.1
+fail-closed) — no silent localhost default when the app is internet-facing. The
+§5.2 "never 0.0.0.0" invariant from v1 is **consciously relaxed for the fly.io
 deployment only**, compensated by Basic Auth + the fly proxy (TLS-terminated,
 no raw port exposure). Recorded as an ADR (§9).
 
@@ -379,14 +410,20 @@ Restating the non-negotiable, because this change widens the attack surface:
    known-shape files at computed paths are written.
 4. **The allowlist file is read-only on fly.io** (baked into the image, on no
    writable volume path). The dashboard exposes no endpoint that edits it.
-5. **Upload provenance, not just upload auth.** `/api/upload` binds every report
-   to a legitimate run, so a leaked `AUDIT_UPLOAD_TOKEN` alone cannot inject a
-   fabricated report — for ANY trigger class:
+5. **Upload provenance, not just upload auth.** No trigger class is accepted on
+   bearer auth alone; every upload is bound to a verified run:
    - `on-demand` → must carry a `jobId` matching a live `dispatched` job with the
-     same target; already-uploaded job rejected (replay guard).
-   - `scheduled` / `replay` → must carry GitHub run provenance
-     (`githubRunId`/`githubWorkflow`/`githubSha`) and a non-duplicate `runId`.
-   No trigger class is accepted on bearer auth alone. (§4.2.)
+     same target; already-uploaded job rejected (replay guard). The `jobId` is a
+     server-minted secret nonce, so a leaked upload token alone cannot forge it.
+   - `scheduled` / `replay` → `githubRunId`/`githubWorkflow`/`githubSha` are
+     **verified server-side against the GitHub API** (run exists, right workflow,
+     completed, fresh) + non-duplicate `runId`. These are checked facts, not
+     self-asserted metadata.
+   - **Residual gap (honest scope):** server-side verification proves a real
+     matching run occurred but does not cryptographically prove the report *body*
+     originated from it — "real run id + fabricated body" remains possible for a
+     holder of both the CI-only upload token and a known run id. Accepted for an
+     internal tool; OIDC would close it (deferred, §11). (§4.2.)
 
 ## 8. UI changes
 
@@ -417,7 +454,7 @@ Restating the non-negotiable, because this change widens the attack surface:
 - [ ] `.github/workflows/on-demand-scan.yml` (job_id + replay_run_id inputs)
 - [ ] `weekly-audit.yml` upload step (`trigger=scheduled`)
 - [ ] Shared CI uploader script (`scripts/upload-report.mjs`)
-- [ ] UI: Run-a-scan panel + nav + api helpers + scheduled-vs-operator badge
+- [ ] UI: Run-a-scan panel + nav + api helpers + trigger-provenance badge (operator / scheduled / replay)
 - [ ] Unit tests (the review-required set):
       - auth gate rejects when unauthenticated
       - **production fail-closed:** startup fails when `FLY_APP_NAME` set (or
@@ -427,8 +464,12 @@ Restating the non-negotiable, because this change widens the attack surface:
       - **`/api/upload` rejects a valid report for unknown/mismatched `jobId`**
         (409) and for already-`uploaded` jobId (replay guard)
       - **`/api/upload` flips the matching job `dispatched`→`uploaded`**
-      - **`scheduled`/`replay` upload rejected without GitHub provenance, and
-        duplicate `runId` rejected (409)**
+      - **`scheduled`/`replay` upload rejected when GitHub run-verification fails
+        (unknown run / wrong workflow / not completed), and duplicate `runId`
+        rejected (409); response is `{ runId, jobId: null }` for these triggers**
+      - **scan-job fold preserves `targetRepo`/`stagingUrl` from the `requested`
+        event through `dispatched`/`uploaded` (not lost to last-event-wins)**
+      - **production startup fails when `ALLOWED_ORIGIN` or `BIND_HOST` unset**
       - upload schema rejection (422) + runId traversal rejection
       - **parallel `/api/scan` dispatches don't drop/corrupt scan-jobs entries**
       - **`/api/scan` dispatches to `AUDIT_WORKFLOW_REPO`, not the scan target**
