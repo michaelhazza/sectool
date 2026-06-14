@@ -8,10 +8,30 @@ in a checked-in registry.
 
 ## Non-negotiable safety contract
 
-Live scanning runs ONLY against hosts on the checked-in staging allowlist.
-There is no flag, override, or config path that targets a non-allowlisted
-host — an off-allowlist URL is a hard error before any request is sent. Never
-weaken this to make a test pass. See the spec for the full contract.
+**The surviving invariant (unchanged):** live scanning runs only against hosts
+on the staging allowlist. There is no code path that scans a host absent from
+the allowlist at scan time — an off-allowlist URL is a hard error before any
+network I/O. CI re-validates via the existing preflight exactly as before.
+Never weaken this invariant to make a test pass.
+
+**What changed (2026-06-14 — ui-live-config build):** the allowlist is still
+the sole authority at scan time, but *authoring* it moved from PR-review to
+2FA-gated live edit through the dashboard. Every allowlist (and registry) change
+is (a) schema-validated, (b) committed to git as the single source of truth
+before it takes effect, with a structured audit trailer in the commit, and
+(c) reflected in a hash-chained operational audit cache. Git is the
+authoritative record; every change is revertable. The write path requires both
+the shared dashboard credential AND a valid TOTP second factor
+(`AUDIT_TOTP_SECRET`). The old "requires a PR review" and "no override path"
+language is removed — it now contradicts the code.
+
+Accepted residual risk: anyone holding both the dashboard password and the TOTP
+device can authorise and scan any host on the internet. Compensating controls:
+2FA gate, git history with audit trailers, hash-chained audit cache, and
+`AUDIT_GIT_WRITE_TOKEN` as the protected high-value secret.
+
+See `docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md` §3 for
+the full contract and `docs/decisions/0007-live-config-editing.md` for the ADR.
 
 ## Stack
 

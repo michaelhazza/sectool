@@ -33,6 +33,11 @@ COPY config/ config/
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
+# git is required at runtime: the live-config feature keeps a working clone at
+# CONFIG_REPO_DIR (default /data/repo on the volume) and commits config changes
+# via git. Without git, ensureClone() and commitConfigChange() fail at startup.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 # Non-root user for security
 RUN useradd --system --create-home --home-dir /home/sectool --shell /bin/sh sectool && \
     chown -R sectool:sectool /app /home/sectool
