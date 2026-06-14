@@ -55,7 +55,7 @@ export function RunReport({ onNavigateToFinding }: RunReportProps) {
     );
   }
 
-  const { meta, findings } = report;
+  const { meta, findings, runId } = report;
   const targets = [...new Set(findings.map(f => targetLabel(f.target)))];
 
   let filtered = findings;
@@ -151,7 +151,7 @@ export function RunReport({ onNavigateToFinding }: RunReportProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
               <div>
                 <div className="info-row-label">Run ID</div>
-                <div className="tag" style={{ marginTop: 2 }}>{meta.runId.slice(0, 16)}…</div>
+                <div className="tag" style={{ marginTop: 2 }}>{runId.slice(0, 16)}…</div>
               </div>
               <div>
                 <div className="info-row-label">Started</div>

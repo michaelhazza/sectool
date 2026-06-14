@@ -85,9 +85,11 @@ export interface RunFailure {
 }
 
 export interface RunMeta {
-  runId: string;
+  // NOTE: runId is NOT on meta in the real report — it's a top-level field on
+  // RunReport. Kept optional only to avoid breaking any legacy reference.
+  runId?: string | undefined;
   startedAt: string;
-  completedAt?: string | undefined;
+  finishedAt?: string | undefined;
   status: RunStatus;
   toolVersion: string;
   failures?: RunFailure[] | undefined;
@@ -95,6 +97,8 @@ export interface RunMeta {
 }
 
 export interface RunReport {
+  runId: string;
+  date?: string | undefined;
   meta: RunMeta;
   findings: Finding[];
   targets?: Array<{
