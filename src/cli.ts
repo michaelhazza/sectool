@@ -701,8 +701,9 @@ export async function scanLiveTarget(
     const probeFindings = await probeRunner(target, rps);
     allFindings.push(...probeFindings);
     scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'complete' });
-  } catch {
-    failures.push({ target: registryEntry.name, family: 'probe', reason: 'probe family failed' });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    failures.push({ target: registryEntry.name, family: 'probe', reason: `probe family failed: ${reason}` });
     scannerStatus.push({ target: registryEntry.name, family: 'probe', state: 'failed' });
   }
 
@@ -713,8 +714,9 @@ export async function scanLiveTarget(
     const zapFindings = await zapRunner(target, zapOpts);
     allFindings.push(...zapFindings);
     scannerStatus.push({ target: registryEntry.name, family: 'zap', state: 'complete' });
-  } catch {
-    failures.push({ target: registryEntry.name, family: 'zap', reason: 'zap scanner failed' });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    failures.push({ target: registryEntry.name, family: 'zap', reason: `zap scanner failed: ${reason}` });
     scannerStatus.push({ target: registryEntry.name, family: 'zap', state: 'failed' });
   }
 
@@ -725,8 +727,9 @@ export async function scanLiveTarget(
     const nucleiFindings = await nucleiRunner(target, nucleiOpts);
     allFindings.push(...nucleiFindings);
     scannerStatus.push({ target: registryEntry.name, family: 'nuclei', state: 'complete' });
-  } catch {
-    failures.push({ target: registryEntry.name, family: 'nuclei', reason: 'nuclei scanner failed' });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    failures.push({ target: registryEntry.name, family: 'nuclei', reason: `nuclei scanner failed: ${reason}` });
     scannerStatus.push({ target: registryEntry.name, family: 'nuclei', state: 'failed' });
   }
 

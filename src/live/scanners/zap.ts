@@ -343,7 +343,11 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
 
   let reportContent: string;
   try {
-    await execFileAsync('zap.sh', ['-autorun', tmpFile, '-cmd', '-silent'], {
+    // `-cmd` MUST come before `-autorun`: it puts ZAP in headless inline mode.
+    // Without it ZAP tries to start the desktop GUI and aborts in a headless
+    // container (no X display) — the failure mode that marked the zap family
+    // failed while the Go/Node scanners succeeded.
+    await execFileAsync('zap.sh', ['-cmd', '-autorun', tmpFile, '-silent'], {
       timeout: 300_000, // 5 min cap per §5 scanner-timeout
       encoding: 'utf8',
     });
@@ -375,7 +379,13 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
     }
     try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
-    throw err;
+    // Surface the real ZAP failure (exit code + stderr/stdout tail) rather than
+    // a bare "Command failed" — the orchestrator records this in the run report
+    // so a failed zap family is diagnosable without shelling into the container.
+    const stderr = (execErr as { stderr?: string }).stderr ?? '';
+    const stdout = (execErr as { stdout?: string }).stdout ?? '';
+    const detail = (stderr || stdout || execErr.message || '').toString().trim().slice(-800);
+    throw new Error(`zap.sh exited ${typeof exitCode === 'number' ? exitCode : 'unknown'}${detail ? `: ${detail}` : ''}`);
   }
   try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
   try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
