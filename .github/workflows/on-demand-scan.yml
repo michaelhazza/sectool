@@ -1,0 +1,92 @@
+name: On-demand audit scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Registered target repo name (must be enabled in targets.json)"
+        required: true
+        type: string
+      staging_url:
+        description: "Allowlisted staging URL to scan (must match targets.json + allowed-staging-hosts.json)"
+        required: true
+        type: string
+      job_id:
+        description: "Correlation nonce issued by /api/scan (32-hex)"
+        required: true
+        type: string
+      replay_run_id:
+        description: "RunId to replay (leave empty for a live scan)"
+        required: false
+        type: string
+
+jobs:
+  scan:
+    name: On-demand scan — ${{ inputs.target_repo }}
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Node.js 20 actions deprecated June 16 2026
+      AUDIT_GITHUB_READ_TOKEN: ${{ secrets.AUDIT_GITHUB_READ_TOKEN }}
+      AUDIT_STAGING_AUTOMATION_USER_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_USER_A }}
+      AUDIT_STAGING_AUTOMATION_PASS_A: ${{ secrets.AUDIT_STAGING_AUTOMATION_PASS_A }}
+      AUDIT_STAGING_AUTOMATION_USER_B: ${{ secrets.AUDIT_STAGING_AUTOMATION_USER_B }}
+      AUDIT_STAGING_AUTOMATION_PASS_B: ${{ secrets.AUDIT_STAGING_AUTOMATION_PASS_B }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Build scanner image
+        if: ${{ inputs.replay_run_id == '' }}
+        run: docker build -t audit-tool:on-demand .
+
+      - name: Run scoped audit (repo + URL — never fan-out)
+        # Fully-scoped scan: --repo and --url are BOTH required (spec §4.1).
+        # The staging URL is re-validated against the allowlist inside the CLI
+        # (defense-in-depth via existing preflight — spec §7.2).
+        if: ${{ inputs.replay_run_id == '' }}
+        run: |
+          docker run --rm \
+            -e AUDIT_GITHUB_READ_TOKEN \
+            -e AUDIT_STAGING_AUTOMATION_USER_A \
+            -e AUDIT_STAGING_AUTOMATION_PASS_A \
+            -e AUDIT_STAGING_AUTOMATION_USER_B \
+            -e AUDIT_STAGING_AUTOMATION_PASS_B \
+            -v "${{ github.workspace }}/reports:/app/reports" \
+            audit-tool:on-demand \
+            audit run --repo "${{ inputs.target_repo }}" --url "${{ inputs.staging_url }}"
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report-${{ github.run_id }}
+          path: reports/
+          retention-days: 90
+
+      - name: Upload report to dashboard (on-demand)
+        if: ${{ inputs.replay_run_id == '' }}
+        continue-on-error: true
+        env:
+          FLY_UPLOAD_URL: ${{ secrets.FLY_UPLOAD_URL }}
+          AUDIT_UPLOAD_TOKEN: ${{ secrets.AUDIT_UPLOAD_TOKEN }}
+          # GITHUB_RUN_ID, GITHUB_WORKFLOW_REF, GITHUB_SHA are set automatically by Actions
+        run: |
+          node ci/upload-report.mjs on-demand "${{ inputs.job_id }}"
+
+      - name: Upload report to dashboard (replay)
+        if: ${{ inputs.replay_run_id != '' }}
+        continue-on-error: true
+        env:
+          FLY_UPLOAD_URL: ${{ secrets.FLY_UPLOAD_URL }}
+          AUDIT_UPLOAD_TOKEN: ${{ secrets.AUDIT_UPLOAD_TOKEN }}
+          SOURCE_RUN_ID: ${{ inputs.replay_run_id }}
+          # GITHUB_RUN_ID, GITHUB_WORKFLOW_REF, GITHUB_SHA are set automatically by Actions
+        run: |
+          node ci/upload-report.mjs replay "${{ inputs.job_id }}"

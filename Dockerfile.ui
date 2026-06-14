@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+# Lightweight UI image — no scanner binaries (no Semgrep/ZAP/Nuclei/JRE/gitleaks/osv).
+# Serves the report dashboard and accepts on-demand scan triggers via the fly.io proxy.
+# Scanner image: see Dockerfile (heavy; separate deployment concern).
+
+# Stage 1: build server (dist/) and SPA (ui/dist/)
+FROM node:20-bookworm-slim AS builder
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY tsconfig.json tsconfig.build.json ./
+COPY src/ src/
+COPY ui/ ui/
+RUN npm run build
+RUN npm run build:client
+
+# Stage 2: lightweight runtime — no scanner binaries
+FROM node:20-bookworm-slim AS runtime
+
+WORKDIR /app
+
+# Copy compiled server
+COPY --from=builder /app/dist/ dist/
+
+# Copy built SPA
+COPY --from=builder /app/ui/dist/ ui/dist/
+
+# Copy checked-in config (read-only baked into image; only DATA_DIR paths are writable)
+COPY config/ config/
+
+# Production dependencies only
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+# Non-root user for security
+RUN useradd --system --create-home --home-dir /home/sectool --shell /bin/sh sectool && \
+    chown -R sectool:sectool /app /home/sectool
+USER sectool
+
+# DATA_DIR, BIND_HOST, ALLOWED_ORIGIN and secrets are provided by the fly environment
+# at runtime (see fly.toml [env] and fly secrets).
+EXPOSE 4173
+
+CMD ["node", "dist/cli.js", "ui"]

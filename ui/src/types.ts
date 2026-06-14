@@ -161,3 +161,18 @@ export interface BaselineEntry {
 export interface BaselineConfig {
   entries: BaselineEntry[];
 }
+
+// Scan job state — Contract C3 from the plan (folded from scan-jobs.jsonl)
+export type ScanJobState = 'pre_dispatch' | 'in_progress' | 'complete' | 'failed' | 'timed_out';
+
+export interface ScanJob {
+  jobId: string;
+  targetRepo: string;
+  stagingUrl: string;
+  state: ScanJobState;
+  requestedAt: string;
+  runId: string | null;
+}
+
+// Trigger provenance — matches the trigger field on scan-jobs events and upload envelopes
+export type TriggerKind = 'on-demand' | 'scheduled' | 'replay';

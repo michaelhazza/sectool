@@ -9,6 +9,7 @@ import type {
   TargetsConfig,
   AllowlistConfig,
   BaselineConfig,
+  ScanJob,
 } from './types.js';
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -83,4 +84,34 @@ export async function sendForFixing(fingerprint: string): Promise<{ issueUrl: st
     throw new Error(err.error ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<{ issueUrl: string }>;
+}
+
+/**
+ * Trigger an on-demand scan via the CSRF/origin-gated POST /api/scan endpoint.
+ * Mirrors the sendForFixing CSRF pattern: fetches the nonce first, then POSTs.
+ * Returns the correlation jobId on 202 Accepted.
+ */
+export async function triggerScan(repo: string, stagingUrl: string): Promise<{ jobId: string }> {
+  const csrfToken = await fetchCsrfToken();
+  const res = await fetch('/api/scan', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Audit-CSRF': csrfToken,
+    },
+    body: JSON.stringify({ repo, stagingUrl }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+    throw new Error(err.error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<{ jobId: string }>;
+}
+
+/**
+ * Fetch the current list of scan jobs (folded from the append-only event log).
+ * Returns most-recent-first, matching Contract C3.
+ */
+export async function fetchScanJobs(): Promise<ScanJob[]> {
+  return fetchJson<ScanJob[]>('/api/scan-jobs');
 }

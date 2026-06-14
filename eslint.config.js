@@ -30,7 +30,9 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/*.js'],
+    // ci/ holds plain-JS deploy scripts (no tsconfig project) — lint them with
+    // type-aware rules disabled, same as the *.js files.
+    files: ['**/*.js', 'ci/**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
   },
 );

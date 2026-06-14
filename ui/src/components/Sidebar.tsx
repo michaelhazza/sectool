@@ -1,6 +1,6 @@
 import { NAV_LABELS } from '../vocabulary.js';
 
-type Screen = 'portfolio' | 'runReport' | 'fixes' | 'trends' | 'targets';
+type Screen = 'portfolio' | 'runReport' | 'fixes' | 'trends' | 'targets' | 'runAScan';
 
 interface SidebarProps {
   active: Screen;
@@ -42,6 +42,12 @@ const TrendIcon = () => (
 const LockIcon = () => (
   <svg className="nav-item-icon" viewBox="0 0 20 20" fill="currentColor">
     <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
+  </svg>
+);
+
+const PlayIcon = () => (
+  <svg className="nav-item-icon" viewBox="0 0 20 20" fill="currentColor">
+    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
   </svg>
 );
 
@@ -107,6 +113,14 @@ export function Sidebar({ active, onNavigate, criticalCount, reopenedFixCount }:
           <LockIcon />
           {NAV_LABELS.targets}
         </button>
+        <div className="nav-section-label" style={{ marginTop: 12 }}>Actions</div>
+        <button
+          className={`nav-item${active === 'runAScan' ? ' active' : ''}`}
+          onClick={navBtn('runAScan')('')}
+        >
+          <PlayIcon />
+          {NAV_LABELS.runAScan}
+        </button>
       </nav>
       <div className="sidebar-footer">
         Read-only view<br />
@@ -139,7 +153,7 @@ export function MobileTopbar({ onMenuOpen }: MobileTopbarProps) {
   );
 }
 
-// Mobile bottom nav (5 tabs)
+// Mobile bottom nav (6 tabs)
 interface MobileBottomNavProps {
   active: Screen;
   onNavigate: (screen: Screen) => void;
@@ -168,6 +182,10 @@ export function MobileBottomNav({ active, onNavigate }: MobileBottomNavProps) {
         <button className={`mobile-nav-item${active === 'targets' ? ' active' : ''}`} onClick={() => onNavigate('targets')}>
           <svg viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" /></svg>
           Targets
+        </button>
+        <button className={`mobile-nav-item${active === 'runAScan' ? ' active' : ''}`} onClick={() => onNavigate('runAScan')}>
+          <svg viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
+          Run Scan
         </button>
       </div>
     </nav>

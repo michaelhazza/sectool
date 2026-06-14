@@ -47,3 +47,19 @@ jobs:
           name: audit-report-${{ github.run_id }}
           path: reports/
           retention-days: 90
+
+      - name: Set up Node 20 (for uploader)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Upload report to dashboard (scheduled)
+        continue-on-error: true
+        env:
+          FLY_UPLOAD_URL: ${{ secrets.FLY_UPLOAD_URL }}
+          AUDIT_UPLOAD_TOKEN: ${{ secrets.AUDIT_UPLOAD_TOKEN }}
+          # GITHUB_RUN_ID, GITHUB_WORKFLOW_REF, GITHUB_SHA are set automatically by Actions
+          # GITHUB_WORKFLOW_REF contains the workflow file path, used for server-side
+          # provenance verification (C6) — matched by path/id, not mutable display name.
+        run: |
+          node ci/upload-report.mjs scheduled

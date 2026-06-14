@@ -38,6 +38,11 @@ Active backlog. Items captured here are queued for work; resolved items move to 
 
 ## From builder — 2026-06-14
 
+- [ ] [origin:builder-C9:2026-06-14] [status:open] Pre-existing: `Sidebar.tsx` line 56 has an unused `cls: string` parameter in the `navBtn` curried function — flagged by `@typescript-eslint/no-unused-vars` when linted with `--no-ignore`. Not introduced by C9; in unchanged code.
+  - Why: The main `eslint.config.js` intentionally ignores `ui/**`, so this never fires in `npm run lint`. Surfaced only under `--no-ignore` G1 checks on this chunk. Not fixed per surgical-changes rule.
+  - Approach: remove the unused `cls` parameter from the `navBtn` helper (or prefix with `_cls`) in a future cleanup chunk scoped to Sidebar.tsx.
+  - Risk: low — lint-only, no functional impact.
+
 - [ ] [origin:builder-C6:2026-06-14] [status:open] `withWorkspaceLock` (src/report/lock.ts) is fail-fast on contention (throws WorkspaceLockedError immediately when held by a live process), NOT a queuing mutex. C6 works around this with an in-process `withUploadQueue` promise chain that ensures only one upload enters the lock at a time. Future chunks or refactors should be aware: `withWorkspaceLock` is cross-process protection only; it does NOT serialize same-process callers.
   - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
   - Approach: in-process layer already added (withUploadQueue). No action needed unless cross-process real queueing is required.

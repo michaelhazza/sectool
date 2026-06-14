@@ -6,8 +6,9 @@ import { FindingDetail } from './screens/FindingDetail.js';
 import { Fixes } from './screens/Fixes.js';
 import { Trends } from './screens/Trends.js';
 import { TargetsSafety } from './screens/TargetsSafety.js';
+import { RunAScan } from './screens/RunAScan.js';
 
-type Screen = 'portfolio' | 'runReport' | 'fixes' | 'trends' | 'targets';
+type Screen = 'portfolio' | 'runReport' | 'fixes' | 'trends' | 'targets' | 'runAScan';
 
 interface AppState {
   screen: Screen;
@@ -44,6 +45,8 @@ export function App() {
         return <Trends />;
       case 'targets':
         return <TargetsSafety />;
+      case 'runAScan':
+        return <RunAScan />;
     }
   })();
 
