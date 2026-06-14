@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -32,6 +32,14 @@ let originalTargets: string;
 let originalBaseline: string;
 let originalBenchmarkAllowlist: string | null;
 
+// The SHIPPED (checked-in) config files, captured before this suite overwrites
+// them with BASE_*. Restored in afterAll so the suite never leaves the real
+// config/*.json dirty in the working tree (a `git add -A` landmine — these are
+// version-controlled registry/allowlist files, not test fixtures).
+let shippedAllowlist: string | null = null;
+let shippedTargets: string | null = null;
+let shippedBaseline: string | null = null;
+
 import { readFileSync } from 'node:fs';
 
 // Shipped base state: valid JSON for all three config files. Written once in
@@ -54,9 +62,23 @@ const BASE_TARGETS = JSON.stringify({
 const BASE_BASELINE = JSON.stringify({ entries: [] });
 
 beforeAll(() => {
+  // Capture the shipped (checked-in) files BEFORE overwriting, so afterAll can
+  // restore them and leave the working tree clean. Tolerate absence/corruption
+  // (a prior interrupted run) by leaving the shipped snapshot null.
+  try { shippedAllowlist = readFileSync(allowlistPath, 'utf-8'); } catch { shippedAllowlist = null; }
+  try { shippedTargets = readFileSync(targetsPath, 'utf-8'); } catch { shippedTargets = null; }
+  try { shippedBaseline = readFileSync(baselinePath, 'utf-8'); } catch { shippedBaseline = null; }
+
   writeFileSync(allowlistPath, BASE_ALLOWLIST, 'utf-8');
   writeFileSync(targetsPath, BASE_TARGETS, 'utf-8');
   writeFileSync(baselinePath, BASE_BASELINE, 'utf-8');
+});
+
+afterAll(() => {
+  // Restore the shipped files so the suite leaves config/*.json pristine.
+  if (shippedAllowlist !== null) writeFileSync(allowlistPath, shippedAllowlist, 'utf-8');
+  if (shippedTargets !== null) writeFileSync(targetsPath, shippedTargets, 'utf-8');
+  if (shippedBaseline !== null) writeFileSync(baselinePath, shippedBaseline, 'utf-8');
 });
 
 beforeEach(() => {
