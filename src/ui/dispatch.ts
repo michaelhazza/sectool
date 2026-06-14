@@ -7,6 +7,10 @@
  *
  * Reuses GitHubHttpClient + authHeaders from src/fix/github.ts so no new HTTP
  * dependency is introduced (architecture decision — see plan gap 1).
+ *
+ * ImplInv-6 (config_sha wiring): the dispatch body input key "config_sha" MUST
+ * exactly match the YAML inputs.config_sha: declaration in on-demand-scan.yml.
+ * A mismatch is caught only by CI (GitHub returns 422 "Unexpected inputs").
  */
 
 import { parseOwnerRepo, authHeaders, defaultGitHubClient } from '../fix/github.js';
@@ -23,8 +27,13 @@ export interface DispatchParams {
   jobId: string;
   /** AUDIT_GH_DISPATCH_TOKEN — fine-grained PAT with Actions write on workflowRepo. */
   token: string;
-  /** Git ref to dispatch against (e.g. "main"). */
+  /** Git ref to dispatch against — MUST be a branch/tag name, never a raw SHA
+   *  (GitHub workflow_dispatch rejects raw SHAs as ref). Use CONFIG_BRANCH. */
   ref: string;
+  /** Pushed config SHA to verify + checkout in the workflow (ImplInv-6).
+   *  When present, the workflow verifies reachability from CONFIG_BRANCH then
+   *  checks out this exact SHA. Omit for scans unrelated to a config edit. */
+  configSha?: string | undefined;
 }
 
 export type DispatchResult =
@@ -43,25 +52,29 @@ export async function dispatchScan(
   params: DispatchParams,
   client: GitHubHttpClient = defaultGitHubClient,
 ): Promise<DispatchResult> {
-  const { workflowRepo, targetRepo, stagingUrl, jobId, token, ref } = params;
+  const { workflowRepo, targetRepo, stagingUrl, jobId, token, ref, configSha } = params;
 
   // owner/repo come from workflowRepo (AUDIT_WORKFLOW_REPO), NOT from the scan target.
   const { owner, repo } = parseOwnerRepo(workflowRepo);
 
   const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/on-demand-scan.yml/dispatches`;
 
+  // Build inputs: config_sha included only when provided (ImplInv-6).
+  // Key name "config_sha" must exactly match the YAML inputs.config_sha: declaration.
+  const inputs: Record<string, string> = {
+    target_repo: targetRepo,
+    staging_url: stagingUrl,
+    job_id: jobId,
+  };
+  if (configSha !== undefined && configSha.length > 0) {
+    inputs['config_sha'] = configSha;
+  }
+
   const resp = await client({
     method: 'POST',
     url,
     headers: authHeaders(token),
-    body: {
-      ref,
-      inputs: {
-        target_repo: targetRepo,
-        staging_url: stagingUrl,
-        job_id: jobId,
-      },
-    },
+    body: { ref, inputs },
   });
 
   if (resp.status === 204) {

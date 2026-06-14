@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   loadAllowlist,
   loadBenchmarkAllowlist,
@@ -349,5 +350,184 @@ describe('loadBaseline()', () => {
       ],
     });
     expect(() => loadBaseline()).toThrow(ConfigError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// opts.configDir — reads from a given directory (C0 / ImplInv-9)
+// These tests use their own isolated temp dir; the shared beforeEach/afterEach
+// fixture cycle above does NOT touch these paths, so they never conflict.
+// ---------------------------------------------------------------------------
+
+describe('loadAllowlist({ configDir }) reads from an explicit directory', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `sectool-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads allowed-staging-hosts.json from opts.configDir', () => {
+    writeFileSync(
+      join(tmpDir, 'allowed-staging-hosts.json'),
+      JSON.stringify({ hosts: [{ host: 'tmp.example.breakout.dev', owner: 'test', addedAt: '2026-01-01' }] }),
+      'utf-8',
+    );
+    const al = loadAllowlist({ configDir: tmpDir });
+    expect(al.hosts).toHaveLength(1);
+    expect(al.hosts[0]?.host).toBe('tmp.example.breakout.dev');
+  });
+
+  it('default (no opts) still reads the shipped config path — not the temp dir', () => {
+    // The shared beforeAll installs BASE_ALLOWLIST (empty hosts) at allowlistPath.
+    // The temp dir has no file. Default call reads allowlistPath, not tmpDir.
+    const al = loadAllowlist();
+    // BASE_ALLOWLIST has 0 hosts; if it mistakenly read tmpDir it would throw (no file).
+    expect(al.hosts).toHaveLength(0);
+  });
+
+  it('throws ConfigError when opts.configDir file is absent', () => {
+    // tmpDir exists but the file does not
+    expect(() => loadAllowlist({ configDir: tmpDir })).toThrow(ConfigError);
+  });
+});
+
+describe('loadTargets(allowlist, { configDir }) reads from an explicit directory', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `sectool-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+    // Write allowlist file needed by loadAllowlist
+    writeFileSync(
+      join(tmpDir, 'allowed-staging-hosts.json'),
+      JSON.stringify({ hosts: [{ host: 'tmp.automation.breakout.dev', owner: 'test', addedAt: '2026-01-01' }] }),
+      'utf-8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads targets.json from opts.configDir', () => {
+    writeFileSync(
+      join(tmpDir, 'targets.json'),
+      JSON.stringify({
+        repos: [{ name: 'tmp-repo', gitUrl: 'https://github.com/test/tmp-repo.git', localPath: null, stackTags: [], publicRoutes: [], enabled: true }],
+        stagingTargets: [],
+      }),
+      'utf-8',
+    );
+    const al = loadAllowlist({ configDir: tmpDir });
+    const registry = loadTargets(al, { configDir: tmpDir });
+    expect(registry.repos).toHaveLength(1);
+    expect(registry.repos[0]?.name).toBe('tmp-repo');
+  });
+
+  it('default (no opts) still reads the shipped targets path — not the temp dir', () => {
+    // The shared beforeAll installs BASE_TARGETS at targetsPath.
+    // The temp dir has targets.json with a different repo name.
+    writeFileSync(
+      join(tmpDir, 'targets.json'),
+      JSON.stringify({
+        repos: [{ name: 'should-not-appear', gitUrl: 'https://github.com/test/x.git', localPath: null, stackTags: [], publicRoutes: [], enabled: true }],
+        stagingTargets: [],
+      }),
+      'utf-8',
+    );
+    const al = loadAllowlist();
+    const registry = loadTargets(al);
+    // BASE_TARGETS has name 'automation-v1'
+    expect(registry.repos[0]?.name).toBe('automation-v1');
+  });
+});
+
+describe('loadBaseline({ configDir }) reads from an explicit directory', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `sectool-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reads baseline.json from opts.configDir', () => {
+    writeFileSync(
+      join(tmpDir, 'baseline.json'),
+      JSON.stringify({ entries: [] }),
+      'utf-8',
+    );
+    const baseline = loadBaseline({ configDir: tmpDir });
+    expect(baseline.entries).toHaveLength(0);
+  });
+
+  it('default (no opts) still reads the shipped baseline path — not the temp dir', () => {
+    // The shared beforeAll installs BASE_BASELINE (empty entries) at baselinePath.
+    const baseline = loadBaseline();
+    expect(baseline.entries).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Consistency assertion — ImplInv-9, §13
+// Write a config to a temp configDir, then loadTargets(loadAllowlist({configDir}),
+// {configDir}) returns exactly that content, NOT the content at REPO_ROOT/config.
+// ---------------------------------------------------------------------------
+
+describe('configDir consistency (ImplInv-9): loadTargets reads what loadAllowlist sees', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `sectool-test-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns exactly the targets.json written to the temp configDir, not REPO_ROOT/config', () => {
+    const targetHost = 'consistency.breakout.dev';
+    writeFileSync(
+      join(tmpDir, 'allowed-staging-hosts.json'),
+      JSON.stringify({ hosts: [{ host: targetHost, owner: 'test', addedAt: '2026-01-01' }] }),
+      'utf-8',
+    );
+    writeFileSync(
+      join(tmpDir, 'targets.json'),
+      JSON.stringify({
+        repos: [],
+        stagingTargets: [
+          {
+            name: 'consistency-staging',
+            url: `https://${targetHost}`,
+            repo: 'consistency-repo',
+            activeScan: false,
+            rateLimitRps: 10,
+            enabled: true,
+          },
+        ],
+      }),
+      'utf-8',
+    );
+
+    const opts = { configDir: tmpDir };
+    const al = loadAllowlist(opts);
+    const registry = loadTargets(al, opts);
+
+    // Assert the result matches what was written to tmpDir, not REPO_ROOT/config
+    expect(registry.stagingTargets).toHaveLength(1);
+    expect(registry.stagingTargets[0]?.name).toBe('consistency-staging');
+    expect(registry.stagingTargets[0]?.url).toBe(`https://${targetHost}`);
+    // The real REPO_ROOT/config/targets.json (BASE_TARGETS) has repos but no stagingTargets
+    // with name 'consistency-staging', confirming this read from tmpDir not REPO_ROOT/config.
   });
 });

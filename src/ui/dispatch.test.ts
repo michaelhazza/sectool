@@ -27,6 +27,8 @@ const BASE_PARAMS = {
   ref: 'main',
 };
 
+const TEST_CONFIG_SHA = 'abc123def456abc123def456abc123def456abc1';
+
 // ---------------------------------------------------------------------------
 // Dispatch URL construction — system invariant #2
 // ---------------------------------------------------------------------------
@@ -115,5 +117,59 @@ describe('dispatchScan — result', () => {
     if (!result.ok) {
       expect(result.status).toBe(500);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C6 — config_sha wiring (ImplInv-6, §7)
+// ---------------------------------------------------------------------------
+
+describe('dispatchScan — config_sha wiring (ImplInv-6)', () => {
+  it('sends ref === configBranch (not literal "main", not the SHA) when configSha provided', async () => {
+    const { client, calls } = makeSpy(204);
+    const configBranch = 'release/2026';
+    await dispatchScan({ ...BASE_PARAMS, ref: configBranch, configSha: TEST_CONFIG_SHA }, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect(body.ref).toBe(configBranch);
+    expect(body.ref).not.toBe(TEST_CONFIG_SHA);
+  });
+
+  it('sends inputs.config_sha === the pushed SHA when configSha provided', async () => {
+    const { client, calls } = makeSpy(204);
+    await dispatchScan({ ...BASE_PARAMS, configSha: TEST_CONFIG_SHA }, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect(body.inputs['config_sha']).toBe(TEST_CONFIG_SHA);
+  });
+
+  it('never uses the SHA as the dispatch ref (GitHub rejects raw SHAs as ref)', async () => {
+    const { client, calls } = makeSpy(204);
+    await dispatchScan({ ...BASE_PARAMS, ref: 'main', configSha: TEST_CONFIG_SHA }, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect(body.ref).toBe('main');
+    expect(body.ref).not.toBe(TEST_CONFIG_SHA);
+  });
+
+  it('omits config_sha from inputs when configSha is not provided (back-compat)', async () => {
+    const { client, calls } = makeSpy(204);
+    await dispatchScan(BASE_PARAMS, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect('config_sha' in body.inputs).toBe(false);
+  });
+
+  it('omits config_sha from inputs when configSha is undefined', async () => {
+    const { client, calls } = makeSpy(204);
+    await dispatchScan({ ...BASE_PARAMS, configSha: undefined }, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect('config_sha' in body.inputs).toBe(false);
+  });
+
+  it('still sends target_repo, staging_url, job_id alongside config_sha', async () => {
+    const { client, calls } = makeSpy(204);
+    await dispatchScan({ ...BASE_PARAMS, configSha: TEST_CONFIG_SHA }, client);
+    const body = calls[0]!.body as { ref: string; inputs: Record<string, string> };
+    expect(body.inputs['target_repo']).toBe('my-app');
+    expect(body.inputs['staging_url']).toBe('https://staging.my-app.com');
+    expect(body.inputs['job_id']).toBe('aabbccdd11223344aabbccdd11223344');
+    expect(body.inputs['config_sha']).toBe(TEST_CONFIG_SHA);
   });
 });

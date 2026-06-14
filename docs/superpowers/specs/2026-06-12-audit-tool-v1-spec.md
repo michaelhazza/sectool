@@ -1,6 +1,6 @@
 # Spec — audit-tool v1: internal security audit tool (SAST + staging-only DAST)
 
-**Status:** accepted (amended 2026-06-12: operator-directed UI addendum, §5.2 dashboard + HTML export, P7; amended 2026-06-13: operator-directed remediation workflow §5.3 + P8 and plain-language-first UI vocabulary §5.2; screen shapes approved via the mockup loop — CLEAN after 3 rounds, locked in `prototypes/audit-tool-v1/`)
+**Status:** accepted (amended 2026-06-12: operator-directed UI addendum, §5.2 dashboard + HTML export, P7; amended 2026-06-13: operator-directed remediation workflow §5.3 + P8 and plain-language-first UI vocabulary §5.2; screen shapes approved via the mockup loop — CLEAN after 3 rounds, locked in `prototypes/audit-tool-v1/`; amended 2026-06-14: §4 "no override path" superseded — see §4 amendment note below and `docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md` §3.2)
 **Spec date:** 2026-06-12
 **Last updated:** 2026-06-13
 **Author:** claude (spec-coordinator, autonomous session; operator: michaelhazza)
@@ -194,6 +194,18 @@ structurally impossible, not merely forbidden:
     hand the gate an arbitrary allowlist without going through `load.ts`, and
     the benchmark path structurally cannot allowlist a non-loopback host.
     [Per operator review, non-blocking note — strengthens §4.9.]
+
+> **[Amended 2026-06-14 — ui-live-config build]** §4 item 3 ("No override.
+> Changing the allowlist requires a commit, PR-reviewed") and §4 item 8 ("DNS
+> note: acceptable because all targets are our own staging hosts and config is
+> PR-reviewed") are **superseded** by the 2FA-gated live-config-editing
+> contract. The "no code path scans a non-allowlisted host at scan time"
+> invariant (items 1, 2, 4–7, 9, 10) is **unchanged**. What changed is only
+> that *authoring* the allowlist moved from PR-review to 2FA-gated live edit
+> committed to git. See
+> `docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md` §3.2
+> for the replacement contract and `docs/decisions/0007-live-config-editing.md`
+> for the ADR.
 
 ## 5. Architecture (6 layers)
 

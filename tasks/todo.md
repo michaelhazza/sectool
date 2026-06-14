@@ -38,10 +38,20 @@ Active backlog. Items captured here are queued for work; resolved items move to 
 
 ## From builder — 2026-06-14
 
+- [ ] [origin:builder-C3:2026-06-14] [status:resolved 2026-06-14] eslint config does not cover `.cjs` files — `src/ui/git-askpass.cjs` cannot be linted with the project-service-aware ruleset.
+  - Why: `eslint.config.js` disableTypeChecked override targets `**/*.js` and `ci/**/*.mjs` but not `**/*.cjs`. The `git-askpass.cjs` file is a 6-line plain-JS runtime helper; its lint is excluded from G1. The file is reviewed inline.
+  - Approach: add `'**/*.cjs'` to the `disableTypeChecked` override files array in `eslint.config.js`. Low risk change.
+  - Risk: low — the file is trivial and reviewed; no current lint enforcement.
+
 - [ ] [origin:builder-C9:2026-06-14] [status:open] Pre-existing: `Sidebar.tsx` line 56 has an unused `cls: string` parameter in the `navBtn` curried function — flagged by `@typescript-eslint/no-unused-vars` when linted with `--no-ignore`. Not introduced by C9; in unchanged code.
   - Why: The main `eslint.config.js` intentionally ignores `ui/**`, so this never fires in `npm run lint`. Surfaced only under `--no-ignore` G1 checks on this chunk. Not fixed per surgical-changes rule.
   - Approach: remove the unused `cls` parameter from the `navBtn` helper (or prefix with `_cls`) in a future cleanup chunk scoped to Sidebar.tsx.
   - Risk: low — lint-only, no functional impact.
+
+- [ ] [origin:builder-C7:2026-06-14] [status:open] `RowAction` defined as nested function component inside `TargetsSafety` — `react/no-unstable-nested-components` may fire at G2 build:client.
+  - Why: RowAction is defined inside TargetsSafety's render and passed as JSX. No hook rules violation, but eslint react rules may flag it. Not fixed per surgical-changes rule (extracting it would require passing onClick via prop, which is its current interface — extracting to module level is fine but out of scope for this chunk).
+  - Approach: lift `RowAction` to module level, outside the `TargetsSafety` function, in a future cleanup chunk or at G2 if the build:client step flags it.
+  - Risk: low — functional impact is zero; lint/build issue only.
 
 - [ ] [origin:builder-C6:2026-06-14] [status:open] `withWorkspaceLock` (src/report/lock.ts) is fail-fast on contention (throws WorkspaceLockedError immediately when held by a live process), NOT a queuing mutex. C6 works around this with an in-process `withUploadQueue` promise chain that ensures only one upload enters the lock at a time. Future chunks or refactors should be aware: `withWorkspaceLock` is cross-process protection only; it does NOT serialize same-process callers.
   - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
@@ -51,6 +61,12 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - **RESOLVED during local UI testing:** it broke the Portfolio Overview screen (404 from `/api/history/trend`). Aligned the client `fetchTrend()` to the server's actual `/api/trend` route.
   - Why: pre-existing mismatch noted in plan gaps as out-of-scope.
   - Approach: rename route in server.ts or update client call in a dedicated cleanup chunk.
+
+## From builder — 2026-06-14 (C4)
+
+- [ ] [origin:builder-C4:2026-06-14] [status:open] `AUDIT_GIT_REMOTE_URL` env var added to `ResolvedEnv` as the git push remote for config writes. Currently the write service passes this to `commitConfigChange` which passes it to `git push <remoteUrl>`. In production, `ensureClone` (C3) sets up the remote as `origin` in `.git/config`; the `AUDIT_GIT_REMOTE_URL` var could be omitted by defaulting to `'origin'` and having `commitConfigChange` use the symbolic remote name. Currently both approaches work since `git push origin` and `git push <URL>` are equivalent when the URL matches. No action needed unless a conflict surfaces.
+
+- [ ] [origin:builder-C4:2026-06-14] [status:open] `_addHostField` destructuring with `eslint-disable-next-line @typescript-eslint/no-unused-vars` in `handleConfigWrite` (server.ts) is needed to strip `addHost` from the request body before passing to `addStagingTarget`. If TypeScript's `noUnusedLocals` check fires at G2 build, the fix is to use `Object.fromEntries(Object.entries(p).filter(([k]) => k !== 'addHost'))` instead. Surgical fix deferred per chunk scope.
 
 ## From builder — 2026-06-13
 
@@ -183,3 +199,30 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Gap: `ui/src/screens/RunAScan.tsx:67` reads `config.repoTargets`; `src/ui/server.ts:278-286` serves `config/targets.json` verbatim, whose top-level keys are `repos` + `stagingTargets` (confirmed against the on-disk file). `stagingTargets` matches; `repoTargets` does not exist on the served object, so `repos` resolves to `[]` and the repo `<select>` shows only the placeholder. The "Run scan" button can never be enabled (canSubmit requires a selected repo). The staging-target half works.
   - Suggested approach: pick one contract and align both ends — either map the served object to `{ repoTargets, stagingTargets }` server-side in the `/api/config/targets` handler, or change the UI to read `config.repos` and adjust the `TargetsConfig` type. This is a UI↔server contract divergence requiring a design choice (which side owns the field name), so it is routed rather than auto-fixed. Not a safety-contract issue — the server-side §7 registry gate on `/api/scan` is independent of this dropdown and remains intact.
   - Risk: medium — the primary on-demand-scan entry point (§1 goal "trigger scans on demand from the UI") is non-functional for the repo selector until aligned. The server-side safety gate is unaffected.
+
+## Deferred from spec-conformance review — ui-live-config (2026-06-14)
+
+**Captured:** 2026-06-14T00:00:00Z
+**Source log:** `tasks/review-logs/spec-conformance-log-ui-live-config-2026-06-14T00-00-00Z.md`
+**Spec:** `docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md`
+
+- [ ] [origin:spec-conformance:2026-06-14] [status:deferred] `configSha` is not threaded from a config write into `handleScanPost` — the §7/ImplInv-6 write-then-scan path is only half-wired
+  - Spec section: §7 "Post-push SHA (MEDIUM-3 — close the propagation race)" / ImplInv-6 / §12 failure-mode row "Scan dispatched immediately after an edit".
+  - Gap: the mechanism is fully built but never fed end-to-end. `dispatchScan` (src/ui/dispatch.ts) accepts `configSha` and emits `inputs.config_sha`; `on-demand-scan.yml` declares the `config_sha` input, verifies reachability from `CONFIG_BRANCH`, and checks the SHA out; `handleScanPost` correctly dispatches with `ref: resolvedEnv.configBranch ?? 'main'` (H2 fixed). BUT `handleScanPost` (src/ui/server.ts:~590-604) never passes `configSha` to `dispatchScan`, and nothing stores the last pushed SHA from a config write for a subsequent scan to read (`rg configSha src/ui/server.ts` → no match). So in production a post-edit scan dispatches with no `config_sha`, the workflow checks out the branch tip, and the branch-propagation race MEDIUM-3/ImplInv-6 set out to close is re-introduced. The C6 builder documented this as deferred (tasks/builds/ui-live-config/chunk-learnings.md lines 31, 41); it was never tracked as a backlog item. The §13 "write returns the pushed SHA and a scan dispatched right after sends ref=CONFIG_BRANCH + config_sha input" assertion is covered only at the `dispatchScan` unit level — there is no end-to-end test that a real post-write scan sends a real pushed SHA.
+  - Suggested approach: decide where the immediately-following scan obtains the SHA. Options: (a) a small in-process "last pushed config SHA" cache that config-write routes set on a successful push and `handleScanPost` reads when present (simplest; matches the C6 builder's note); (b) read `HEAD` of the working clone at dispatch time so the scan always pins the current committed config; (c) accept an optional `configSha` in the `/api/scan` body and have the UI pass the SHA returned by the preceding write. Each is a design choice (lifetime/scoping of the SHA, what happens for a scan unrelated to a recent edit), so this is routed, not auto-fixed. Add an end-to-end test asserting a write→scan sequence sends `ref=CONFIG_BRANCH` + `inputs.config_sha === <pushed SHA>` once a mechanism is chosen.
+  - Risk: medium — not a safety-contract regression (the scan-time allowlist gate in src/live/ is untouched and remains the sole authority; CI re-validates the committed config via preflight). The exposure is a correctness/consistency race: a scan fired in the seconds after an edit can read a slightly stale branch tip rather than the exact just-pushed config. The half-wired infrastructure means closing it later is a small, localized change.
+
+## Deferred from adversarial review — ui-live-config (2026-06-14)
+
+- [ ] [origin:adversarial-2-B:2026-06-14] [status:deferred] Step-up cookie principalHash binds to empty-string when no Authorization header is present.
+  - Why: only reachable when Basic Auth is DISABLED (local dev, single user); in production the upstream Basic Auth gate guarantees the header, so the principal is always real. CSRF-nonce + signature + 5-min TTL are the operative bindings. Not a production hole.
+  - Approach: require a non-empty derived principal when auth is enabled (reject step-up otherwise) for defence in depth.
+  - Risk: low — production-unreachable.
+- [ ] [origin:adversarial-2-C:2026-06-14] [status:deferred] GET /api/config/history has no Origin/CSRF check.
+  - Why: Basic-Auth-gated; server sets no Access-Control-Allow-Origin, so a cross-origin credentialed fetch reaches the server but the browser blocks the response read. No actual leak; consistent with all other read routes.
+  - Approach: optional — add an Origin check to read routes for defence in depth.
+  - Risk: low — CORS already blocks the cross-origin read.
+
+- [ ] [origin:local-test:2026-06-14] [status:open] UI cannot create active-scan staging targets (needs the auth/test-user block). Form is passive-only; active scan stays a JSON-config task. Future: a guided auth-config sub-form.
+
+- [ ] **Benchmark: SPA catch-all fixture for LIVE-EXPOSE-001** — encode a soft-404/catch-all host (every path → 200 index.html) asserting 0 live findings, so the false-positive class is guarded by the recall/precision benchmark, not only the exposure unit test. Source: real cryptotrackr-staging.fly.dev scan emitted 20 FP HIGHs (fixed in exposure.ts soft-404 calibration). 2026-06-14

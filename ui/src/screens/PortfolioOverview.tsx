@@ -3,6 +3,7 @@ import type { RunReport, TrendPoint } from '../types.js';
 import { fetchReport, fetchReportList, fetchTrend } from '../api.js';
 import { PARTIAL_RUN_LABEL, SEVERITY_LABELS, SURFACE_LABELS } from '../vocabulary.js';
 import { SeverityChip, RunStatusChip } from '../components/Chips.js';
+import { targetLabel, findingSurface, formatFailures } from '../findingHelpers.js';
 
 interface PortfolioOverviewProps {
   onNavigateToRunReport: () => void;
@@ -72,10 +73,12 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
   const mediumCount = findings.filter(f => f.severity === 'medium' && !f.suppressed).length;
   const lowCount = findings.filter(f => f.severity === 'low' && !f.suppressed).length;
 
-  // Group findings by target
+  // Group findings by target. Key on the readable target label (host for live,
+  // name for static) so live findings — which have no `target.name` — don't all
+  // collapse into a single "undefined" bucket.
   const byTarget = new Map<string, typeof findings>();
   for (const f of findings) {
-    const key = `${f.target.kind}:${f.target.name}`;
+    const key = `${findingSurface(f)}:${targetLabel(f.target)}`;
     const arr = byTarget.get(key) ?? [];
     arr.push(f);
     byTarget.set(key, arr);
@@ -117,7 +120,7 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
               </div>
               <div className="run-banner-sub" style={{ color: 'var(--status-partial)' }}>
                 {meta.failures && meta.failures.length > 0
-                  ? `Failed checks: ${meta.failures.join(', ')}. Re-run to get a full picture.`
+                  ? `Failed checks: ${formatFailures(meta.failures)}. Re-run to get a full picture.`
                   : 'Some scanner families did not complete. Re-run to get a full picture.'}
               </div>
             </div>
@@ -138,7 +141,9 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
             <div className="run-banner-body">
               <div className="run-banner-title" style={{ color: 'var(--status-failed)' }}>Run failed</div>
               <div className="run-banner-sub" style={{ color: 'var(--status-failed)' }}>
-                {meta.failures?.join(', ') ?? 'An error occurred during the scan.'}
+                {meta.failures && meta.failures.length > 0
+                  ? formatFailures(meta.failures)
+                  : 'An error occurred during the scan.'}
               </div>
             </div>
             <div className="run-banner-meta">{startedDate}</div>
@@ -187,7 +192,9 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
           {Array.from(byTarget.entries()).map(([key, tFindings]) => {
             const firstF = tFindings[0];
             if (!firstF) return null;
-            const { kind, name } = firstF.target;
+            const surface = findingSurface(firstF);
+            const isLive = surface === 'live';
+            const name = targetLabel(firstF.target);
             const tCritical = tFindings.filter(f => f.severity === 'critical' && !f.suppressed).length;
             const tHigh = tFindings.filter(f => f.severity === 'high' && !f.suppressed).length;
             const tMedium = tFindings.filter(f => f.severity === 'medium' && !f.suppressed).length;
@@ -218,7 +225,7 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
                 <div className="flex-between" style={{ marginBottom: 14 }}>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 700 }}>{name}</div>
-                    {kind === 'live' && (
+                    {isLive && (
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--mono)' }}>
                         {SURFACE_LABELS.live}
                       </div>
@@ -234,7 +241,7 @@ export function PortfolioOverview({ onNavigateToRunReport }: PortfolioOverviewPr
                     ) : (
                       <RunStatusChip status={meta.status} />
                     )}
-                    {kind === 'live' && <span className="pill pill-live" style={{ fontSize: 10 }}>{SURFACE_LABELS.live}</span>}
+                    {isLive && <span className="pill pill-live" style={{ fontSize: 10 }}>{SURFACE_LABELS.live}</span>}
                   </div>
                 </div>
 

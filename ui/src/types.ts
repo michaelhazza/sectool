@@ -16,50 +16,89 @@ export interface ScannerStatusEntry {
   errorMessage?: string | undefined;
 }
 
+/**
+ * The real runtime target shape differs by scan surface:
+ *   static → { kind: 'repo',    name, commit? }   (has `name`, no `host`)
+ *   live   → { kind: 'staging', host }            (has `host`, no `name`)
+ * Both `name` and `host` are typed optional here so consumers MUST go through
+ * targetLabel() / findingSurface() rather than dereferencing one unconditionally.
+ * The legacy 'static' | 'live' kind values are kept for backward compatibility.
+ */
+export interface FindingTarget {
+  kind: 'repo' | 'staging' | 'static' | 'live';
+  name?: string | undefined;
+  host?: string | undefined;
+  commit?: string | undefined;
+}
+
 export interface Finding {
   fingerprint: string;
+  // `id` and `ruleId` both appear on live-scan findings; id is optional.
+  id?: string | undefined;
   ruleId: string;
   severity: Severity;
+  // baseSeverity appears on live findings before reachability modifiers.
+  baseSeverity?: Severity | undefined;
   confidence: Confidence;
-  target: {
-    kind: Surface;
-    name: string;
-  };
+  // Authoritative surface marker on real findings ('static' | 'live').
+  surface?: Surface | undefined;
+  // Static findings emit source 'rule'; live findings 'probe'. Pragmatic open union.
+  source?: string | undefined;
+  target: FindingTarget;
   vulnClass: string;
   title?: string | undefined;
   description?: string | undefined;
+  remediation?: string | undefined;
+  // Static findings carry file/line/symbol; live findings carry url/method.
   location?: {
     file?: string | undefined;
     line?: number | undefined;
     symbol?: string | undefined;
+    url?: string | undefined;
+    method?: string | undefined;
   } | undefined;
   evidence?: {
     snippet?: string | undefined;
+    // cvss can be null on live findings (no score computed).
+    cvss?: number | null | undefined;
+    raw?: unknown;
   } | undefined;
+  reachability?: 'authenticated' | 'unauthenticated' | 'admin' | 'unknown' | undefined;
+  correlatedWith?: string[] | undefined;
+  externalRefs?: Array<{ url: string; status: FixStatus }> | undefined;
+  firstSeen?: string | undefined;
+  // suppressed flag plus the (nullable) detail object and free-text note.
   suppressed?: boolean | undefined;
   suppression?: {
     justification?: string | undefined;
     approvedBy?: string | undefined;
     expiry?: string | undefined;
-  } | undefined;
-  correlatedWith?: string[] | undefined;
-  externalRefs?: Array<{ url: string; status: FixStatus }> | undefined;
-  reachability?: 'authenticated' | 'unauthenticated' | 'admin' | 'unknown' | undefined;
-  firstSeen?: string | undefined;
-  note?: string | undefined;
+  } | null | undefined;
+  note?: string | null | undefined;
+}
+
+/** A single scanner-family failure, as emitted in report.meta.failures. */
+export interface RunFailure {
+  target?: string | undefined;
+  family?: string | undefined;
+  reason?: string | undefined;
 }
 
 export interface RunMeta {
-  runId: string;
+  // NOTE: runId is NOT on meta in the real report — it's a top-level field on
+  // RunReport. Kept optional only to avoid breaking any legacy reference.
+  runId?: string | undefined;
   startedAt: string;
-  completedAt?: string | undefined;
+  finishedAt?: string | undefined;
   status: RunStatus;
   toolVersion: string;
-  failures?: string[] | undefined;
+  failures?: RunFailure[] | undefined;
   scannerStatus?: ScannerStatusEntry[] | undefined;
 }
 
 export interface RunReport {
+  runId: string;
+  date?: string | undefined;
   meta: RunMeta;
   findings: Finding[];
   targets?: Array<{
@@ -118,8 +157,10 @@ export interface TrendPoint {
 
 export interface ReportListEntry {
   runId: string;
-  startedAt: string;
-  status: RunStatus;
+  // /api/reports returns run-id strings only; these come from the full report
+  // when needed, so they're optional on the list entry.
+  startedAt?: string;
+  status?: RunStatus;
 }
 
 export interface TargetRegistryEntry {
@@ -176,3 +217,25 @@ export interface ScanJob {
 
 // Trigger provenance — matches the trigger field on scan-jobs events and upload envelopes
 export type TriggerKind = 'on-demand' | 'scheduled' | 'replay';
+
+// Config edit history entry (from GET /api/config/history)
+export interface ConfigHistoryEntry {
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  commitSha: string;
+  integrityOk?: boolean | undefined;
+}
+
+// Config write dependency health (from GET /api/config/health)
+export interface ConfigWriteDeps {
+  ok: boolean;
+  missing: string[];
+}
+
+// Response shape from GET /api/config/health
+export interface ConfigHealthResponse {
+  editingEnabled: boolean;
+  configWriteDeps: ConfigWriteDeps;
+}

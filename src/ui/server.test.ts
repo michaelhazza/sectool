@@ -602,7 +602,10 @@ describe('GET /api/scan-jobs', () => {
       jobsTmpDir,
     );
     appendEvent(
-      { event: 'dispatched', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', at: '2026-06-14T10:00:05.000Z' },
+      // dispatched-at is relative-recent so the in_progress/timed_out fold (which
+      // uses real Date.now() vs the 30-min TTL) is deterministic regardless of
+      // wall-clock drift; requested-at above stays fixed for the sort test.
+      { event: 'dispatched', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', at: new Date(Date.now() - 60_000).toISOString() },
       jobsTmpDir,
     );
 
@@ -1106,6 +1109,119 @@ describe('POST /api/scan — registry safety gate', () => {
     } finally {
       await failSrv?.stop();
       try { rmSync(failDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C6 — POST /api/scan dispatch uses resolvedEnv.configBranch as ref (H2/ImplInv-6)
+// ---------------------------------------------------------------------------
+
+describe('POST /api/scan — dispatch ref uses CONFIG_BRANCH (C6/H2)', () => {
+  const c6TmpDir = resolve(tmpdir(), `audit-scan-c6-${process.pid}`);
+  let c6DispatchCalls: GitHubRequest[];
+
+  beforeAll(() => {
+    mkdirSync(resolve(c6TmpDir, 'history'), { recursive: true });
+    c6DispatchCalls = [];
+  });
+
+  afterAll(() => {
+    try { rmSync(c6TmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  beforeEach(() => {
+    c6DispatchCalls = [];
+    vi.mocked(loadAllowlist).mockReset();
+    vi.mocked(loadTargets).mockReset();
+    vi.mocked(preflight).mockReset();
+  });
+
+  it('dispatches with ref === CONFIG_BRANCH (not literal "main") when CONFIG_BRANCH is set', async () => {
+    let c6Srv: AuditServer | undefined;
+    const branchTmpDir = resolve(tmpdir(), `audit-scan-c6-branch-${process.pid}`);
+    mkdirSync(resolve(branchTmpDir, 'history'), { recursive: true });
+    try {
+      c6Srv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return branchTmpDir;
+          if (name === 'AUDIT_WORKFLOW_REPO') return 'https://github.com/acme/audit-workflows';
+          if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+          if (name === 'CONFIG_BRANCH') return 'staging-config';
+          return undefined;
+        },
+        githubClient: (req: GitHubRequest): Promise<GitHubResponse> => {
+          c6DispatchCalls.push(req);
+          return Promise.resolve({ status: 204, body: {} });
+        },
+      });
+      vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+      vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+        [{ name: 'audit-tool', enabled: true }],
+        [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+      ));
+      vi.mocked(preflight).mockReturnValueOnce({
+        target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+        registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+      });
+      const { status } = await post(
+        c6Srv.port,
+        '/api/scan',
+        JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+        { 'X-Audit-CSRF': CSRF_NONCE, 'Origin': `http://127.0.0.1:${c6Srv.port}` },
+      );
+      expect(status).toBe(202);
+      expect(c6DispatchCalls.length).toBe(1);
+      const body = c6DispatchCalls[0]!.body as { ref: string; inputs: Record<string, string> };
+      // ref must be the branch name, not literal 'main', not a SHA
+      expect(body.ref).toBe('staging-config');
+      expect(body.ref).not.toBe('main');
+    } finally {
+      await c6Srv?.stop();
+      try { rmSync(branchTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('dispatches with ref === "main" when CONFIG_BRANCH is not set (default back-compat)', async () => {
+    let c6Srv: AuditServer | undefined;
+    const defaultTmpDir = resolve(tmpdir(), `audit-scan-c6-default-${process.pid}`);
+    mkdirSync(resolve(defaultTmpDir, 'history'), { recursive: true });
+    try {
+      c6Srv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return defaultTmpDir;
+          if (name === 'AUDIT_WORKFLOW_REPO') return 'https://github.com/acme/audit-workflows';
+          if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+          // CONFIG_BRANCH not set → defaults to 'main'
+          return undefined;
+        },
+        githubClient: (req: GitHubRequest): Promise<GitHubResponse> => {
+          c6DispatchCalls.push(req);
+          return Promise.resolve({ status: 204, body: {} });
+        },
+      });
+      vi.mocked(loadAllowlist).mockReturnValueOnce(makeAllowlist(['staging.example.com']));
+      vi.mocked(loadTargets).mockReturnValueOnce(makeRegistry(
+        [{ name: 'audit-tool', enabled: true }],
+        [{ name: 'staging', url: 'https://staging.example.com', enabled: true }],
+      ));
+      vi.mocked(preflight).mockReturnValueOnce({
+        target: { hostname: 'staging.example.com' } as unknown as AllowedTarget,
+        registryEntry: { name: 'staging', url: 'https://staging.example.com', repo: 'audit-tool', activeScan: false, rateLimitRps: 10, enabled: true },
+      });
+      const { status } = await post(
+        c6Srv.port,
+        '/api/scan',
+        JSON.stringify({ repo: 'audit-tool', stagingUrl: 'https://staging.example.com' }),
+        { 'X-Audit-CSRF': CSRF_NONCE, 'Origin': `http://127.0.0.1:${c6Srv.port}` },
+      );
+      expect(status).toBe(202);
+      expect(c6DispatchCalls.length).toBe(1);
+      const body = c6DispatchCalls[0]!.body as { ref: string; inputs: Record<string, string> };
+      expect(body.ref).toBe('main');
+    } finally {
+      await c6Srv?.stop();
+      try { rmSync(defaultTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 });

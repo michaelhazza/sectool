@@ -12,6 +12,19 @@ import { fileFixRequest, MissingFixTokenError, defaultGitHubClient } from '../fi
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
 import { resolveEnv, assertProductionConfig, type ResolvedEnv } from './env.js';
+import { handleStepUpExchange } from './stepup.js';
+import { requireStepUp, hashPrincipal } from './stepup.js';
+import {
+  addRepo, editRepo, removeRepo,
+  addStagingTarget, editStagingTarget, removeStagingTarget,
+  addHost, removeHost,
+  revertConfigCommit, listHistory,
+  ValidationError, HostInUseError, NoChangeError,
+  ConfigWorktreeDirtyError, GitPushError, GitRollbackFailedError, NotARevertableConfigCommitError,
+  scrubToken,
+} from './config-write.js';
+import type { WriteServiceOpts } from './config-write.js';
+import { currentConfigSha } from './config-git.js';
 import { basicAuthGate, isAuthEnabled } from './auth.js';
 import { foldJobs, appendEvent } from './scan-jobs.js';
 import { preflight } from '../live/preflight.js';
@@ -21,14 +34,13 @@ import type { Clock } from './provenance.js';
 import { RUN_ID_RE } from '../schemas/run-id.js';
 import { writeReport } from '../report/json.js';
 import { writeTrend } from '../report/trend.js';
-import { withWorkspaceLock } from '../report/lock.js';
+import { withWorkspaceLock, WorkspaceLockedError } from '../report/lock.js';
 import type { TrendLine } from '../schemas/trend.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const CONFIG_DIR = resolve(REPO_ROOT, 'config');
 
 // SPA static assets: built output lives in ui/dist (relative to repo root)
 const SPA_DIR = resolve(REPO_ROOT, 'ui', 'dist');
@@ -141,11 +153,12 @@ function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Prom
  * fix-request issue for the given fingerprint.
  * Loads the latest report from disk to locate the finding.
  */
-function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHttpClient; env?: EnvReader }): FixHandler {
+function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHttpClient; env?: EnvReader; configDir?: string }): FixHandler {
   return async (fingerprint: string) => {
     // Load config to get the target registry (for repoUrl resolution)
-    const allowlist = loadAllowlist();
-    const registry = loadTargets(allowlist);
+    const loadOpts = opts?.configDir !== undefined ? { configDir: opts.configDir } : undefined;
+    const allowlist = loadAllowlist(loadOpts);
+    const registry = loadTargets(allowlist, loadOpts);
 
     // Find the finding in the latest report
     let report: RunReport | null = null;
@@ -209,7 +222,7 @@ function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHt
 // Read-only JSON endpoints
 // ---------------------------------------------------------------------------
 
-function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string, dataDir: string): boolean {
+function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string, dataDir: string, configDir: string): boolean {
   const { pathname } = url;
   const fixesJson = resolve(reportsDir, 'fixes.json');
 
@@ -285,7 +298,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // read `repoTargets`) AND drops the auth block from the response (less exposure).
   if (req.method === 'GET' && pathname === '/api/config/targets') {
     try {
-      const raw = readJsonFile(resolve(CONFIG_DIR, 'targets.json')) as {
+      const raw = readJsonFile(resolve(configDir, 'targets.json')) as {
         repos?: Array<{ name: string; enabled: boolean }>;
         stagingTargets?: Array<{ name: string; url: string; repo?: string; activeScan?: boolean; enabled: boolean }>;
       };
@@ -317,7 +330,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // GET /api/config/allowlist — config/allowed-staging-hosts.json
   if (req.method === 'GET' && pathname === '/api/config/allowlist') {
     try {
-      const data = readJsonFile(resolve(CONFIG_DIR, 'allowed-staging-hosts.json'));
+      const data = readJsonFile(resolve(configDir, 'allowed-staging-hosts.json'));
       jsonResponse(res, 200, data);
     } catch {
       jsonResponse(res, 200, { hosts: [] });
@@ -328,7 +341,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsD
   // GET /api/config/baseline — config/baseline.json
   if (req.method === 'GET' && pathname === '/api/config/baseline') {
     try {
-      const data = readJsonFile(resolve(CONFIG_DIR, 'baseline.json'));
+      const data = readJsonFile(resolve(configDir, 'baseline.json'));
       jsonResponse(res, 200, data);
     } catch {
       jsonResponse(res, 200, { entries: [] });
@@ -520,8 +533,9 @@ async function handleScanPost(
   let allowlist: ReturnType<typeof loadAllowlist>;
   let registry: ReturnType<typeof loadTargets>;
   try {
-    allowlist = loadAllowlist();
-    registry = loadTargets(allowlist);
+    const configOpts = { configDir: resolvedEnv.configDir };
+    allowlist = loadAllowlist(configOpts);
+    registry = loadTargets(allowlist, configOpts);
   } catch (configErr) {
     // ConfigError from registry load → 500 (server misconfig — M3).
     if (configErr instanceof ConfigError) {
@@ -574,18 +588,33 @@ async function handleScanPost(
   const workflowRepo = envReader('AUDIT_WORKFLOW_REPO') ?? '';
   const token = envReader('AUDIT_GH_DISPATCH_TOKEN') ?? '';
 
+  // ImplInv-6 (close the write-then-scan race): pin the dispatch to the CURRENT
+  // committed config SHA so CI checks out exactly the config the dashboard shows,
+  // not a possibly-newer branch tip. null when the config dir isn't a git clone
+  // (then the workflow uses the branch tip as before).
+  const configSha = await currentConfigSha(resolvedEnv.configRepoDir);
+
   let result: Awaited<ReturnType<typeof dispatchScan>>;
   try {
     result = await dispatchScan(
-      { workflowRepo, targetRepo: repo, stagingUrl, jobId, token, ref: 'main' },
+      {
+        workflowRepo,
+        targetRepo: repo,
+        stagingUrl,
+        jobId,
+        token,
+        // H2: use CONFIG_BRANCH so non-main branches dispatch correctly (ImplInv-6).
+        // GitHub workflow_dispatch requires a branch/tag, never a raw SHA.
+        ref: resolvedEnv.configBranch ?? 'main',
+        ...(configSha !== null ? { configSha } : {}),
+      },
       githubClient,
     );
   } catch (dispatchErr) {
     // parseOwnerRepo throws when AUDIT_WORKFLOW_REPO is missing or malformed.
     const reason = dispatchErr instanceof Error ? dispatchErr.message : 'dispatch error';
     appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('Scan dispatch failed: AUDIT_WORKFLOW_REPO is missing or invalid.');
+    jsonResponse(res, 502, { error: 'Scan dispatch not configured — set AUDIT_WORKFLOW_REPO and AUDIT_GH_DISPATCH_TOKEN so the dashboard can trigger the GitHub Actions scan.' });
     return;
   }
 
@@ -595,8 +624,7 @@ async function handleScanPost(
   } else {
     const reason = `github ${result.status}`;
     appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('Scan dispatch failed: GitHub returned an error. Check AUDIT_WORKFLOW_REPO and AUDIT_GH_DISPATCH_TOKEN.');
+    jsonResponse(res, 502, { error: `Scan dispatch failed: GitHub returned ${result.status}. Check AUDIT_WORKFLOW_REPO and the AUDIT_GH_DISPATCH_TOKEN scope.` });
   }
 }
 
@@ -918,6 +946,375 @@ async function handleUploadPost(
 }
 
 // ---------------------------------------------------------------------------
+// Config-write API routes (POST/PUT/DELETE /api/config/*, GET /api/config/history,
+// POST /api/config/revert/:commit) — §6, ImplInv-8
+// ---------------------------------------------------------------------------
+
+/**
+ * CSRF + Origin guard (same pattern as handleFixPost).
+ * Returns true if the request passes, false + responds 403 if it fails.
+ */
+function checkCsrfOrigin(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedOrigin: string,
+): boolean {
+  const csrfHeader = req.headers['x-audit-csrf'];
+  const originHeader = req.headers['origin'];
+
+  if (typeof csrfHeader !== 'string' || csrfHeader !== CSRF_NONCE) {
+    jsonResponse(res, 403, { error: 'Forbidden: missing or invalid X-Audit-CSRF nonce' });
+    return false;
+  }
+  if (typeof originHeader !== 'string' || originHeader !== allowedOrigin) {
+    jsonResponse(res, 403, { error: 'Forbidden: Origin not allowed' });
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Step-up guard. Returns true if valid, false + responds 403 if not.
+ */
+function checkStepUp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  resolvedEnv: ResolvedEnv,
+): boolean {
+  const { stepupSigningSecret } = resolvedEnv;
+  if (!stepupSigningSecret) {
+    jsonResponse(res, 403, { error: 'config editing not configured' });
+    return false;
+  }
+  const credential = req.headers['authorization'];
+  const principal = typeof credential === 'string' && credential.startsWith('Basic ')
+    ? Buffer.from(credential.slice('Basic '.length), 'base64').toString('utf8')
+    : '';
+  const result = requireStepUp(req, {
+    signingSecret: stepupSigningSecret,
+    csrfNonce: CSRF_NONCE,
+    principalHash: hashPrincipal(principal),
+  });
+  if (result === 'forbidden') {
+    jsonResponse(res, 403, { error: 'Forbidden: missing or invalid step-up cookie' });
+    return false;
+  }
+  return true;
+}
+
+/** Map C3/C4 typed errors to HTTP status codes and scrubbed error bodies. */
+function mapWriteError(
+  res: ServerResponse,
+  err: unknown,
+  token: string | undefined,
+): void {
+  // Scrub the token from all surfaced error messages (ImplInv-3 defense in depth)
+  const scrub = (msg: string): string => scrubToken(msg, token ?? '');
+
+  if (err instanceof ValidationError) {
+    jsonResponse(res, 422, { error: scrub(err.message), issues: err.issues });
+    return;
+  }
+  if (err instanceof HostInUseError) {
+    jsonResponse(res, 409, { error: scrub(err.message) });
+    return;
+  }
+  if (err instanceof NoChangeError) {
+    jsonResponse(res, 200, { noChange: true });
+    return;
+  }
+  if (err instanceof ConfigWorktreeDirtyError) {
+    jsonResponse(res, 409, { error: scrub(err.message) });
+    return;
+  }
+  if (err instanceof GitPushError) {
+    jsonResponse(res, 502, { error: scrub(err.message) });
+    return;
+  }
+  if (err instanceof GitRollbackFailedError) {
+    jsonResponse(res, 500, { error: scrub(err.message) });
+    return;
+  }
+  if (err instanceof WorkspaceLockedError) {
+    // Another config write (or scan) holds the workspace lock — retryable, not a
+    // 500 (adversarial 3-A: surface a clear retry signal, not an opaque error).
+    res.setHeader('Retry-After', '2');
+    jsonResponse(res, 503, { error: 'Another config change is in progress — retry shortly.' });
+    return;
+  }
+  if (err instanceof NotARevertableConfigCommitError) {
+    jsonResponse(res, 400, { error: scrub(err.message) });
+    return;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  jsonResponse(res, 500, { error: scrub(msg) });
+}
+
+/**
+ * Handle all /api/config/* write routes (POST/PUT/DELETE) and read routes
+ * (GET /api/config/history).
+ *
+ * Gate order for mutating routes (ImplInv-8):
+ *   Basic Auth (upstream) → CSRF + Origin → requireStepUp → configWriteDeps.ok
+ *   → parse body → schema-validate post-change → commitConfigChange → audit → re-read.
+ *
+ * Returns true if handled, false otherwise.
+ */
+async function handleConfigWrite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  resolvedEnv: ResolvedEnv,
+): Promise<boolean> {
+  const { pathname } = url;
+  const { allowedOrigin, configRepoDir, configDir, historyDir, configWriteDeps, gitWriteToken, gitAuthor, configBranch } = resolvedEnv;
+
+  // GET /api/config/health — READ route; exposes configWriteDeps so the UI
+  // can render the precise disabled reason without requiring step-up.
+  if (req.method === 'GET' && pathname === '/api/config/health') {
+    jsonResponse(res, 200, {
+      editingEnabled: !!resolvedEnv.totpSecret,
+      configWriteDeps: resolvedEnv.configWriteDeps,
+    });
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /api/config/history — READ route, no step-up required
+  // ---------------------------------------------------------------------------
+  if (req.method === 'GET' && pathname === '/api/config/history') {
+    const nStr = url.searchParams.get('n') ?? '20';
+    const n = Math.min(Math.max(parseInt(nStr, 10) || 20, 1), 100);
+    try {
+      const result = await listHistory(n, { configRepoDir, historyDir });
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      jsonResponse(res, 500, { error: msg });
+    }
+    return true;
+  }
+
+  // All mutating routes below this point require CSRF + Origin + step-up + configWriteDeps
+
+  // Determine if this is a mutating config route
+  const isMutatingConfig =
+    (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') &&
+    (
+      pathname === '/api/config/repos' ||
+      /^\/api\/config\/repos\/[^/]+$/.test(pathname) ||
+      pathname === '/api/config/staging-targets' ||
+      /^\/api\/config\/staging-targets\/[^/]+$/.test(pathname) ||
+      pathname === '/api/config/allowlist' ||
+      /^\/api\/config\/allowlist\/[^/]+$/.test(pathname) ||
+      /^\/api\/config\/revert\/[^/]+$/.test(pathname)
+    );
+
+  if (!isMutatingConfig) return false;
+
+  // Gate: CSRF + Origin
+  if (!checkCsrfOrigin(req, res, allowedOrigin)) return true;
+
+  // Gate: step-up cookie (ImplInv-8)
+  if (!checkStepUp(req, res, resolvedEnv)) return true;
+
+  // Gate: configWriteDeps.ok — write routes disabled when deps incomplete
+  if (!configWriteDeps.ok) {
+    const missing = configWriteDeps.missing.join(', ');
+    jsonResponse(res, 403, { error: `config editing not configured — missing: ${missing}` });
+    return true;
+  }
+
+  // Resolve write service opts from env
+  // remoteUrl is derived from gitAuthor/configBranch; the working clone already has
+  // its remote set. We read it from the existing git config via a fallback.
+  // On fly.io the clone was established by ensureClone; locally it's the checkout.
+  // We pass an empty remoteUrl sentinel — commitConfigChange pushes to 'origin' via
+  // 'HEAD:refs/heads/<branch>' with the remote already configured in the clone.
+  // To avoid requiring the remote URL at the service level (it's already in .git/config),
+  // we derive it lazily. Since config-git's commitConfigChange needs remoteUrl only for
+  // tryPush's git push argv (the remote URL itself), and the clone already has 'origin'
+  // set to the right URL, we can pass 'origin' and git will resolve it.
+  // However, commitConfigChange currently takes remoteUrl and passes it verbatim to
+  // 'git push <remoteUrl> HEAD:refs/heads/<branch>'. So we need a real URL or 'origin'.
+  // The spec says remoteUrl comes from the env. For now, derive from env or use 'origin'.
+  // In production, ensureClone was called with the actual remoteUrl (from env vars like
+  // GITHUB_REPO_URL or similar). We use 'origin' as a fallback — git resolves it.
+  // The actual URL is already in .git/config from ensureClone.
+  const remoteUrl = resolvedEnv.gitRemoteUrl ?? 'origin';
+
+  const serviceOpts: WriteServiceOpts = {
+    configRepoDir,
+    configDir,
+    remoteUrl,
+    branch: configBranch!,
+    token: gitWriteToken!,
+    actor: gitAuthor ?? 'dashboard',
+    historyDir,
+  };
+
+  // Read and parse body for non-DELETE methods
+  let body: string = '';
+  if (req.method !== 'DELETE') {
+    try {
+      body = await readBody(req);
+    } catch (bodyErr) {
+      const isTooLarge = typeof bodyErr === 'object' && bodyErr !== null && (bodyErr as { tooLarge?: boolean }).tooLarge === true;
+      if (isTooLarge) {
+        jsonResponse(res, 413, { error: 'Request body too large' });
+      } else {
+        jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+      }
+      return true;
+    }
+  }
+
+  let parsed: unknown = undefined;
+  if (body.length > 0) {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      jsonResponse(res, 400, { error: 'Bad request: invalid JSON' });
+      return true;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // POST /api/config/repos — add repo
+  // ---------------------------------------------------------------------------
+  if (req.method === 'POST' && pathname === '/api/config/repos') {
+    try {
+      const result = await addRepo(parsed as Parameters<typeof addRepo>[0], serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // PUT /api/config/repos/:name — edit repo
+  // ---------------------------------------------------------------------------
+  const repoNameMatch = /^\/api\/config\/repos\/([^/]+)$/.exec(pathname);
+  if (req.method === 'PUT' && repoNameMatch !== null) {
+    const name = decodeURIComponent(repoNameMatch[1]!);
+    try {
+      const result = await editRepo(name, parsed as Parameters<typeof editRepo>[1], serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // DELETE /api/config/repos/:name — remove repo
+  // ---------------------------------------------------------------------------
+  if (req.method === 'DELETE' && repoNameMatch !== null) {
+    const name = decodeURIComponent(repoNameMatch[1]!);
+    try {
+      const result = await removeRepo(name, serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // POST /api/config/staging-targets — add staging target (+ optional addHost)
+  // ---------------------------------------------------------------------------
+  if (req.method === 'POST' && pathname === '/api/config/staging-targets') {
+    const p = parsed as Record<string, unknown>;
+    const doAddHost = p?.['addHost'] === true;
+    // Strip addHost from the staging target object before passing to service
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { addHost: _addHostField, ...stagingEntry } = p ?? {};
+    try {
+      const result = await addStagingTarget(
+        stagingEntry as Parameters<typeof addStagingTarget>[0],
+        doAddHost,
+        serviceOpts,
+      );
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // PUT /api/config/staging-targets/:name — edit staging target
+  // DELETE /api/config/staging-targets/:name — remove staging target
+  // ---------------------------------------------------------------------------
+  const stagingNameMatch = /^\/api\/config\/staging-targets\/([^/]+)$/.exec(pathname);
+  if (req.method === 'PUT' && stagingNameMatch !== null) {
+    const name = decodeURIComponent(stagingNameMatch[1]!);
+    try {
+      const result = await editStagingTarget(name, parsed as Parameters<typeof editStagingTarget>[1], serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  if (req.method === 'DELETE' && stagingNameMatch !== null) {
+    const name = decodeURIComponent(stagingNameMatch[1]!);
+    try {
+      const result = await removeStagingTarget(name, serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // POST /api/config/allowlist — add host
+  // DELETE /api/config/allowlist/:host — remove host (409 if in use)
+  // ---------------------------------------------------------------------------
+  if (req.method === 'POST' && pathname === '/api/config/allowlist') {
+    try {
+      const result = await addHost(parsed as Parameters<typeof addHost>[0], serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  const allowlistHostMatch = /^\/api\/config\/allowlist\/([^/]+)$/.exec(pathname);
+  if (req.method === 'DELETE' && allowlistHostMatch !== null) {
+    const host = decodeURIComponent(allowlistHostMatch[1]!);
+    try {
+      const result = await removeHost(host, serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // POST /api/config/revert/:commit — make a reverting commit (2FA-gated)
+  // ---------------------------------------------------------------------------
+  const revertMatch = /^\/api\/config\/revert\/([^/]+)$/.exec(pathname);
+  if (req.method === 'POST' && revertMatch !== null) {
+    const commitSha = decodeURIComponent(revertMatch[1]!);
+    try {
+      const result = await revertConfigCommit(commitSha, serviceOpts);
+      jsonResponse(res, 200, result);
+    } catch (err) {
+      mapWriteError(res, err, gitWriteToken);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Static SPA asset serving (graceful when ui/dist not built yet)
 // ---------------------------------------------------------------------------
 
@@ -981,7 +1378,7 @@ function handleRequest(
   githubClient: GitHubHttpClient,
   clock: Clock,
 ): void {
-  const { allowedOrigin, reportsDir, historyDir, dataDir } = resolvedEnv;
+  const { allowedOrigin, reportsDir, historyDir, dataDir, configDir } = resolvedEnv;
   const raw = req.url ?? '/';
   let url: URL;
   try {
@@ -1036,6 +1433,20 @@ function handleRequest(
     return;
   }
 
+  // Step-up exchange POST /api/config/step-up — Basic Auth already checked above
+  if (req.method === 'POST' && url.pathname === '/api/config/step-up') {
+    handleStepUpExchange(req, res, resolvedEnv, {
+      csrfNonce: CSRF_NONCE,
+      readBody,
+      jsonResponse,
+    }).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
   // Inbound trust boundary POST /api/upload (bearer-authed + provenance-bound — §4.2)
   if (req.method === 'POST' && url.pathname === '/api/upload') {
     handleUploadPost(req, res, resolvedEnv, envReader, githubClient, clock).catch(() => {
@@ -1046,9 +1457,26 @@ function handleRequest(
     return;
   }
 
+  // Config-write routes (GET /api/config/history + mutating config routes — §6, ImplInv-8)
+  if (url.pathname.startsWith('/api/config/') && url.pathname !== '/api/config/step-up') {
+    handleConfigWrite(req, res, url, resolvedEnv).then((handled) => {
+      if (!handled) {
+        // Fall through to handleApi for read-only config routes (targets/allowlist/baseline)
+        if (!handleApi(req, res, url, reportsDir, historyDir, dataDir, configDir)) {
+          jsonResponse(res, 404, { error: 'Not found' });
+        }
+      }
+    }).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
   // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
-    if (!handleApi(req, res, url, reportsDir, historyDir, dataDir)) {
+    if (!handleApi(req, res, url, reportsDir, historyDir, dataDir, configDir)) {
       jsonResponse(res, 404, { error: 'Not found' });
     }
     return;
@@ -1094,11 +1522,12 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
 
   const env = envReader ?? ((name: string) => process.env[name]);
   const resolved = resolveEnv(env, port);
-  const { bindHost, allowedOrigin, reportsDir } = resolved;
+  const { bindHost, allowedOrigin, reportsDir, configDir } = resolved;
 
   const handler = fixHandlerArg ?? makeProductionFixHandler(reportsDir, {
     ...(githubClientArg !== undefined ? { client: githubClientArg } : {}),
     env,
+    configDir,
   });
 
   // Production fail-closed: assert all required vars before binding.

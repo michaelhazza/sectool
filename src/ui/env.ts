@@ -23,10 +23,28 @@ export interface ResolvedEnv {
   reportsDir: string;
   historyDir: string;
   configDir: string;
+  /** Root of the working config clone: REPO_ROOT locally, /data/repo on fly.io.
+   *  Config files live at configRepoDir/config/. */
+  configRepoDir: string;
   /** Undefined when AUDIT_BASIC_AUTH_USER is not set. */
   authUser: string | undefined;
   /** Undefined when AUDIT_BASIC_AUTH_PASS is not set. */
   authPass: string | undefined;
+  /** HMAC key for step-up cookie signing (AUDIT_STEPUP_SIGNING_SECRET). Undefined when not set. */
+  stepupSigningSecret: string | undefined;
+  /** Git write token for config commits (AUDIT_GIT_WRITE_TOKEN). Undefined when not set. */
+  gitWriteToken: string | undefined;
+  /** Git commit author identity (AUDIT_GIT_AUTHOR). Undefined when not set. */
+  gitAuthor: string | undefined;
+  /** Branch the dashboard commits config to (CONFIG_BRANCH). Undefined when not set. */
+  configBranch: string | undefined;
+  /** TOTP shared secret for step-up exchange (AUDIT_TOTP_SECRET). Undefined when not set. */
+  totpSecret: string | undefined;
+  /** Remote URL for config git pushes (AUDIT_GIT_REMOTE_URL). Defaults to 'origin' so
+   *  the working clone's existing remote is used when not explicitly overridden. */
+  gitRemoteUrl: string;
+  /** Whether config-write write-deps are all present; lists any missing var names. */
+  configWriteDeps: { ok: boolean; missing: string[] };
 }
 
 /**
@@ -53,6 +71,13 @@ export class StartupConfigError extends Error {
  *
  * Required in production: AUDIT_BASIC_AUTH_USER, AUDIT_BASIC_AUTH_PASS,
  * ALLOWED_ORIGIN, BIND_HOST.
+ *
+ * When config editing is enabled (AUDIT_TOTP_SECRET present in production),
+ * AUDIT_GIT_WRITE_TOKEN + AUDIT_STEPUP_SIGNING_SECRET + AUDIT_GIT_AUTHOR +
+ * CONFIG_BRANCH must also be present. If any are missing the server still starts
+ * (write routes degrade closed) — missing write deps are surfaced via
+ * resolvedEnv.configWriteDeps, NOT a startup failure. Only the core four vars
+ * (above) cause a hard startup error.
  */
 export function assertProductionConfig(resolvedEnv: ResolvedEnv, env: EnvReader): void {
   if (!resolvedEnv.isProduction) return;
@@ -67,6 +92,8 @@ export function assertProductionConfig(resolvedEnv: ResolvedEnv, env: EnvReader)
   if (missing.length > 0) {
     throw new StartupConfigError(missing);
   }
+  // Config-write deps: degrade closed, do NOT fail startup.
+  // resolvedEnv.configWriteDeps already captures what is missing.
 }
 
 /**
@@ -92,6 +119,39 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
   const authUser = env('AUDIT_BASIC_AUTH_USER') ?? undefined;
   const authPass = env('AUDIT_BASIC_AUTH_PASS') ?? undefined;
 
+  // configRepoDir: root of the working config clone.
+  // Explicit CONFIG_REPO_DIR wins; else /data/repo in production (FLY_APP_NAME set),
+  // else REPO_ROOT locally — mirrors how DATA_DIR/dataDir is resolved.
+  const configRepoDir = env('CONFIG_REPO_DIR') ?? (flyAppName ? '/data/repo' : REPO_ROOT);
+
+  // Normalise secrets: treat empty/whitespace-only as absent (adversarial 4-B —
+  // a whitespace-only token is truthy but useless; it must not count as "present"
+  // for configWriteDeps or be handed to git as a credential).
+  const secret = (name: string): string | undefined => {
+    const v = env(name);
+    if (v === undefined) return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+  const stepupSigningSecret = secret('AUDIT_STEPUP_SIGNING_SECRET');
+  const gitWriteToken = secret('AUDIT_GIT_WRITE_TOKEN');
+  const gitAuthor = secret('AUDIT_GIT_AUTHOR');
+  const configBranch = secret('CONFIG_BRANCH');
+  const totpSecret = secret('AUDIT_TOTP_SECRET');
+  const gitRemoteUrl = env('AUDIT_GIT_REMOTE_URL') ?? 'origin';
+
+  // configWriteDeps: editing is enabled when totpSecret is present; all four
+  // additional deps must also be set. Write routes degrade closed when any is missing.
+  const configWriteDepsOk =
+    !!totpSecret && !!stepupSigningSecret && !!gitWriteToken && !!gitAuthor && !!configBranch;
+  const configWriteMissing: string[] = [];
+  if (totpSecret) {
+    if (!stepupSigningSecret) configWriteMissing.push('AUDIT_STEPUP_SIGNING_SECRET');
+    if (!gitWriteToken) configWriteMissing.push('AUDIT_GIT_WRITE_TOKEN');
+    if (!gitAuthor) configWriteMissing.push('AUDIT_GIT_AUTHOR');
+    if (!configBranch) configWriteMissing.push('CONFIG_BRANCH');
+  }
+
   return {
     dataDir,
     bindHost,
@@ -99,9 +159,17 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
     isProduction,
     reportsDir: resolve(dataDir, 'reports'),
     historyDir: resolve(dataDir, 'history'),
-    configDir: resolve(REPO_ROOT, 'config'),
+    configDir: resolve(configRepoDir, 'config'),
+    configRepoDir,
     authUser,
     authPass,
+    stepupSigningSecret,
+    gitWriteToken,
+    gitAuthor,
+    configBranch,
+    totpSecret,
+    configWriteDeps: { ok: configWriteDepsOk, missing: configWriteMissing },
+    gitRemoteUrl,
   };
 }
 

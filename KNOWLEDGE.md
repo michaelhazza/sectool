@@ -95,6 +95,17 @@ an upload back to the dispatch that triggered it (on-demand provenance, §4.1–
 Without this nonce, there would be no reliable way to correlate a CI upload with
 the specific dashboard request that triggered it.
 
+## Live-config feature: git-write token on the dashboard box (2026-06-14)
+
+The ui-live-config build put `AUDIT_GIT_WRITE_TOKEN` (a fine-grained GitHub PAT,
+`contents:write` on this repo only) on the fly.io dashboard machine. Git is the
+config source of truth: the dashboard maintains a working clone of the repo at
+`CONFIG_REPO_DIR` (`/data/repo` on the volume) and commits every config change
+directly to `CONFIG_BRANCH`. The token never touches remote URLs, argv, or
+`.git/config` — it is passed only via `GIT_ASKPASS` in a scoped spawn env (see
+`src/ui/config-git.ts`). `AUDIT_GIT_WRITE_TOKEN` is the highest-value secret in
+the deployment and must be treated accordingly.
+
 ## Corrections
 
 - (none yet)

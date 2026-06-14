@@ -246,3 +246,122 @@ reachable during CI uploads. Do not scale to zero when uploads are expected.
 
 Region is set to `syd` in `fly.toml`. To change region, update `fly.toml` and
 re-create the volume in the new region (volumes are region-local).
+
+---
+
+## Live config editing secrets
+
+The live config editing feature (ui-live-config build, 2026-06-14) adds four new
+fly secrets and two env vars. **All four secrets must be set before the editing
+feature is usable.** If any is missing, the dashboard runs in read-only mode —
+write routes return `403 { error: "config editing not configured" }`. The
+dashboard itself (reports, scan history, run-a-scan) remains available.
+
+### Additional fly.io secrets
+
+Add these alongside the existing secrets table above:
+
+| Secret | Description | Notes |
+|---|---|---|
+| `AUDIT_TOTP_SECRET` | Base32 TOTP shared secret (RFC-6238) | Generated once via `audit totp-init` (see enrollment below). Setting this secret enables the editing feature; omitting it disables it entirely. |
+| `AUDIT_STEPUP_SIGNING_SECRET` | HMAC key for signing step-up cookies | 32+ random bytes, base64 or hex. Distinct from `AUDIT_TOTP_SECRET` — the possession-factor domain and the cookie-signing domain are intentionally separate. Rotate independently. |
+| `AUDIT_GIT_WRITE_TOKEN` | **High-value secret.** Fine-grained GitHub PAT with `contents:write` on this repo only. | Used by the dashboard to commit config changes directly to `CONFIG_BRANCH` via the `GIT_ASKPASS` mechanism. Never placed in remote URLs, argv, `.git/config`, or logs — always passed only through a scoped subprocess env. Rotate via `fly secrets set` + invalidate the old PAT in GitHub. |
+| `AUDIT_GIT_AUTHOR` | Git author identity for config commits, in `Name <email>` format | Example: `sectool-dashboard <sectool@breakoutsolutions.com>`. Written as `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` on every config commit. |
+
+**`AUDIT_GIT_WRITE_TOKEN` is a fine-grained PAT scoped to `contents:write` on
+this repo only** — no broader repository or organisation permissions. This is the
+highest-value secret in the deployment; a compromise allows pushing arbitrary
+content to `CONFIG_BRANCH`. Keep it scoped as narrowly as GitHub allows.
+
+### Additional fly.io env vars (set in fly.toml `[env]`)
+
+| Env var | Default | Description |
+|---|---|---|
+| `CONFIG_BRANCH` | `main` | The branch the dashboard commits config changes to and clones from. Must match `vars.CONFIG_BRANCH` in GitHub Actions (see note below). |
+| `CONFIG_REPO_DIR` | `/data/repo` | Path to the git working clone on the volume. Default is correct for fly.io. Do not change unless you know what you are doing. |
+
+**`CONFIG_BRANCH` sync requirement:** `CONFIG_BRANCH` must be set BOTH as a
+`fly.toml [env]` value AND as a GitHub repository variable (`vars.CONFIG_BRANCH`
+under Settings → Secrets and variables → Variables). The on-demand-scan workflow
+uses `vars.CONFIG_BRANCH` (falling back to `main`) to verify that the pushed
+config SHA is reachable from the branch before scanning. If these two values
+diverge, every post-edit scan will fail the reachability check.
+
+### TOTP enrollment (`audit totp-init`)
+
+Run the following once to generate a TOTP secret and enroll your authenticator:
+
+```sh
+# From your local project checkout (requires a built dist/):
+node dist/cli.js totp-init
+```
+
+This prints:
+- A base32 TOTP secret (the value to set as `AUDIT_TOTP_SECRET`)
+- An `otpauth://totp/sectool:ops?secret=…&issuer=sectool` URI
+- Enrollment instructions (paste the URI into any authenticator app — Google
+  Authenticator, Authy, 1Password, etc.)
+
+Nothing is written to disk. Copy the base32 secret and set it as a fly secret:
+
+```sh
+fly secrets set AUDIT_TOTP_SECRET="<base32-secret-from-totp-init>"
+```
+
+Then open your authenticator app and add the account using the `otpauth://` URI
+printed by `totp-init`. Every member of the team who needs to edit config must
+enroll with the same shared secret.
+
+**Re-keying:** run `totp-init` again, set the new secret via `fly secrets set`,
+and re-enroll all authenticator apps. The old codes stop working immediately.
+
+### Fail-closed behavior
+
+Config editing degrades closed, not open. The behavior in each missing-secret scenario:
+
+| Missing secret | Dashboard behavior |
+|---|---|
+| `AUDIT_TOTP_SECRET` absent | Editing disabled entirely. No `POST /api/config/step-up` route. Write routes return 403 with "config editing not configured". Read-only dashboard fully available. |
+| `AUDIT_TOTP_SECRET` present, any of `AUDIT_GIT_WRITE_TOKEN` / `AUDIT_STEPUP_SIGNING_SECRET` / `AUDIT_GIT_AUTHOR` / `CONFIG_BRANCH` missing | Write routes return 403. The `GET /api/config/health` endpoint lists exactly which dependencies are missing (visible in the UI's disabled-state banner). |
+| `CONFIG_REPO_DIR` not a git checkout | `ensureClone()` runs on boot and clones from GitHub using `AUDIT_GIT_WRITE_TOKEN`. If the clone fails (bad token, no network), the server starts but write routes fail at the git layer. |
+
+**The production fail-closed startup set is unchanged** (from ADR-0006):
+`AUDIT_BASIC_AUTH_USER`, `AUDIT_BASIC_AUTH_PASS`, `ALLOWED_ORIGIN`, `BIND_HOST`.
+The new editing secrets are runtime-checked, not startup-required — a missing
+`AUDIT_TOTP_SECRET` does not prevent the server from starting; it just disables
+the editing feature.
+
+### Working clone on the volume
+
+On fly.io the server no longer reads config from the baked, read-only image
+(`/app/config/`). Instead, on first boot it ensures a git working clone of this
+repo at `CONFIG_REPO_DIR` (`/data/repo` by default, on the persistent volume),
+checked out to `CONFIG_BRANCH`. Config is read from `/data/repo/config/*.json`.
+
+- The clone persists across restarts on the volume.
+- On a fresh or lost volume, `ensureClone()` re-clones from GitHub using
+  `AUDIT_GIT_WRITE_TOKEN`. This is a write-token-dependent boot step — if the
+  token is missing or invalid, the clone fails and write routes are unavailable.
+- The baked `config/` in the image (`/app/config/`) is a fallback seed only;
+  it is not used when the clone is present.
+- Locally (`CONFIG_REPO_DIR = REPO_ROOT`), config commits go to your local repo
+  checkout, so local dev and fly.io prod behave identically.
+
+The config-write lock (`.config-write-lock` inside `CONFIG_REPO_DIR`) prevents
+concurrent writes and concurrent boot-time clone/fetch from interleaving on the
+working tree.
+
+### Post-deploy smoke check for config editing
+
+After enabling the config editing secrets (or after rotating them):
+
+1. Open the dashboard and log in with Basic Auth.
+2. Navigate to "Targets & Safety". If the editing UI is visible (not grayed out),
+   `configWriteDeps.ok` is true — all secrets are present.
+3. If a disabled-state banner appears, it will name exactly which secret or env
+   var is missing.
+4. Make a small test edit (e.g. add a note to a repo entry) and confirm it
+   appears in the History view with a commit SHA.
+5. Click the commit SHA to verify it landed on `CONFIG_BRANCH` in GitHub with
+   the `config(dashboard):` commit prefix and an audit trailer.
+6. (Optional) Click "Revert" on the test change to confirm revert works end-to-end.
