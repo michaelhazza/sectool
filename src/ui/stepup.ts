@@ -182,6 +182,41 @@ export function requireStepUp(
 
 const STEP_UP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// ---------------------------------------------------------------------------
+// Brute-force throttle for the TOTP exchange (adversarial 5-A).
+// In-memory, process-global (single shared credential, single process). After
+// MAX_FAILURES consecutive bad codes, lock the exchange for a backoff window
+// that grows with repeated lockouts. A correct code resets the counter.
+// ---------------------------------------------------------------------------
+
+const STEP_UP_MAX_FAILURES = 5;
+const STEP_UP_BASE_LOCK_MS = 60_000; // 1 min, doubled per additional lockout (capped)
+const STEP_UP_MAX_LOCK_MS = 15 * 60 * 1000;
+
+interface StepUpThrottleState { failures: number; lockUntil: number; lockouts: number; }
+const stepUpThrottle: StepUpThrottleState = { failures: 0, lockUntil: 0, lockouts: 0 };
+
+export function isStepUpLockedOut(nowMs: number): boolean {
+  return nowMs < stepUpThrottle.lockUntil;
+}
+export function stepUpLockRemainingMs(nowMs: number): number {
+  return Math.max(0, stepUpThrottle.lockUntil - nowMs);
+}
+export function recordStepUpFailure(nowMs: number): void {
+  stepUpThrottle.failures += 1;
+  if (stepUpThrottle.failures >= STEP_UP_MAX_FAILURES) {
+    const lockMs = Math.min(STEP_UP_BASE_LOCK_MS * 2 ** stepUpThrottle.lockouts, STEP_UP_MAX_LOCK_MS);
+    stepUpThrottle.lockUntil = nowMs + lockMs;
+    stepUpThrottle.lockouts += 1;
+    stepUpThrottle.failures = 0;
+  }
+}
+export function resetStepUpThrottle(): void {
+  stepUpThrottle.failures = 0;
+  stepUpThrottle.lockUntil = 0;
+  stepUpThrottle.lockouts = 0;
+}
+
 /**
  * Exchange handler for POST /api/config/step-up.
  *
@@ -250,11 +285,23 @@ export async function handleStepUpExchange(
     return;
   }
 
+  // Step 3.5: brute-force throttle (adversarial 5-A). The 6-digit TOTP space is
+  // online-guessable by a holder of the (possibly leaked) dashboard password if
+  // unthrottled. Lock the exchange after too many failures in the window.
+  const nowMs = Date.now();
+  if (isStepUpLockedOut(nowMs)) {
+    res.setHeader('Retry-After', String(Math.ceil(stepUpLockRemainingMs(nowMs) / 1000)));
+    helpers.jsonResponse(res, 429, { error: 'Too many attempts — try again later.' });
+    return;
+  }
+
   // Step 4: Verify TOTP against AUDIT_TOTP_SECRET (never the signing secret)
   if (!verifyTotp(totpSecret, code)) {
+    recordStepUpFailure(nowMs);
     helpers.jsonResponse(res, 403, { error: 'invalid code' });
     return;
   }
+  resetStepUpThrottle();
 
   // Step 5: Extract principal from Basic Auth and derive principal hash
   const credential = extractBasicCredential(req.headers['authorization']);

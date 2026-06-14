@@ -101,6 +101,8 @@ interface RunGitOpts {
   cwd?: string;
   /** Environment variables to add to the minimal env. */
   extraEnv?: Record<string, string>;
+  /** Hard timeout (ms) — kills the git process so a hung remote can't hold the lock. Default 30s. */
+  timeoutMs?: number;
 }
 
 interface RunGitResult {
@@ -168,6 +170,15 @@ async function runGit(args: string[], opts: RunGitOpts = {}): Promise<RunGitResu
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // Bound every git op so a slow/hung remote (clone/fetch on the request path)
+    // can't hold the config-write lock indefinitely (adversarial 5-B).
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill('SIGKILL');
+    }, timeoutMs);
+
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
 
@@ -175,6 +186,11 @@ async function runGit(args: string[], opts: RunGitOpts = {}): Promise<RunGitResu
     proc.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
 
     proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        rejectP(new Error(`git ${args[0] ?? ''} timed out after ${timeoutMs}ms`));
+        return;
+      }
       const stdout = scrubToken(Buffer.concat(stdoutChunks).toString('utf8'), token);
       const stderr = scrubToken(Buffer.concat(stderrChunks).toString('utf8'), token);
 
@@ -189,6 +205,7 @@ async function runGit(args: string[], opts: RunGitOpts = {}): Promise<RunGitResu
     });
 
     proc.on('error', (err) => {
+      clearTimeout(timer);
       const scrubbed = new Error(scrubToken(err.message, token));
       rejectP(scrubbed);
     });
@@ -355,7 +372,15 @@ export async function commitConfigChange(
   message: string,
   opts: CommitConfigChangeOpts,
 ): Promise<{ sha: string }> {
-  const { configRepoDir, remoteUrl, branch, token, actor, action, target } = opts;
+  const { configRepoDir, remoteUrl, branch, token } = opts;
+  // Sanitize audit-trailer fields: strip CR/LF so a value can't forge an extra
+  // trailer line in the commit message (adversarial 4-A — defence in depth; the
+  // Zod schemas already reject newlines in host/repo names, but the trailer
+  // assembly must not rely on that implicitly).
+  const oneLine = (s: string): string => s.replace(/[\r\n]+/g, ' ').trim();
+  const actor = oneLine(opts.actor);
+  const action = oneLine(opts.action);
+  const target = oneLine(opts.target);
 
   // Validate that callers only pass whitelisted paths (ImplInv-1)
   for (const f of files) {
@@ -447,6 +472,22 @@ export async function commitConfigChange(
 
     return { sha: pushResult.sha };
   }, { lockPath });
+}
+
+/**
+ * Read the current HEAD SHA of the config working clone (read-only; NO token).
+ * Used to pin a scan dispatch to the exact committed config (ImplInv-6 — so a
+ * scan reads the same config the dashboard shows). Returns null if the dir is
+ * not a git repo (or git fails), so callers can omit config_sha.
+ */
+export async function currentConfigSha(configRepoDir: string): Promise<string | null> {
+  try {
+    const { stdout } = await runGit(['rev-parse', 'HEAD'], { cwd: configRepoDir });
+    const sha = stdout.trim();
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +616,19 @@ export async function computeConfigRevert(
   opts: { configRepoDir: string },
 ): Promise<{ files: ConfigFileWrite[] }> {
   const { configRepoDir } = opts;
+
+  // SAFETY (adversarial 2-A): the commitSha comes from a URL route param and is
+  // interpolated into git revspecs (log/diff-tree/rev-parse/show). Without this
+  // guard, an attacker with a step-up cookie could pass an arbitrary revspec
+  // (`HEAD`, `HEAD~2`, a tag, `refs/...`) and revert a commit they didn't name.
+  // Require a full 40-hex SHA-1 — this collapses the entire revspec surface to a
+  // bare object id, excluding every symbolic/relative form (they contain non-hex
+  // chars) before any git call runs.
+  if (!/^[0-9a-f]{40}$/i.test(commitSha)) {
+    throw new NotARevertableConfigCommitError(
+      `Invalid commit ref: must be a full 40-hex commit SHA`,
+    );
+  }
 
   // Validate commit message prefix
   const { stdout: msgOut } = await runGit(

@@ -124,11 +124,20 @@ export function resolveEnv(env: EnvReader, port: number): ResolvedEnv {
   // else REPO_ROOT locally — mirrors how DATA_DIR/dataDir is resolved.
   const configRepoDir = env('CONFIG_REPO_DIR') ?? (flyAppName ? '/data/repo' : REPO_ROOT);
 
-  const stepupSigningSecret = env('AUDIT_STEPUP_SIGNING_SECRET') ?? undefined;
-  const gitWriteToken = env('AUDIT_GIT_WRITE_TOKEN') ?? undefined;
-  const gitAuthor = env('AUDIT_GIT_AUTHOR') ?? undefined;
-  const configBranch = env('CONFIG_BRANCH') ?? undefined;
-  const totpSecret = env('AUDIT_TOTP_SECRET') ?? undefined;
+  // Normalise secrets: treat empty/whitespace-only as absent (adversarial 4-B —
+  // a whitespace-only token is truthy but useless; it must not count as "present"
+  // for configWriteDeps or be handed to git as a credential).
+  const secret = (name: string): string | undefined => {
+    const v = env(name);
+    if (v === undefined) return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+  const stepupSigningSecret = secret('AUDIT_STEPUP_SIGNING_SECRET');
+  const gitWriteToken = secret('AUDIT_GIT_WRITE_TOKEN');
+  const gitAuthor = secret('AUDIT_GIT_AUTHOR');
+  const configBranch = secret('CONFIG_BRANCH');
+  const totpSecret = secret('AUDIT_TOTP_SECRET');
   const gitRemoteUrl = env('AUDIT_GIT_REMOTE_URL') ?? 'origin';
 
   // configWriteDeps: editing is enabled when totpSecret is present; all four

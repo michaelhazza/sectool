@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { signStepUpCookie, verifyStepUpCookie, requireStepUp, hashPrincipal, type StepUpClaims } from './stepup.js';
+import { signStepUpCookie, verifyStepUpCookie, requireStepUp, hashPrincipal,
+  isStepUpLockedOut, recordStepUpFailure, resetStepUpThrottle, type StepUpClaims } from './stepup.js';
 import type { IncomingMessage } from 'node:http';
+
+describe('step-up brute-force throttle (5-A)', () => {
+  it('locks out after 5 consecutive failures and resets on success', () => {
+    resetStepUpThrottle();
+    const t0 = 1_000_000;
+    expect(isStepUpLockedOut(t0)).toBe(false);
+    for (let i = 0; i < 5; i++) recordStepUpFailure(t0);
+    // After 5 failures the exchange is locked for the backoff window.
+    expect(isStepUpLockedOut(t0)).toBe(true);
+    expect(isStepUpLockedOut(t0 + 60_000)).toBe(false); // 1-min base window elapsed
+    resetStepUpThrottle();
+    expect(isStepUpLockedOut(t0)).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

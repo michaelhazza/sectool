@@ -419,6 +419,7 @@ violates one is wrong even if its local test passes:
 | Volume lost / fresh machine | `ensureClone()` re-clones from the branch on boot; live config == git == last committed state. |
 | Two operators edit at once | serialized by the config lock; second write replays on top of the first (fetch+ff) or 502s to retry. |
 | TOTP code replay within its 30s window | accepted (shared-secret TOTP). Mitigation: the short step-up window + audit log; per-code single-use is deferred (§14) as it needs server-side used-code tracking. Documented residual. |
+| Online TOTP brute force at `/api/config/step-up` | the exchange is rate-limited (adversarial review 5-A): after 5 consecutive bad codes the exchange locks for a doubling backoff (1 min → 15 min cap), reset on success → `429 + Retry-After`. So a holder of the leaked password alone cannot brute the 6-digit code online. |
 | Schema cross-check fails (e.g. enabled target whose host isn't allowlisted) | 422, nothing written — the existing `loadTargets` invariant is enforced before commit. |
 | Remove a host still in use | 409, nothing written. |
 | Dirty config worktree (partial/manual edit) | 409 + diagnostic; no write, no `reset --hard`. |

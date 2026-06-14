@@ -24,6 +24,7 @@ import {
   scrubToken,
 } from './config-write.js';
 import type { WriteServiceOpts } from './config-write.js';
+import { currentConfigSha } from './config-git.js';
 import { basicAuthGate, isAuthEnabled } from './auth.js';
 import { foldJobs, appendEvent } from './scan-jobs.js';
 import { preflight } from '../live/preflight.js';
@@ -33,7 +34,7 @@ import type { Clock } from './provenance.js';
 import { RUN_ID_RE } from '../schemas/run-id.js';
 import { writeReport } from '../report/json.js';
 import { writeTrend } from '../report/trend.js';
-import { withWorkspaceLock } from '../report/lock.js';
+import { withWorkspaceLock, WorkspaceLockedError } from '../report/lock.js';
 import type { TrendLine } from '../schemas/trend.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -587,6 +588,12 @@ async function handleScanPost(
   const workflowRepo = envReader('AUDIT_WORKFLOW_REPO') ?? '';
   const token = envReader('AUDIT_GH_DISPATCH_TOKEN') ?? '';
 
+  // ImplInv-6 (close the write-then-scan race): pin the dispatch to the CURRENT
+  // committed config SHA so CI checks out exactly the config the dashboard shows,
+  // not a possibly-newer branch tip. null when the config dir isn't a git clone
+  // (then the workflow uses the branch tip as before).
+  const configSha = await currentConfigSha(resolvedEnv.configRepoDir);
+
   let result: Awaited<ReturnType<typeof dispatchScan>>;
   try {
     result = await dispatchScan(
@@ -599,6 +606,7 @@ async function handleScanPost(
         // H2: use CONFIG_BRANCH so non-main branches dispatch correctly (ImplInv-6).
         // GitHub workflow_dispatch requires a branch/tag, never a raw SHA.
         ref: resolvedEnv.configBranch ?? 'main',
+        ...(configSha !== null ? { configSha } : {}),
       },
       githubClient,
     );
@@ -1027,6 +1035,13 @@ function mapWriteError(
   }
   if (err instanceof GitRollbackFailedError) {
     jsonResponse(res, 500, { error: scrub(err.message) });
+    return;
+  }
+  if (err instanceof WorkspaceLockedError) {
+    // Another config write (or scan) holds the workspace lock — retryable, not a
+    // 500 (adversarial 3-A: surface a clear retry signal, not an opaque error).
+    res.setHeader('Retry-After', '2');
+    jsonResponse(res, 503, { error: 'Another config change is in progress — retry shortly.' });
     return;
   }
   if (err instanceof NotARevertableConfigCommitError) {

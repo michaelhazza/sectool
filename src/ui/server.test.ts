@@ -602,7 +602,10 @@ describe('GET /api/scan-jobs', () => {
       jobsTmpDir,
     );
     appendEvent(
-      { event: 'dispatched', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', at: '2026-06-14T10:00:05.000Z' },
+      // dispatched-at is relative-recent so the in_progress/timed_out fold (which
+      // uses real Date.now() vs the 30-min TTL) is deterministic regardless of
+      // wall-clock drift; requested-at above stays fixed for the sort test.
+      { event: 'dispatched', jobId: 'aaaa1111aaaa1111aaaa1111aaaa1111', at: new Date(Date.now() - 60_000).toISOString() },
       jobsTmpDir,
     );
 

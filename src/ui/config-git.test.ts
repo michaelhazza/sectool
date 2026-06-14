@@ -553,6 +553,14 @@ describe('computeConfigRevert', () => {
     expect(revert.files[0]!.content).toBe(originalContent);
   });
 
+  it('rejects a non-40-hex revspec (HEAD / HEAD~1 / tag) before any git call (2-A)', async () => {
+    for (const ref of ['HEAD', 'HEAD~1', 'main', 'refs/heads/main', '../escape']) {
+      await expect(
+        computeConfigRevert(ref, { configRepoDir: workingDir }),
+      ).rejects.toThrow(NotARevertableConfigCommitError);
+    }
+  });
+
   it('throws NotARevertableConfigCommitError for a non-config(dashboard) commit', async () => {
     // First make a config(dashboard) commit so we have a SHA to check
     // then create a non-config commit directly via raw git
