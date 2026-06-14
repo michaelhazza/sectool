@@ -36,19 +36,24 @@ export function addSourceFiles(project: Project, repoDir: string): SourceFile[] 
   if (!existsSync(repoDir) || !existsSync(join(repoDir))) {
     return [];
   }
+  // fast-glob (used by ts-morph) requires forward-slash separators in patterns —
+  // on Windows `join` yields backslashes, which fast-glob treats as escape
+  // characters, matching zero files. Normalise to forward slashes for the globs.
+  const globBase = repoDir.replace(/\\/g, '/');
   project.addSourceFilesAtPaths([
-    join(repoDir, '**/*.ts'),
-    `!${join(repoDir, 'node_modules/**')}`,
-    `!${join(repoDir, 'dist/**')}`,
-    `!${join(repoDir, '.git/**')}`,
+    `${globBase}/**/*.ts`,
+    `!${globBase}/node_modules/**`,
+    `!${globBase}/dist/**`,
+    `!${globBase}/.git/**`,
   ]);
   // Explicitly remove any source files that ended up outside repoDir.
   // This can happen when ts-morph discovers an ancestor tsconfig.json (e.g.
   // /app/tsconfig.json when scanning a corpus fixture subdir) and auto-adds
   // all files from that project. Removing out-of-scope files guarantees the
   // rule only analyses the target repo, preventing false positives on corpus
-  // clean-fixture scans.
-  const repoDirNorm = repoDir.endsWith('/') ? repoDir : `${repoDir}/`;
+  // clean-fixture scans. ts-morph returns file paths with forward slashes, so
+  // compare against the forward-slash-normalised base (Windows-safe).
+  const repoDirNorm = globBase.endsWith('/') ? globBase : `${globBase}/`;
   for (const sf of project.getSourceFiles()) {
     const fp = sf.getFilePath();
     if (!fp.startsWith(repoDirNorm)) {
