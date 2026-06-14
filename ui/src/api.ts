@@ -228,8 +228,33 @@ export async function removeHost(host: string): Promise<unknown> {
 // History + revert
 // ---------------------------------------------------------------------------
 
+/** Raw server shape of GET /api/config/history (commit-centric; auditEntry may be absent). */
+interface RawHistoryEntry {
+  sha: string;
+  message: string;
+  authorDate: string;
+  auditEntry?: { at: string; actor: string; action: string; target: string; commitSha: string } | undefined;
+}
+
 export async function fetchConfigHistory(n = 20): Promise<{ entries: ConfigHistoryEntry[]; integrityOk: boolean }> {
-  return fetchJson<{ entries: ConfigHistoryEntry[]; integrityOk: boolean }>(`/api/config/history?n=${n}`);
+  const raw = await fetchJson<{ entries: RawHistoryEntry[]; auditIntegrityOk: boolean }>(`/api/config/history?n=${n}`);
+  // Map the server's commit-centric shape to the flat ConfigHistoryEntry the UI
+  // renders. The audit cache may not have an entry for every commit (e.g. the
+  // seed commit), so fall back to the commit message/date when auditEntry is absent.
+  const entries: ConfigHistoryEntry[] = (raw.entries ?? []).map((e) => {
+    const a = e.auditEntry;
+    // Derive a readable action/target from the commit subject when no audit entry:
+    // "config(dashboard): add host x" → action "add host", target "x".
+    const subject = e.message.replace(/^config\(dashboard\):\s*/, '');
+    return {
+      commitSha: e.sha,
+      at: a?.at ?? e.authorDate,
+      actor: a?.actor ?? '—',
+      action: a?.action ?? subject,
+      target: a?.target ?? '',
+    };
+  });
+  return { entries, integrityOk: raw.auditIntegrityOk !== false };
 }
 
 export async function revertConfig(commitSha: string): Promise<unknown> {
