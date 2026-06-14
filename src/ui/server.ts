@@ -12,6 +12,7 @@ import { fileFixRequest, MissingFixTokenError, defaultGitHubClient } from '../fi
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
 import { resolveEnv, assertProductionConfig, type ResolvedEnv } from './env.js';
+import { handleStepUpExchange } from './stepup.js';
 import { basicAuthGate, isAuthEnabled } from './auth.js';
 import { foldJobs, appendEvent } from './scan-jobs.js';
 import { preflight } from '../live/preflight.js';
@@ -1030,6 +1031,20 @@ function handleRequest(
   // Mutating POST /api/scan (CSRF/origin-gated + registry safety gate — §4.1)
   if (req.method === 'POST' && url.pathname === '/api/scan') {
     handleScanPost(req, res, resolvedEnv, envReader, githubClient).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
+  // Step-up exchange POST /api/config/step-up — Basic Auth already checked above
+  if (req.method === 'POST' && url.pathname === '/api/config/step-up') {
+    handleStepUpExchange(req, res, resolvedEnv, {
+      csrfNonce: CSRF_NONCE,
+      readBody,
+      jsonResponse,
+    }).catch(() => {
       if (!res.headersSent) {
         jsonResponse(res, 500, { error: 'Internal error' });
       }

@@ -38,6 +38,11 @@ Active backlog. Items captured here are queued for work; resolved items move to 
 
 ## From builder — 2026-06-14
 
+- [ ] [origin:builder-C3:2026-06-14] [status:resolved 2026-06-14] eslint config does not cover `.cjs` files — `src/ui/git-askpass.cjs` cannot be linted with the project-service-aware ruleset.
+  - Why: `eslint.config.js` disableTypeChecked override targets `**/*.js` and `ci/**/*.mjs` but not `**/*.cjs`. The `git-askpass.cjs` file is a 6-line plain-JS runtime helper; its lint is excluded from G1. The file is reviewed inline.
+  - Approach: add `'**/*.cjs'` to the `disableTypeChecked` override files array in `eslint.config.js`. Low risk change.
+  - Risk: low — the file is trivial and reviewed; no current lint enforcement.
+
 - [ ] [origin:builder-C9:2026-06-14] [status:open] Pre-existing: `Sidebar.tsx` line 56 has an unused `cls: string` parameter in the `navBtn` curried function — flagged by `@typescript-eslint/no-unused-vars` when linted with `--no-ignore`. Not introduced by C9; in unchanged code.
   - Why: The main `eslint.config.js` intentionally ignores `ui/**`, so this never fires in `npm run lint`. Surfaced only under `--no-ignore` G1 checks on this chunk. Not fixed per surgical-changes rule.
   - Approach: remove the unused `cls` parameter from the `navBtn` helper (or prefix with `_cls`) in a future cleanup chunk scoped to Sidebar.tsx.

@@ -30,9 +30,10 @@ export default tseslint.config(
     },
   },
   {
-    // ci/ holds plain-JS deploy scripts (no tsconfig project) — lint them with
-    // type-aware rules disabled, same as the *.js files.
-    files: ['**/*.js', 'ci/**/*.mjs'],
+    // ci/ holds plain-JS deploy scripts and src/ui holds a plain-JS git-askpass
+    // helper (.cjs) — no tsconfig project; lint them with type-aware rules
+    // disabled, same as the *.js files.
+    files: ['**/*.js', 'ci/**/*.mjs', '**/*.cjs'],
     ...tseslint.configs.disableTypeChecked,
   },
 );

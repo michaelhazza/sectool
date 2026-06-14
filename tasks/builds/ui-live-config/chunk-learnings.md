@@ -1,5 +1,44 @@
 # Chunk learnings — ui-live-config
 
+## C3 — config-git.ts working clone + token channel + path-limited rollback (2026-06-14)
+
+**What was implemented.**
+`src/ui/config-git.ts` — full git adapter: `ensureClone`, `commitConfigChange`, `recentConfigCommits`, `assertConfigWorktreeClean`, `computeConfigRevert`. All five public functions plus typed errors (`ConfigWorktreeDirtyError`, `GitPushError`, `GitRollbackFailedError`, `NotARevertableConfigCommitError`). Single `runGit` helper with scoped token env (ImplInv-3). `CONFIG_PATHS` frozen array exported (ImplInv-1). `pathLimitedRollback` internal (ImplInv-7). 26 tests all green.
+`src/ui/git-askpass.cjs` — Node.js GIT_ASKPASS helper, reads `AUDIT_GIT_ASKPASS_TOKEN` from its own env, echoes it to stdout. On non-Windows, `chmod 0700` applied at module load via `ensureAskpassExecutable()`.
+`src/ui/config-git.test.ts` — 26 tests against a local bare repo (no network). Covers all §13 C3 cases including token-never-leaks (5 assertions), rollback-non-config-preserved, add-A-never-invoked, NFF replay-once, computeConfigRevert happy + two error paths.
+
+**`git-askpass.cjs` lint note.** The `.cjs` extension is not covered by eslint's `disableTypeChecked` override (which targets `**/*.js`, not `**/*.cjs`). Linting it with `npx eslint src/ui/git-askpass.cjs` fails because the project service can't find it in tsconfig. The G1 gate lints only the `.ts` files; the `.cjs` file is a 6-line plain-JS runtime helper, reviewed inline. If the project's eslint config gains a `.cjs` rule in the future, add `'**/*.cjs'` to the disableTypeChecked override. Tracked in `tasks/todo.md`.
+
+**Windows / autocrlf.** Tests use `git clone -c core.autocrlf=false` and `git config core.autocrlf false` in all clone operations. Without this, git on Windows converts LF → CRLF on checkout, causing `git status --porcelain` to show config files as modified immediately after clone, which triggers `ConfigWorktreeDirtyError`. Production (Linux fly.io) is unaffected — autocrlf is false by default.
+
+**`ensureClone` dir creation.** `git clone` creates the destination directory itself. `ensureClone` must NOT `mkdir(configRepoDir)` before the clone — the implementation uses `mkdir(parent)` + best-effort `rm(configRepoDir)` instead. If you call `mkdir(configRepoDir)` before clone, git fails with "destination already exists".
+
+**`commitConfigChange` content-identity guard.** If the file content written is identical to the tracked content (no change), `git add` stages nothing and `git commit` exits 1 ("nothing to commit"). Callers (C4) should diff against current content before calling, or accept that identical-content writes fail at the git layer with an error (not a silent no-op).
+
+**Non-FF replay-once design.** On a non-FF push failure, the replay path: (1) `reset --soft priorHead` + `restore --staged --worktree` to un-commit cleanly, (2) `fetch origin`, (3) `merge --ff-only origin/<branch>`, (4) re-write files + re-stage + re-commit, (5) retry push. This preserves the pre-existing worktree state during the replay.
+
+**Watch-out for future chunks.**
+- C4 calls `commitConfigChange(files, message, opts)` with `opts.actor/action/target` for audit trailers. The commit message it passes MUST start with `config(dashboard):` for `computeConfigRevert`'s validation to work.
+- C4 `revertConfigCommit` calls `computeConfigRevert(sha, { configRepoDir })` then passes the returned `files` straight to `commitConfigChange`. The returned `files` may have empty `content` for paths that were added (not modified) in the commit being reverted — C4 must handle the empty-content case (probably: delete the file from the worktree rather than writing empty JSON).
+- C4 and C6 need `commitConfigChange`'s returned `sha` — it's already the pushed SHA (captured via `git rev-parse HEAD` after the push succeeds).
+- The `ensureAskpassExecutable()` call is a module-level side-effect that runs on import. On Windows this is a no-op. No caller needs to await it.
+- ESM import: `import { ... } from './config-git.js'` (`.js` extension required).
+
+## C2 — Step-up cookie protocol (2026-06-14)
+
+**What was implemented.**
+`src/ui/stepup.ts` — `signStepUpCookie`, `verifyStepUpCookie`, `requireStepUp`, `handleStepUpExchange`, `hashPrincipal`. HMAC-SHA256 over base64url-encoded canonical claim JSON, 5-min TTL cookie with all four required attributes (HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=300). The `handleStepUpExchange` takes a `helpers` parameter (csrfNonce, readBody, jsonResponse) so the route logic stays in stepup.ts while the server is a thin adapter.
+`src/ui/env.ts` — added `stepupSigningSecret`, `gitWriteToken`, `gitAuthor`, `configBranch`, `totpSecret`, and `configWriteDeps: { ok, missing }` to `ResolvedEnv`. `assertProductionConfig` extended with a comment: write deps degrade closed (not a startup failure). `resolveEnv` computes `configWriteDeps.ok` only when `totpSecret` is set.
+`src/ui/server.ts` — imported `handleStepUpExchange` from `./stepup.js`; wired `POST /api/config/step-up` inside `handleRequest`, passing `resolvedEnv` (the local parameter, not the closure's `currentResolved`).
+`src/ui/stepup.test.ts` — 16 pure tests: sign/verify round-trip, signing-secret vs TOTP-secret distinction, tamper detection, expiry, requireStepUp with all forbidden cases.
+`src/ui/stepup.routes.test.ts` — 7 HTTP tests: valid code → 200 + cookie with all four attrs; cookie signed with SIGNING_SECRET not TOTP_SECRET; wrong code → 403 no cookie; missing CSRF → 403; wrong Origin → 403; missing Basic Auth → 401; missing secrets → 403 "not configured".
+
+**Watch-out for future chunks.**
+- C4 calls `requireStepUp(req, { signingSecret, csrfNonce, principalHash, now })`. It needs to extract the `principalHash` from the current request's Authorization header using `hashPrincipal(credential)` — the same pattern used inside `handleStepUpExchange`. Import `requireStepUp` and `hashPrincipal` from `./stepup.js`.
+- `handleStepUpExchange` in stepup.ts accepts `resolvedEnv: ResolvedEnv` directly. When C4 needs to check `configWriteDeps.ok`, that field is now on `resolvedEnv`. No wrapper needed.
+- The `csrfNonce` passed to `requireStepUp` should be the request's `X-Audit-CSRF` header value — compared against the cookie's stored `csrfNonce`. The guard verifies both that the cookie's nonce matches the request header AND that the cookie signature is valid.
+- ESM import paths: `import { ... } from './stepup.js'` (`.js` extension required as with all other src/ui imports).
+
 ## C1 — TOTP verify module + `audit totp-init` CLI helper (2026-06-14)
 
 **What was implemented.**
