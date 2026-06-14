@@ -31,6 +31,20 @@ function exposedPathClient(exposedPath: string, status: number, bodyPreview?: st
   };
 }
 
+/**
+ * Client simulating a single-page-app catch-all: every path (including the
+ * random calibration path) returns the SAME 200 + text/html app shell. This is
+ * the real-world shape that produced 20 false-positive HIGHs against
+ * cryptotrackr-staging.fly.dev — /.env, /.git/config, /phpinfo.php etc. all
+ * returned index.html, not the actual file.
+ */
+function spaCatchAllClient(
+  bodyPreview = '<!DOCTYPE html><html><head><title>Cryptafolio</title></head>',
+): ExposureClient {
+  return (_target: AllowedTarget, path: string): Promise<PathProbeResult> =>
+    Promise.resolve({ path, status: 200, contentType: 'text/html; charset=UTF-8', bodyPreview });
+}
+
 /** Extract the url from a live finding's location (type-safely via cast). */
 function locationUrl(f: { location: unknown }): string {
   return (f.location as { url: string }).url;
@@ -121,6 +135,36 @@ describe('runExposureProbe', () => {
     // But raw must not have any actual credential patterns in the key space
     expect(rawStr).not.toMatch(/\bpassword\b/);
     expect(rawStr).not.toMatch(/\bsecret\b/);
+  });
+
+  it('returns no findings against an SPA catch-all host (soft-404 calibration)', async () => {
+    // Regression: every curated path returns the same 200 + index.html shell.
+    // Without calibration this emitted one HIGH per path (20 false positives).
+    const target = makeTarget();
+    const findings = await runExposureProbe(target, 10, spaCatchAllClient());
+    expect(findings).toHaveLength(0);
+  });
+
+  it('still flags a real leak on a catch-all host when the body differs', async () => {
+    // The host has a catch-all (control → SPA shell) but /.env actually leaks:
+    // its body/content-type differ from the shell, so it must NOT be suppressed.
+    const target = makeTarget();
+    const shell = '<!DOCTYPE html><html><head><title>Cryptafolio</title></head>';
+    const client: ExposureClient = (_t: AllowedTarget, path: string): Promise<PathProbeResult> => {
+      if (path === '/.env') {
+        return Promise.resolve({
+          path,
+          status: 200,
+          contentType: 'text/plain; charset=utf-8',
+          bodyPreview: 'DATABASE_URL=postgres://user:pw@host/db',
+        });
+      }
+      // Control path + every other curated path → the catch-all shell.
+      return Promise.resolve({ path, status: 200, contentType: 'text/html; charset=UTF-8', bodyPreview: shell });
+    };
+    const findings = await runExposureProbe(target, 10, client);
+    expect(findings).toHaveLength(1);
+    expect(locationUrl(findings[0]!)).toMatch(/\/\.env/);
   });
 
   it('uses a custom path list when provided', async () => {

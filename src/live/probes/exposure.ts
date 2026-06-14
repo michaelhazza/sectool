@@ -1,5 +1,6 @@
 import * as https from 'node:https';
 import * as http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import type { AllowedTarget } from '../gate.js';
 import { withHostBudget } from '../ratelimit.js';
 import { redact } from '../../report/redaction.js';
@@ -69,6 +70,37 @@ export const EXPOSURE_PROBE_PATHS = [
 function isExposed(status: number): boolean {
   if (status === 404 || status === 410 || status === 501) return false;
   return true;
+}
+
+/**
+ * Build a guaranteed-nonexistent calibration path. A correctly-behaving host
+ * returns 404 for this; a host with a catch-all / soft-404 (e.g. a single-page
+ * app that serves index.html for every unmatched route) returns 200 + the app
+ * shell — the same response it gives every probe path, producing one false
+ * positive per curated path. The random component makes a real collision
+ * impossible.
+ */
+function makeControlPath(): string {
+  return `/__audit_probe_${randomBytes(12).toString('hex')}__should-not-exist`;
+}
+
+/**
+ * True when `r` is indistinguishable from the catch-all control response, i.e.
+ * the host returned the same status, content-type, and body for a path that
+ * cannot exist. Such a probe is not a real exposure — it is the catch-all.
+ *
+ * Body comparison is exact on the (capped) preview: a genuine leak returns the
+ * sensitive file's contents, which differ from the catch-all shell, so this
+ * never suppresses a true positive. It does not attempt to defeat soft-404s
+ * that echo the requested path into the body (status + content-type must still
+ * match to be suppressed).
+ */
+function isCatchAllResponse(r: PathProbeResult, control: PathProbeResult): boolean {
+  return (
+    r.status === control.status &&
+    (r.contentType ?? '') === (control.contentType ?? '') &&
+    (r.bodyPreview ?? '') === (control.bodyPreview ?? '')
+  );
 }
 
 function buildFinding(
@@ -177,6 +209,13 @@ export const defaultExposureClient: ExposureClient = (
  *
  * Probes each path in EXPOSURE_PROBE_PATHS; returns a Finding for every path
  * that returns a non-404/410/501 response.
+ *
+ * Calibration: a control probe to a guaranteed-nonexistent path runs first. If
+ * the host returns an "exposed" status for it, the host has a catch-all
+ * (soft-404 / SPA fallback), so any probe whose response is indistinguishable
+ * from the control is suppressed — otherwise every curated path produces a
+ * false positive against single-page-app hosts.
+ *
  * Response body previews are redacted in the emitted findings (§5.4).
  */
 export async function runExposureProbe(
@@ -186,8 +225,13 @@ export async function runExposureProbe(
   paths: readonly string[] = EXPOSURE_PROBE_PATHS,
 ): Promise<Finding[]> {
   const results: PathProbeResult[] = [];
+  let control: PathProbeResult | undefined;
 
   await withHostBudget(target.hostname, rps, async (acquireToken) => {
+    // Calibrate against catch-all hosts before probing the curated list.
+    await acquireToken();
+    control = await client(target, makeControlPath());
+
     for (const path of paths) {
       await acquireToken();
       const result = await client(target, path);
@@ -195,7 +239,12 @@ export async function runExposureProbe(
     }
   });
 
+  // Only treat the control as a catch-all signature when it is itself "exposed":
+  // a 404 control means the host distinguishes missing paths, so probe normally.
+  const catchAll = control !== undefined && isExposed(control.status) ? control : undefined;
+
   return results
     .filter((r) => isExposed(r.status))
+    .filter((r) => catchAll === undefined || !isCatchAllResponse(r, catchAll))
     .map((r) => buildFinding(target, r));
 }
