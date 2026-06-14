@@ -29,7 +29,8 @@ export async function fetchReport(runId: string): Promise<RunReport> {
 }
 
 export async function fetchTrend(): Promise<TrendPoint[]> {
-  return fetchJson<TrendPoint[]>('/api/history/trend');
+  // Server route is /api/trend (see src/ui/server.ts handleApi + its test).
+  return fetchJson<TrendPoint[]>('/api/trend');
 }
 
 export async function fetchFixes(): Promise<FixesJson> {

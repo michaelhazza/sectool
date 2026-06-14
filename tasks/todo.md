@@ -47,7 +47,8 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
   - Approach: in-process layer already added (withUploadQueue). No action needed unless cross-process real queueing is required.
 
-- [ ] [origin:builder-C6:2026-06-14] [status:open] Pre-existing `/api/trend` vs `/api/history/trend` route mismatch (plan gap #5) — `ui/src/api.ts` calls `/api/history/trend` but `server.ts` serves `/api/trend`. Not fixed per surgical-changes rule.
+- [x] [origin:builder-C6:2026-06-14] [status:resolved 2026-06-14] Pre-existing `/api/trend` vs `/api/history/trend` route mismatch (plan gap #5) — `ui/src/api.ts` calls `/api/history/trend` but `server.ts` serves `/api/trend`.
+  - **RESOLVED during local UI testing:** it broke the Portfolio Overview screen (404 from `/api/history/trend`). Aligned the client `fetchTrend()` to the server's actual `/api/trend` route.
   - Why: pre-existing mismatch noted in plan gaps as out-of-scope.
   - Approach: rename route in server.ts or update client call in a dedicated cleanup chunk.
 
@@ -80,7 +81,7 @@ Active backlog. Items captured here are queued for work; resolved items move to 
 
 ## From builder — 2026-06-14
 
-- [ ] [origin:builder-chunk1:2026-06-14] [status:open] Pre-existing: `/api/trend` route in `server.ts` served at `/api/trend` but `ui/src/api.ts` calls `/api/history/trend` — the Trends screen is likely broken.
+- [x] [origin:builder-chunk1:2026-06-14] [status:resolved 2026-06-14] Pre-existing: `/api/trend` route mismatch — duplicate of the C6 entry above; fixed by aligning `fetchTrend()` to `/api/trend`.
   - Why: Plan gap 5 explicitly flagged this as pre-existing. Noticed during Chunk 1 work but NOT fixed per surgical-changes rule.
   - Approach: confirm which path is correct (server or client) and fix the mismatch; add a route test.
   - Risk: medium — Trends view shows empty array in production.
