@@ -115,14 +115,23 @@ Server-side flow:
    express a scan the CLI would refuse.
 4. **Mint a correlation job.** Generate a random `jobId` (crypto, 16+ bytes hex).
    This is the provenance token that binds the eventual upload back to THIS
-   dispatch (§4.2). Append a `dispatched` event to the scan-jobs log (§4.3)
-   BEFORE dispatching, so a crash mid-dispatch still leaves a record.
-5. **Dispatch:** call GitHub `POST /repos/{owner}/{repo}/actions/workflows/
-   on-demand-scan.yml/dispatches` with `ref` + `inputs: { repo, staging_url,
-   job_id }`, using a fine-grained PAT (`AUDIT_GH_DISPATCH_TOKEN`, fly.io secret,
-   `actions:write` on this repo only). The `job_id` input is the correlation
-   nonce — CI echoes it back in the upload envelope.
-6. Respond `202 { jobId }`.
+   dispatch (§4.2). Append a **`requested`** event to the scan-jobs log (§4.3)
+   BEFORE the GitHub call, so a crash mid-dispatch still leaves a trace — but
+   `requested` is NOT shown as "in progress" (§4.3 state machine).
+5. **Dispatch to the FIXED audit-tool workflow repo** — not the scan target.
+   The `on-demand-scan.yml` workflow lives only in THIS repo, so the dispatch
+   URL is built from `AUDIT_WORKFLOW_REPO` (e.g. `breakoutsolutions/sectool`),
+   never from the selected scan target:
+   `POST /repos/{AUDIT_WORKFLOW_REPO}/actions/workflows/on-demand-scan.yml/dispatches`
+   with `ref` + `inputs: { target_repo, staging_url, job_id }`, using a
+   fine-grained PAT (`AUDIT_GH_DISPATCH_TOKEN`, fly.io secret, `actions:write` on
+   the audit-tool repo only). The scan target is `inputs.target_repo` (renamed
+   from `repo` to remove any "dispatch repo vs. scan repo" ambiguity); `job_id`
+   is the correlation nonce CI echoes back.
+   - On `204` → append a **`dispatched`** event for `jobId`; respond `202 { jobId }`.
+   - On GitHub failure (token expired, network) → append a **`dispatch_failed`**
+     event for `jobId`; respond `502` with a plain-English message. The job is
+     never presented as in-progress.
 
 > **Why a correlation nonce, not a run id?** GitHub's `workflow_dispatch` REST
 > call returns `204 No Content` — it does NOT return the id of the workflow run
@@ -169,10 +178,13 @@ Envelope:
 
 ```jsonc
 {
-  "trigger": "on-demand" | "scheduled",
+  "trigger": "on-demand" | "scheduled" | "replay",
   "jobId": "<correlation nonce from /api/scan>",   // required when trigger=on-demand
-  "repo": "<repo>", "stagingUrl": "<url>",          // echoed back for cross-check
+  "targetRepo": "<repo>", "stagingUrl": "<url>",    // echoed back for cross-check
   "runId": "<RUN_ID_RE>",
+  // GitHub provenance — required for scheduled & replay (bind to a real CI run):
+  "githubRunId": "<actions run id>", "githubWorkflow": "<workflow name>",
+  "githubSha": "<commit sha>", "sourceRunId": "<original runId>",   // sourceRunId: replay only
   "report": { /* RunReport */ }, "markdown": "...", "sarif": "...", "trendLine": { }
 }
 ```
@@ -185,13 +197,21 @@ Envelope:
    over → `413`.
 3. **Provenance binding (the HIGH fix):**
    - `trigger: "on-demand"` → `jobId` MUST match a scan-jobs entry currently in
-     `dispatched` state, and the envelope `repo`/`stagingUrl` MUST equal that
-     entry's recorded values. No match, already-`uploaded`, or mismatched
+     `dispatched` state, and the envelope `targetRepo`/`stagingUrl` MUST equal
+     that entry's recorded values. No match, already-`uploaded`, or mismatched
      target → `409 Conflict`, nothing written. (Already-uploaded guard makes the
      endpoint idempotent-safe and blocks replay of a captured envelope.)
-   - `trigger: "scheduled"` → the weekly cron has no fly-issued `jobId`; accepted
-     on bearer auth alone, but recorded and surfaced in the UI as a scheduled
-     run (distinct provenance class from operator-triggered runs).
+   - `trigger: "scheduled"` → the weekly cron has no fly-issued `jobId`. It is
+     NOT accepted on bearer auth alone (that would let a leaked token inject a
+     fabricated scheduled run): it MUST carry `githubRunId` + `githubWorkflow` +
+     `githubSha`, and its `runId` MUST be new (duplicate `runId` already on the
+     volume → `409`). This binds the upload to a real Actions run and blocks
+     replay of a captured scheduled envelope. (OIDC verification is the stronger
+     option but deferred as overkill for v1 — noted in §11.)
+   - `trigger: "replay"` → operator-initiated re-upload of a prior run (§6.3).
+     Carries `sourceRunId` (the original) + the same GitHub provenance fields as
+     scheduled; recorded with `replayed: true` so history distinguishes it from
+     both cron and operator-triggered scans. Duplicate live `runId` → `409`.
 4. **Schema validation:** parse `report` against the existing Zod `RunReport`
    schema. Invalid → `422`, nothing written.
 5. **Write:** atomically write `reports/<runId>/report.json` (+ `.md`, `.sarif`
@@ -212,22 +232,34 @@ Returns the current state of each job (most recent first) so the UI can show
 "Scan dispatched 2m ago — waiting for results." Read-only, Basic-Auth-gated.
 
 **Storage is an append-only event log, not a mutable JSON object** (the
-concurrency MEDIUM from review). Two scans dispatched concurrently, plus the
-later `uploaded` events, are all just line appends to `history/scan-jobs.jsonll`:
+concurrency MEDIUM from review). Every state change is a line append to
+`history/scan-jobs.jsonl`:
 
 ```jsonc
-{"event":"dispatched","jobId":"a1b2…","repo":"X","stagingUrl":"https://…","at":"…"}
-{"event":"dispatched","jobId":"c3d4…","repo":"Y","stagingUrl":"https://…","at":"…"}
+{"event":"requested","jobId":"a1b2…","targetRepo":"X","stagingUrl":"https://…","at":"…"}
+{"event":"dispatched","jobId":"a1b2…","at":"…"}
+{"event":"requested","jobId":"c3d4…","targetRepo":"Y","stagingUrl":"https://…","at":"…"}
+{"event":"dispatch_failed","jobId":"c3d4…","reason":"github 401","at":"…"}
 {"event":"uploaded","jobId":"a1b2…","runId":"2026-…","at":"…"}
 ```
 
-Current job state is derived by folding events on read (last event per `jobId`
-wins). Append-only means parallel dispatches and the upload-time status flip
-never race on a read-modify-write — each is an atomic `appendFileSync`. No lock
-needed. (`withWorkspaceLock` exists in `src/report/lock.ts` if a stronger
-guarantee is ever wanted, but append-only is sufficient and simpler here.)
-A stale `dispatched` job with no `uploaded` event after a TTL is shown as
-"timed out" in the UI (derived, not a stored state).
+**State machine** (folded on read, last event per `jobId` wins):
+
+| Last event | UI state |
+|---|---|
+| `requested` | pre-dispatch (transient; only seen if a crash interrupted dispatch) — NOT "in progress" |
+| `dispatched` | **in progress** (until `uploaded` or TTL) |
+| `dispatch_failed` | **failed** (never shown as in-progress) |
+| `uploaded` | complete |
+| `dispatched`, no `uploaded` after TTL | **timed out** (derived, not stored) |
+
+**Append semantics.** One JSON object per line, newline-terminated, each record
+small (a few fields). A reader folds line by line and tolerates **only a single
+malformed trailing partial line** (a write torn by a crash) — it never tries to
+repair earlier lines. Concurrent appends from parallel dispatches don't race on a
+read-modify-write because there is no read-modify-write: each event is a single
+newline-terminated append. (`withWorkspaceLock` exists in `src/report/lock.ts`
+if a stronger guarantee is ever wanted, but per-line append is sufficient here.)
 
 ### 4.4 GET /healthz — fly.io health check
 
@@ -268,7 +300,8 @@ Startup logs the resolved state explicitly ("Basic Auth: enabled (production)" /
 |---|---|---|
 | `AUDIT_BASIC_AUTH_USER/PASS` | fly.io | Human dashboard login |
 | `AUDIT_UPLOAD_TOKEN` | fly.io **and** GitHub Actions | CI → fly.io upload auth |
-| `AUDIT_GH_DISPATCH_TOKEN` | fly.io | fly.io → GitHub workflow_dispatch |
+| `AUDIT_GH_DISPATCH_TOKEN` | fly.io | fly.io → GitHub workflow_dispatch (`actions:write` on the audit-tool repo only) |
+| `AUDIT_WORKFLOW_REPO` | fly.io | Fixed `owner/repo` the dispatch targets (the audit-tool repo, e.g. `breakoutsolutions/sectool`) — NOT the scan target |
 | `FLY_UPLOAD_URL` | GitHub Actions | Where CI POSTs results (`https://sectool.fly.dev/api/upload`) |
 
 ### 5.3 Origin guard generalization
@@ -288,17 +321,17 @@ no raw port exposure). Recorded as an ADR (§9).
 
 ### 6.1 New workflow — on-demand-scan.yml
 
-`.github/workflows/on-demand-scan.yml`: `workflow_dispatch` with inputs `repo`
-(string, required), `staging_url` (string, required), and `job_id` (string,
-required — the correlation nonce from §4.1). Mirrors `weekly-audit.yml`'s
-build+run, scoping `audit run --repo <repo> --url <staging_url>` (always fully
-scoped — never the bare-`--repo` fan-out, §4.1). Ends with the upload step (§6.3)
-called with `trigger=on-demand` and the echoed `job_id`. The same staging-auth
-secrets as the weekly workflow are wired in.
+`.github/workflows/on-demand-scan.yml`: `workflow_dispatch` with inputs
+`target_repo` (string, required), `staging_url` (string, required), and `job_id`
+(string, required — the correlation nonce from §4.1). Mirrors `weekly-audit.yml`'s
+build+run, scoping `audit run --repo <target_repo> --url <staging_url>` (always
+fully scoped — never the bare-`--repo` fan-out, §4.1). Ends with the upload step
+(§6.3) called with `trigger=on-demand` and the echoed `job_id`. The same
+staging-auth secrets as the weekly workflow are wired in.
 
 A second `workflow_dispatch` input `replay_run_id` (string, optional) supports
 operator replay (§6.3, the replay LOW from review): when set, the workflow skips
-scanning and re-uploads the named prior run's artifacts in `scheduled` mode.
+scanning and re-uploads the named prior run's artifacts in `trigger=replay` mode.
 
 > **Safety note:** even though `staging_url` arrives as a workflow input, the
 > `audit run` command re-validates it against the checked-in allowlist (existing
@@ -321,9 +354,11 @@ the §4.2 envelope (with `trigger` + `jobId`), and POSTs it. Called by:
 - **on-demand-scan.yml** — `trigger=on-demand`, passing the dispatched `job_id`.
 - **weekly-audit.yml** — `trigger=scheduled`, no `jobId`.
 - **Replay** — `on-demand-scan.yml` with `replay_run_id` set re-POSTs a prior
-  run's stored artifacts as `trigger=scheduled` (the operator replay path for
-  when fly.io was down at original upload time). The artifacts come from the
-  GH Actions artifact retained for that run, or from a committed report dir.
+  run's stored artifacts as `trigger=replay` with `sourceRunId=<replay_run_id>`
+  (the operator recovery path for when fly.io was down at original upload time).
+  Recorded with `replayed: true` so history distinguishes manual recovery from
+  the weekly cron. Artifacts come from the GH Actions artifact retained for that
+  run, or from a committed report dir.
 
 Failure to upload is **non-fatal** to the scan (the artifact is still in GH
 Actions) but is logged loudly and surfaces as a non-zero step (visible in the
@@ -344,11 +379,14 @@ Restating the non-negotiable, because this change widens the attack surface:
    known-shape files at computed paths are written.
 4. **The allowlist file is read-only on fly.io** (baked into the image, on no
    writable volume path). The dashboard exposes no endpoint that edits it.
-5. **Upload provenance, not just upload auth.** `/api/upload` binds each report
-   to a legitimate run: an `on-demand` upload must carry a `jobId` matching a
-   live `dispatched` job with the same target, and an already-uploaded job is
-   rejected (replay guard). A leaked `AUDIT_UPLOAD_TOKEN` alone cannot inject a
-   fabricated report for an arbitrary run. (§4.2.)
+5. **Upload provenance, not just upload auth.** `/api/upload` binds every report
+   to a legitimate run, so a leaked `AUDIT_UPLOAD_TOKEN` alone cannot inject a
+   fabricated report — for ANY trigger class:
+   - `on-demand` → must carry a `jobId` matching a live `dispatched` job with the
+     same target; already-uploaded job rejected (replay guard).
+   - `scheduled` / `replay` → must carry GitHub run provenance
+     (`githubRunId`/`githubWorkflow`/`githubSha`) and a non-duplicate `runId`.
+   No trigger class is accepted on bearer auth alone. (§4.2.)
 
 ## 8. UI changes
 
@@ -374,7 +412,8 @@ Restating the non-negotiable, because this change widens the attack surface:
 - [ ] `POST /api/upload` + bearer auth + provenance binding (§4.2) +
       schema validation + atomic write
 - [ ] `GET /api/scan-jobs` (fold append-only event log) + `GET /healthz`
-- [ ] `scan-jobs.jsonll` append-only event store + fold helper
+- [ ] `scan-jobs.jsonl` append-only event store + fold helper (path defined once
+      as a single constant, not string-literal-duplicated)
 - [ ] `.github/workflows/on-demand-scan.yml` (job_id + replay_run_id inputs)
 - [ ] `weekly-audit.yml` upload step (`trigger=scheduled`)
 - [ ] Shared CI uploader script (`scripts/upload-report.mjs`)
@@ -388,8 +427,13 @@ Restating the non-negotiable, because this change widens the attack surface:
       - **`/api/upload` rejects a valid report for unknown/mismatched `jobId`**
         (409) and for already-`uploaded` jobId (replay guard)
       - **`/api/upload` flips the matching job `dispatched`→`uploaded`**
+      - **`scheduled`/`replay` upload rejected without GitHub provenance, and
+        duplicate `runId` rejected (409)**
       - upload schema rejection (422) + runId traversal rejection
       - **parallel `/api/scan` dispatches don't drop/corrupt scan-jobs entries**
+      - **`/api/scan` dispatches to `AUDIT_WORKFLOW_REPO`, not the scan target**
+      - **dispatch failure records `dispatch_failed` (not `dispatched`); job is
+        not presented as in-progress**
       - origin guard (ALLOWED_ORIGIN)
 - [ ] ADR: "fly.io deployment relaxes loopback-only binding; compensated by
       Basic Auth + fly proxy + production fail-closed"
@@ -401,7 +445,7 @@ Restating the non-negotiable, because this change widens the attack surface:
 | Scenario | Behavior |
 |---|---|
 | fly.io down when CI finishes | Report still in GH Actions artifacts; re-upload on next run or manual replay. Non-fatal. |
-| Dispatch token expired | `/api/scan` returns `502` with a plain-English "couldn't reach GitHub" message; nothing recorded as dispatched. |
+| Dispatch token expired | `/api/scan` returns `502`; a `dispatch_failed` event is recorded for the jobId (NOT `dispatched`), so the UI shows it as failed, never as in-progress. |
 | Upload token wrong | `401`, no write. Logged. |
 | Malformed report uploaded | `422`, no write. Logged. |
 | Two scans dispatched at once | Each gets a job id; CI runs them as separate workflow runs; uploads are independent (distinct runIds). |
@@ -413,6 +457,11 @@ Restating the non-negotiable, because this change widens the attack surface:
   there's no fly.io constraint pushing elsewhere; trivial to change.
 - **Report retention on the volume** — keep all, or prune to last N runs? v1:
   keep all (reports are small); revisit if volume pressure appears.
+- **GitHub OIDC verification for uploads** (deferred). v1 binds uploads via a
+  correlation nonce (on-demand) and GitHub run-provenance fields + runId dedup
+  (scheduled/replay). True OIDC token verification on `/api/upload` would be
+  stronger but is overkill for an internal-team tool; revisit if the upload
+  surface ever widens.
 - **Static-only / live-only on-demand modes** (deferred, not v1). v1 requires
   both `repo` and `stagingUrl` to avoid the bare-`--repo` all-staging fan-out
   (§4.1). A future iteration can add an explicit `mode: static|live|full` field
