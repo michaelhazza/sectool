@@ -168,7 +168,6 @@ function StagingForm({ initial, allowlistHosts, onSave, onCancel }: StagingFormP
   const [name, setName] = useState(initial?.name ?? '');
   const [url, setUrl] = useState(initial?.url ?? '');
   const [repo, setRepo] = useState(initial?.repo ?? '');
-  const [activeScan, setActiveScan] = useState(initial?.activeScan ?? false);
   const [doAddHost, setDoAddHost] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,7 +189,9 @@ function StagingForm({ initial, allowlistHosts, onSave, onCancel }: StagingFormP
       const payload: Record<string, unknown> = {};
       if (!isEdit) { payload['name'] = name.trim(); payload['url'] = url.trim(); }
       if (repo.trim()) payload['repo'] = repo.trim();
-      payload['activeScan'] = activeScan;
+      // activeScan is intentionally not set here — it requires an auth/test-user
+      // config the form does not collect; new targets are passive-only. (Service
+      // defaults activeScan:false on create; edit preserves the existing value.)
       await onSave(payload, doAddHost && showAddHostPrompt);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed');
@@ -211,21 +212,12 @@ function StagingForm({ initial, allowlistHosts, onSave, onCancel }: StagingFormP
           </FieldRow>
         </>
       )}
-      <FieldRow label="Linked repo">
+      <FieldRow label="Linked repo (name of a registered repo, not a URL)">
         <input type="text" value={repo} onChange={(e) => setRepo(e.target.value)} disabled={saving} style={INPUT_STYLE} placeholder="my-app" required />
       </FieldRow>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 44 }}>
-        <input
-          type="checkbox"
-          id="staging-active-scan"
-          checked={activeScan}
-          onChange={(e) => setActiveScan(e.target.checked)}
-          disabled={saving}
-          style={{ width: 18, height: 18, cursor: 'pointer', flexShrink: 0 }}
-        />
-        <label htmlFor="staging-active-scan" style={{ fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer' }}>
-          Enable active scan
-        </label>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -4 }}>
+        New targets are added as <strong>passive scan only</strong>. Active scanning needs login
+        automation (test users) — configure that in <code style={{ fontFamily: 'var(--mono)' }}>config/targets.json</code>.
       </div>
 
       {showAddHostPrompt && (
@@ -398,12 +390,20 @@ export function TargetsSafety() {
     } catch (err) {
       const e = err as Error & { status?: number };
       if (e.status === 403) {
+        // Session expired / first write → prompt for a 2FA code, then retry.
         setPendingAction(() => () => withStepUp(action));
         setShowStepUp(true);
-      } else {
-        setActionError(e.message ?? 'Save failed');
+        return;
       }
+      // Re-throw so the caller surfaces it where the user is looking: the form's
+      // own inline error (for Add/Edit), or the global banner (for row actions).
+      throw e;
     }
+  }
+
+  // Run a row action (no form to show errors); surface failures in the global banner.
+  function runRowAction(action: () => Promise<void>) {
+    void withStepUp(action).catch((e: Error) => setActionError(e.message || 'Action failed'));
   }
 
   function handleStepUpSuccess() {
@@ -411,7 +411,7 @@ export function TargetsSafety() {
     if (pendingAction !== null) {
       const action = pendingAction;
       setPendingAction(null);
-      void action();
+      void action().catch((e: Error) => setActionError(e.message || 'Action failed'));
     }
   }
 
@@ -434,26 +434,26 @@ export function TargetsSafety() {
   // ---------------------------------------------------------------------------
 
   function handleDisableRepo(name: string, currentEnabled: boolean) {
-    void withStepUp(() => editRepo(name, { enabled: !currentEnabled }) as Promise<void>);
+    runRowAction(() => editRepo(name, { enabled: !currentEnabled }) as Promise<void>);
   }
 
   function handleRemoveRepo(name: string) {
     if (!confirm(`Remove repository "${name}"? This cannot be undone without a revert.`)) return;
-    void withStepUp(() => removeRepo(name) as Promise<void>);
+    runRowAction(() => removeRepo(name) as Promise<void>);
   }
 
   function handleDisableStaging(name: string, currentEnabled: boolean) {
-    void withStepUp(() => editStagingTarget(name, { enabled: !currentEnabled }) as Promise<void>);
+    runRowAction(() => editStagingTarget(name, { enabled: !currentEnabled }) as Promise<void>);
   }
 
   function handleRemoveStaging(name: string) {
     if (!confirm(`Remove staging target "${name}"? This cannot be undone without a revert.`)) return;
-    void withStepUp(() => removeStagingTarget(name) as Promise<void>);
+    runRowAction(() => removeStagingTarget(name) as Promise<void>);
   }
 
   function handleRemoveHost(host: string) {
     if (!confirm(`Remove "${host}" from approved sites? Any enabled staging target using it must be disabled first.`)) return;
-    void withStepUp(() => removeHost(host) as Promise<void>);
+    runRowAction(() => removeHost(host) as Promise<void>);
   }
 
   // ---------------------------------------------------------------------------
