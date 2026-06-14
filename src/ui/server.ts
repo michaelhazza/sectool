@@ -10,15 +10,13 @@ import { buildPack } from '../fix/pack.js';
 import { fileFixRequest, MissingFixTokenError } from '../fix/github.js';
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
 import { upsertFix } from '../fix/status.js';
+import { resolveEnv } from './env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const REPORTS_DIR = resolve(REPO_ROOT, 'reports');
-const HISTORY_DIR = resolve(REPO_ROOT, 'history');
 const CONFIG_DIR = resolve(REPO_ROOT, 'config');
-const FIXES_JSON = resolve(REPORTS_DIR, 'fixes.json');
 
 // SPA static assets: built output lives in ui/dist (relative to repo root)
 const SPA_DIR = resolve(REPO_ROOT, 'ui', 'dist');
@@ -128,7 +126,7 @@ function readBody(req: IncomingMessage): Promise<string> {
  * fix-request issue for the given fingerprint.
  * Loads the latest report from disk to locate the finding.
  */
-function makeProductionFixHandler(opts?: { client?: GitHubHttpClient; env?: EnvReader }): FixHandler {
+function makeProductionFixHandler(reportsDir: string, opts?: { client?: GitHubHttpClient; env?: EnvReader }): FixHandler {
   return async (fingerprint: string) => {
     // Load config to get the target registry (for repoUrl resolution)
     const allowlist = loadAllowlist();
@@ -137,14 +135,14 @@ function makeProductionFixHandler(opts?: { client?: GitHubHttpClient; env?: EnvR
     // Find the finding in the latest report
     let report: RunReport | null = null;
     try {
-      const entries = readdirSync(REPORTS_DIR);
+      const entries = readdirSync(reportsDir);
       const runs = entries
-        .filter((e) => { try { return statSync(resolve(REPORTS_DIR, e)).isDirectory(); } catch { return false; } })
+        .filter((e) => { try { return statSync(resolve(reportsDir, e)).isDirectory(); } catch { return false; } })
         .sort()
         .reverse();
       for (const runId of runs) {
         try {
-          const data = readJsonFile(resolve(REPORTS_DIR, runId, 'report.json'));
+          const data = readJsonFile(resolve(reportsDir, runId, 'report.json'));
           report = data as RunReport;
           break;
         } catch { /* try next */ }
@@ -196,8 +194,9 @@ function makeProductionFixHandler(opts?: { client?: GitHubHttpClient; env?: EnvR
 // Read-only JSON endpoints
 // ---------------------------------------------------------------------------
 
-function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
+function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, reportsDir: string, historyDir: string): boolean {
   const { pathname } = url;
+  const fixesJson = resolve(reportsDir, 'fixes.json');
 
   // GET /api/csrf — serves the per-process nonce to the same-origin SPA
   if (req.method === 'GET' && pathname === '/api/csrf') {
@@ -209,14 +208,14 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
   if (req.method === 'GET' && pathname === '/api/reports') {
     let entries: string[];
     try {
-      entries = readdirSync(REPORTS_DIR);
+      entries = readdirSync(reportsDir);
     } catch {
       jsonResponse(res, 200, []);
       return true;
     }
     const runs = entries.filter((e) => {
       try {
-        return statSync(resolve(REPORTS_DIR, e)).isDirectory();
+        return statSync(resolve(reportsDir, e)).isDirectory();
       } catch {
         return false;
       }
@@ -233,7 +232,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
       jsonResponse(res, 404, { error: 'Not found' });
       return true;
     }
-    const reportPath = resolve(REPORTS_DIR, runId, 'report.json');
+    const reportPath = resolve(reportsDir, runId, 'report.json');
     try {
       const data = readJsonFile(reportPath);
       jsonResponse(res, 200, data);
@@ -247,7 +246,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
   if (req.method === 'GET' && pathname === '/api/trend') {
     let raw: string;
     try {
-      raw = readFileSync(resolve(HISTORY_DIR, 'trend.jsonl'), 'utf8');
+      raw = readFileSync(resolve(historyDir, 'trend.jsonl'), 'utf8');
     } catch {
       jsonResponse(res, 200, []);
       return true;
@@ -296,7 +295,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
   // GET /api/fixes — reports/fixes.json
   if (req.method === 'GET' && pathname === '/api/fixes') {
     try {
-      const data = readJsonFile(FIXES_JSON);
+      const data = readJsonFile(fixesJson);
       jsonResponse(res, 200, data);
     } catch {
       jsonResponse(res, 200, {});
@@ -316,7 +315,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
  *
  * Rejects HTTP 403 — WITHOUT calling the fix handler — when:
  *   (a) X-Audit-CSRF header is missing or does not match CSRF_NONCE, OR
- *   (b) Origin header is not exactly http://127.0.0.1:<port>
+ *   (b) Origin header does not match the resolved allowedOrigin (§5.3)
  *
  * The server never emits Access-Control-Allow-Origin: * on this route.
  * Loopback binding alone is NOT sufficient (§5.2: a page in the operator's
@@ -325,19 +324,18 @@ function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean
 async function handleFixPost(
   req: IncomingMessage,
   res: ServerResponse,
-  port: number,
+  allowedOrigin: string,
   fixHandler: FixHandler,
 ): Promise<void> {
   const csrfHeader = req.headers['x-audit-csrf'];
   const originHeader = req.headers['origin'];
-  const expectedOrigin = `http://127.0.0.1:${port}`;
 
-  // §5.2: reject BEFORE any fix logic when nonce or origin is wrong
+  // §5.2/§5.3: reject BEFORE any fix logic when nonce or origin is wrong
   if (typeof csrfHeader !== 'string' || csrfHeader !== CSRF_NONCE) {
     jsonResponse(res, 403, { error: 'Forbidden: missing or invalid X-Audit-CSRF nonce' });
     return;
   }
-  if (typeof originHeader !== 'string' || originHeader !== expectedOrigin) {
+  if (typeof originHeader !== 'string' || originHeader !== allowedOrigin) {
     jsonResponse(res, 403, { error: 'Forbidden: Origin not allowed' });
     return;
   }
@@ -441,13 +439,15 @@ function handleStatic(req: IncomingMessage, res: ServerResponse, url: URL): bool
 function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  port: number,
+  allowedOrigin: string,
+  reportsDir: string,
+  historyDir: string,
   fixHandler: FixHandler,
 ): void {
   const raw = req.url ?? '/';
   let url: URL;
   try {
-    url = new URL(raw, `http://127.0.0.1:${port}`);
+    url = new URL(raw, allowedOrigin);
   } catch {
     jsonResponse(res, 400, { error: 'Bad request' });
     return;
@@ -455,7 +455,7 @@ function handleRequest(
 
   // Mutating POST /api/fix (CSRF/origin-gated)
   if (req.method === 'POST' && url.pathname === '/api/fix') {
-    handleFixPost(req, res, port, fixHandler).catch(() => {
+    handleFixPost(req, res, allowedOrigin, fixHandler).catch(() => {
       if (!res.headersSent) {
         jsonResponse(res, 500, { error: 'Internal error' });
       }
@@ -465,7 +465,7 @@ function handleRequest(
 
   // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
-    if (!handleApi(req, res, url)) {
+    if (!handleApi(req, res, url, reportsDir, historyDir)) {
       jsonResponse(res, 404, { error: 'Not found' });
     }
     return;
@@ -484,38 +484,62 @@ function handleRequest(
 export interface AuditServer {
   readonly server: Server;
   readonly port: number;
+  readonly allowedOrigin: string;
   stop(): Promise<void>;
 }
 
-/**
- * Start the audit UI server, bound to 127.0.0.1 ONLY (never 0.0.0.0).
- * @param port      - TCP port (0 = OS-assigned ephemeral port for tests)
- * @param fixHandler - Injectable fix handler; defaults to the production implementation.
- *                    Inject a spy in tests to assert the CSRF/origin 403 short-circuit.
- */
-export function startServer(port: number, fixHandler?: FixHandler): Promise<AuditServer> {
-  const handler = fixHandler ?? makeProductionFixHandler();
-  return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      handleRequest(req, res, listenPort, handler);
-    });
+export interface StartServerOpts {
+  env?: EnvReader;
+  fixHandler?: FixHandler;
+  githubClient?: GitHubHttpClient;
+}
 
-    let listenPort = port;
+/**
+ * Start the audit UI server.
+ * @param port - TCP port (0 = OS-assigned ephemeral port for tests)
+ * @param opts - Injectable deps: env reader, fix handler, GitHub client.
+ *               Inject a fixHandler spy in tests to assert CSRF/origin 403 short-circuit.
+ *               Inject an env reader to drive env without process.env mutation.
+ */
+export function startServer(port: number, opts?: FixHandler | StartServerOpts): Promise<AuditServer> {
+  // Accept legacy positional fixHandler for backwards compat with existing tests
+  const fixHandlerArg = typeof opts === 'function' ? opts : opts?.fixHandler;
+  const envReader = typeof opts === 'function' ? undefined : opts?.env;
+  const githubClientArg = typeof opts === 'function' ? undefined : opts?.githubClient;
+
+  const env = envReader ?? ((name: string) => process.env[name]);
+  const resolved = resolveEnv(env, port);
+  const { bindHost, allowedOrigin, reportsDir, historyDir } = resolved;
+
+  const handler = fixHandlerArg ?? makeProductionFixHandler(reportsDir, {
+    ...(githubClientArg !== undefined ? { client: githubClientArg } : {}),
+    env,
+  });
+
+  return new Promise((resolvePromise, reject) => {
+    let resolvedOrigin = allowedOrigin;
+
+    const server = createServer((req, res) => {
+      handleRequest(req, res, resolvedOrigin, reportsDir, historyDir, handler);
+    });
 
     server.on('error', reject);
 
-    // Bind to 127.0.0.1 ONLY — never 0.0.0.0 (§5.2 safety contract)
-    server.listen(port, '127.0.0.1', () => {
+    server.listen(port, bindHost, () => {
       const addr = server.address();
       if (addr === null || typeof addr === 'string') {
         server.close();
         reject(new Error('Unexpected server address type'));
         return;
       }
-      listenPort = addr.port;
-      resolve({
+      // Re-resolve allowedOrigin with the actual assigned port when port=0
+      if (port === 0) {
+        resolvedOrigin = resolveEnv(env, addr.port).allowedOrigin;
+      }
+      resolvePromise({
         server,
         port: addr.port,
+        allowedOrigin: resolvedOrigin,
         stop(): Promise<void> {
           return new Promise((res2, rej2) => {
             server.close((err) => (err !== undefined ? rej2(err) : res2()));

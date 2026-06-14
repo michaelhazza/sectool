@@ -45,6 +45,7 @@ import type { RunReport, ScannerStatusEntry, RunTarget, FailureEntry } from './s
 import type { Finding } from './schemas/finding.js';
 import type { AllowedTarget } from './live/gate.js';
 import type { Session } from './live/auth.js';
+import { RUN_ID_RE } from './schemas/run-id.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -562,10 +563,8 @@ function findLatestReport(): import('./schemas/report.js').RunReport | null {
   } catch {
     return null;
   }
-  // RUN_ID_RE: YYYY-MM-DDTHH-MM-SSZ-<4hex> — used to parse the embedded timestamp
-  // for sort order. Non-conforming dir names are excluded so stray dirs (e.g.
-  // .lock, temp dirs) cannot influence which report is considered latest (AUD-009).
-  const RUN_ID_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)-[0-9a-f]{4}$/;
+  // RUN_ID_RE: YYYY-MM-DDTHH-MM-SSZ-<4hex> — imported from src/schemas/run-id.ts
+  // (single source of truth; used here for sort/filter and in upload traversal guard).
   const runDirs = entries
     .filter((e) => {
       try {
@@ -897,7 +896,7 @@ function doReport(args: ReportArgs): void {
 function doUi(args: UiArgs): void {
   import('./ui/server.js').then(({ startServer }) => {
     startServer(args.port).then((srv) => {
-      process.stdout.write(`audit ui: listening on http://127.0.0.1:${srv.port}\n`);
+      process.stdout.write(`audit ui: listening on ${srv.allowedOrigin}\n`);
       // Keep the process alive; stop only on SIGINT/SIGTERM
       const shutdown = (): void => {
         srv.stop().then(() => process.exit(0)).catch(() => process.exit(1));

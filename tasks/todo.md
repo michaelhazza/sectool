@@ -63,6 +63,18 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Risk: high — a security tool currently re-exports the very secrets it finds into shareable artifacts and external issues.
 
 
+## From builder — 2026-06-14
+
+- [ ] [origin:builder-chunk1:2026-06-14] [status:open] Pre-existing: `/api/trend` route in `server.ts` served at `/api/trend` but `ui/src/api.ts` calls `/api/history/trend` — the Trends screen is likely broken.
+  - Why: Plan gap 5 explicitly flagged this as pre-existing. Noticed during Chunk 1 work but NOT fixed per surgical-changes rule.
+  - Approach: confirm which path is correct (server or client) and fix the mismatch; add a route test.
+  - Risk: medium — Trends view shows empty array in production.
+
+- [ ] [origin:builder-chunk1:2026-06-14] [status:open] Pre-existing: esbuild native binary missing at `node_modules/esbuild/node_modules/@esbuild/` — vitest fails to load config in local dev environment.
+  - Why: `npm ci` likely did not populate the nested `node_modules/esbuild/node_modules/@esbuild/win32-x64` directory. All vitest runs fail locally; CI (fresh `npm ci`) presumably works.
+  - Approach: run `npm ci` in this workspace to fix; or investigate npm hoisting; log for next developer.
+  - Risk: low (CI unaffected) / high (blocks local test execution for all developers).
+
 ## PR Review deferred items
 
 ### audit-tool-v1 — claude/lucid-albattani-kczh64 (2026-06-13) — chatgpt-pr-review (5th/external ship-gate pass)
