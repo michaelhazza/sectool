@@ -222,3 +222,7 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: Basic-Auth-gated; server sets no Access-Control-Allow-Origin, so a cross-origin credentialed fetch reaches the server but the browser blocks the response read. No actual leak; consistent with all other read routes.
   - Approach: optional — add an Origin check to read routes for defence in depth.
   - Risk: low — CORS already blocks the cross-origin read.
+
+- [ ] [origin:local-test:2026-06-14] [status:open] UI cannot create active-scan staging targets (needs the auth/test-user block). Form is passive-only; active scan stays a JSON-config task. Future: a guided auth-config sub-form.
+
+- [ ] **Benchmark: SPA catch-all fixture for LIVE-EXPOSE-001** — encode a soft-404/catch-all host (every path → 200 index.html) asserting 0 live findings, so the false-positive class is guarded by the recall/precision benchmark, not only the exposure unit test. Source: real cryptotrackr-staging.fly.dev scan emitted 20 FP HIGHs (fixed in exposure.ts soft-404 calibration). 2026-06-14
