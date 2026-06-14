@@ -3,6 +3,7 @@ import type { Finding, RunReport } from '../types.js';
 import { fetchReport, fetchReportList, copyToClipboard, sendForFixing } from '../api.js';
 import { SEVERITY_LABELS, SURFACE_LABELS, BASELINE_LABELS } from '../vocabulary.js';
 import { SeverityChip, SurfaceChip, FixStatusChip } from '../components/Chips.js';
+import { targetLabel, findingSurface } from '../findingHelpers.js';
 
 interface FindingDetailProps {
   fingerprint: string;
@@ -68,16 +69,17 @@ export function FindingDetail({ fingerprint, onBack }: FindingDetailProps) {
     expiry: '<YYYY-MM-DD or omit>',
   };
 
+  const tLabel = targetLabel(finding.target);
   const fixInstructions = `Security Issue: ${finding.title ?? finding.ruleId}
 Rule: ${finding.ruleId}
 Severity: ${SEVERITY_LABELS[finding.severity]} (${finding.severity})
-Surface: ${SURFACE_LABELS[finding.target.kind]}
-Target: ${finding.target.name}
+Surface: ${SURFACE_LABELS[findingSurface(finding)]}
+Target: ${tLabel}
 Fingerprint: ${finding.fingerprint}
 
 ${finding.description ?? ''}
 
-Please fix the issue identified by rule ${finding.ruleId} in ${finding.target.name}.
+Please fix the issue identified by rule ${finding.ruleId} in ${tLabel}.
 The fix is verified when this fingerprint no longer fires on re-scan.`;
 
   async function handleCopyBaseline() {
@@ -115,7 +117,7 @@ The fix is verified when this fingerprint no longer fires on re-scan.`;
         <h1 className="page-title">{finding.title ?? finding.ruleId}</h1>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20, marginTop: 8 }}>
           <SeverityChip severity={finding.severity} />
-          <SurfaceChip kind={finding.target.kind} />
+          <SurfaceChip kind={findingSurface(finding)} />
           {finding.suppressed && <span className="pill pill-unknown">{BASELINE_LABELS.suppressed}</span>}
         </div>
       </div>

@@ -3,6 +3,7 @@ import type { Finding, RunReport as RunReportType, Severity, Surface } from '../
 import { fetchReport, fetchReportList } from '../api.js';
 import { SEVERITY_LABELS, SURFACE_LABELS } from '../vocabulary.js';
 import { SeverityChip, SurfaceChip } from '../components/Chips.js';
+import { targetLabel, findingSurface, formatFailures } from '../findingHelpers.js';
 
 interface RunReportProps {
   onNavigateToFinding: (fingerprint: string) => void;
@@ -55,12 +56,12 @@ export function RunReport({ onNavigateToFinding }: RunReportProps) {
   }
 
   const { meta, findings } = report;
-  const targets = [...new Set(findings.map(f => f.target.name))];
+  const targets = [...new Set(findings.map(f => targetLabel(f.target)))];
 
   let filtered = findings;
   if (filterSeverity !== 'all') filtered = filtered.filter(f => f.severity === filterSeverity);
-  if (filterSurface !== 'all') filtered = filtered.filter(f => f.target.kind === filterSurface);
-  if (filterTarget !== 'all') filtered = filtered.filter(f => f.target.name === filterTarget);
+  if (filterSurface !== 'all') filtered = filtered.filter(f => findingSurface(f) === filterSurface);
+  if (filterTarget !== 'all') filtered = filtered.filter(f => targetLabel(f.target) === filterTarget);
   if (filterSuppressed === 'visible') filtered = filtered.filter(f => !f.suppressed);
   else if (filterSuppressed === 'suppressed') filtered = filtered.filter(f => f.suppressed);
 
@@ -86,7 +87,7 @@ export function RunReport({ onNavigateToFinding }: RunReportProps) {
             <div className="run-banner-body">
               <div className="run-banner-title" style={{ color: 'var(--status-partial)' }}>Some checks did not finish</div>
               <div className="run-banner-sub" style={{ color: 'var(--status-partial)', fontSize: 12 }}>
-                These results may be incomplete. {meta.failures?.join(', ')}
+                These results may be incomplete. {formatFailures(meta.failures)}
               </div>
             </div>
           </div>
@@ -123,7 +124,7 @@ export function RunReport({ onNavigateToFinding }: RunReportProps) {
             <div className="card-title" style={{ marginBottom: 14 }}>By Surface</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {(['static', 'live'] as const).map(kind => {
-                const count = active.filter(f => f.target.kind === kind).length;
+                const count = active.filter(f => findingSurface(f) === kind).length;
                 const max = active.length || 1;
                 return (
                   <div key={kind} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -237,9 +238,9 @@ function FindingRow({ finding: f, onClick }: { finding: Finding; onClick: () => 
           <span className="pill pill-unknown" style={{ marginTop: 4, display: 'inline-block' }}>Acknowledged risk</span>
         )}
       </td>
-      <td data-label="Surface"><SurfaceChip kind={f.target.kind} /></td>
+      <td data-label="Surface"><SurfaceChip kind={findingSurface(f)} /></td>
       <td data-label="Target">
-        <span style={{ fontSize: 12 }}>{f.target.name}</span>
+        <span style={{ fontSize: 12 }}>{targetLabel(f.target)}</span>
       </td>
       <td data-label="Fix Status">
         {hasFixReq && f.externalRefs?.[0] ? (

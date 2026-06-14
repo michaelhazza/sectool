@@ -16,37 +16,72 @@ export interface ScannerStatusEntry {
   errorMessage?: string | undefined;
 }
 
+/**
+ * The real runtime target shape differs by scan surface:
+ *   static → { kind: 'repo',    name, commit? }   (has `name`, no `host`)
+ *   live   → { kind: 'staging', host }            (has `host`, no `name`)
+ * Both `name` and `host` are typed optional here so consumers MUST go through
+ * targetLabel() / findingSurface() rather than dereferencing one unconditionally.
+ * The legacy 'static' | 'live' kind values are kept for backward compatibility.
+ */
+export interface FindingTarget {
+  kind: 'repo' | 'staging' | 'static' | 'live';
+  name?: string | undefined;
+  host?: string | undefined;
+  commit?: string | undefined;
+}
+
 export interface Finding {
   fingerprint: string;
+  // `id` and `ruleId` both appear on live-scan findings; id is optional.
+  id?: string | undefined;
   ruleId: string;
   severity: Severity;
+  // baseSeverity appears on live findings before reachability modifiers.
+  baseSeverity?: Severity | undefined;
   confidence: Confidence;
-  target: {
-    kind: Surface;
-    name: string;
-  };
+  // Authoritative surface marker on real findings ('static' | 'live').
+  surface?: Surface | undefined;
+  // Static findings emit source 'rule'; live findings 'probe'. Pragmatic open union.
+  source?: string | undefined;
+  target: FindingTarget;
   vulnClass: string;
   title?: string | undefined;
   description?: string | undefined;
+  remediation?: string | undefined;
+  // Static findings carry file/line/symbol; live findings carry url/method.
   location?: {
     file?: string | undefined;
     line?: number | undefined;
     symbol?: string | undefined;
+    url?: string | undefined;
+    method?: string | undefined;
   } | undefined;
   evidence?: {
     snippet?: string | undefined;
+    // cvss can be null on live findings (no score computed).
+    cvss?: number | null | undefined;
+    raw?: unknown;
   } | undefined;
+  reachability?: 'authenticated' | 'unauthenticated' | 'admin' | 'unknown' | undefined;
+  correlatedWith?: string[] | undefined;
+  externalRefs?: Array<{ url: string; status: FixStatus }> | undefined;
+  firstSeen?: string | undefined;
+  // suppressed flag plus the (nullable) detail object and free-text note.
   suppressed?: boolean | undefined;
   suppression?: {
     justification?: string | undefined;
     approvedBy?: string | undefined;
     expiry?: string | undefined;
-  } | undefined;
-  correlatedWith?: string[] | undefined;
-  externalRefs?: Array<{ url: string; status: FixStatus }> | undefined;
-  reachability?: 'authenticated' | 'unauthenticated' | 'admin' | 'unknown' | undefined;
-  firstSeen?: string | undefined;
-  note?: string | undefined;
+  } | null | undefined;
+  note?: string | null | undefined;
+}
+
+/** A single scanner-family failure, as emitted in report.meta.failures. */
+export interface RunFailure {
+  target?: string | undefined;
+  family?: string | undefined;
+  reason?: string | undefined;
 }
 
 export interface RunMeta {
@@ -55,7 +90,7 @@ export interface RunMeta {
   completedAt?: string | undefined;
   status: RunStatus;
   toolVersion: string;
-  failures?: string[] | undefined;
+  failures?: RunFailure[] | undefined;
   scannerStatus?: ScannerStatusEntry[] | undefined;
 }
 
