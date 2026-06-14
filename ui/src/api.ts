@@ -23,7 +23,11 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 export async function fetchReportList(): Promise<ReportListEntry[]> {
-  return fetchJson<ReportListEntry[]>('/api/reports');
+  // The server returns run-id strings, sorted ascending (oldest first). The UI
+  // screens take list[0] as the LATEST run, so map to entries and reverse so the
+  // newest run is first.
+  const ids = await fetchJson<string[]>('/api/reports');
+  return ids.map((runId) => ({ runId })).reverse();
 }
 
 export async function fetchReport(runId: string): Promise<RunReport> {

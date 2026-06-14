@@ -118,8 +118,10 @@ export interface TrendPoint {
 
 export interface ReportListEntry {
   runId: string;
-  startedAt: string;
-  status: RunStatus;
+  // /api/reports returns run-id strings only; these come from the full report
+  // when needed, so they're optional on the list entry.
+  startedAt?: string;
+  status?: RunStatus;
 }
 
 export interface TargetRegistryEntry {
