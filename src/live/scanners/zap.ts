@@ -382,10 +382,15 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
     // Surface the real ZAP failure (exit code + stderr/stdout tail) rather than
     // a bare "Command failed" — the orchestrator records this in the run report
     // so a failed zap family is diagnosable without shelling into the container.
+    // The automation framework prints plan/job errors to STDOUT, while the JVM
+    // banner goes to stderr — capture BOTH so the failure cause is visible.
     const stderr = (execErr as { stderr?: string }).stderr ?? '';
     const stdout = (execErr as { stdout?: string }).stdout ?? '';
-    const detail = (stderr || stdout || execErr.message || '').toString().trim().slice(-800);
-    throw new Error(`zap.sh exited ${typeof exitCode === 'number' ? exitCode : 'unknown'}${detail ? `: ${detail}` : ''}`);
+    const detail = [
+      stdout.trim() ? `stdout: ${stdout.trim().slice(-1400)}` : '',
+      stderr.trim() ? `stderr: ${stderr.trim().slice(-600)}` : '',
+    ].filter(Boolean).join(' || ') || execErr.message;
+    throw new Error(`zap.sh exited ${typeof exitCode === 'number' ? exitCode : 'unknown'}: ${detail}`);
   }
   try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
   try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
