@@ -3,6 +3,7 @@
 **Spec:** `docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md`
 **Plan:** `tasks/builds/ui-live-config/plan.md` (+ `claude-plan-review-log.md`)
 **Spec commit at check:** `6ac13e8` (HEAD)
+**Commit at finish:** `948f83b`
 **Branch:** `feature/ui-live-config`
 **Base:** `822a79e` (feature/flyio-dashboard-deployment — the stack base)
 **Scope:** all of spec (C0–C8, BUILD COMPLETE per progress.md), full changed-code set
