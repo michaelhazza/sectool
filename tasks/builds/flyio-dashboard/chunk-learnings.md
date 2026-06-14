@@ -1,5 +1,24 @@
 # Chunk learnings — flyio-dashboard build
 
+## Chunk 6 — POST /api/upload (bearer + provenance binding + schema + atomic write)
+
+**Completed:** 2026-06-14
+
+**What was implemented:**
+- `src/ui/provenance.ts` (new) — `verifyOnDemand`, `verifyGithubRun`, `runIdExistsOnVolume`. `verifyGithubRun` checks workflow by `path` or numeric `workflow_id` — NEVER the mutable `name` field (named §4.2 invariant). Reuses `GitHubHttpClient + authHeaders + parseOwnerRepo` from `fix/github.ts`. Injectable `Clock` interface (mirrors `src/report/lock.ts`).
+- `src/ui/server.ts` (modify) — `readBody` parameterized with `maxBytes` arg (default=64KiB, upload=25MiB). Added `UPLOAD_MAX_BODY_BYTES = 25 MiB`. Added `withUploadQueue` (in-process per-reportsDir promise chain for M1 serialization). Added `handleUploadPost` with all safety gates (bearer before body read, H1/H2 canonical runId guard, H2 envelope≡report.runId check, RUN_ID_RE validation, schema parse, write under `withUploadQueue + withWorkspaceLock`). Added `clock?: Clock` to `StartServerOpts`; threaded `serverClock` through `handleRequest` to `handleUploadPost`. Added `POST /api/upload` route in `handleRequest`. Added `timingSafeEqual`, `writeFileSync`, `RunReportSchema`, `TrendLine` and provenance/lock/report imports.
+- `src/ui/provenance.test.ts` (new) — 20 tests covering verifyOnDemand (happy, unknown jobId, already-uploaded, timed_out/failed state, targetRepo/stagingUrl mismatch), verifyGithubRun (path match, numeric id match, 404, not-completed, sha mismatch, workflow-name-not-sufficient, stale fresh, replay relaxed, API error, unparseable repo), runIdExistsOnVolume.
+- `src/ui/server.test.ts` (modify) — 31 new upload tests in 6 describe blocks covering all plan-required cases: bearer auth (missing, wrong, no-token env), on-demand (unknown jobId, targetRepo mismatch, happy path→complete state, replay guard), scheduled (missing fields, GitHub verify fail, not-completed, wrong-path-but-name-matches, happy, dedup), H1/H2 canonical guard (traversal report.runId→422, envelope≠report→422, traversal envelope runId→400, schema→422), M1 (concurrent both land trend lines), write failure→500/no uploaded event.
+
+**Watch-out for future chunks:**
+- `handleRequest` now takes 7 params: `(req, res, resolvedEnv, fixHandler, envReader, githubClient, clock)`. Any chunk modifying `handleRequest` must include the `clock` param.
+- `readBody` now takes an optional `maxBytes` arg (default=MAX_BODY_BYTES=64KiB). Existing callers pass no arg and get the existing behavior. `/api/upload` passes `UPLOAD_MAX_BODY_BYTES`.
+- `StartServerOpts` now has `clock?: Clock`. Import `Clock` from `./provenance.js`.
+- `withUploadQueue` is a module-level Map-based promise chain. It serializes writes within a process. `withWorkspaceLock` below it adds cross-process protection. Together they ensure neither trend line is dropped in concurrent uploads.
+- On-demand test dispatch events MUST be seeded within the 30-minute TTL of the injected clock (`DISPATCH_TTL_MS`). The initial tests used hardcoded timestamps far in the past relative to `fakeClock`; they were fixed to use `DISPATCH_AT = new Date(UPLOAD_NOW - 5 * 60 * 1000).toISOString()` where `UPLOAD_NOW = Date.now()` (evaluated at module load). Using a fixed ISO string that's hours before `fakeClock.now()` causes jobs to be `timed_out` → `verifyOnDemand` fails → 409 instead of the expected status.
+- The `withWorkspaceLock` lock path is derived from `reportsDir` (`resolve(reportsDir, '.upload-lock')`), not the global `REPO_ROOT/reports/.lock`. This ensures test isolation when different test describe blocks use different tmpDirs.
+- `import type { TrendLine } from '../schemas/trend.js'` is needed in server.ts for the trend write.
+
 ## Chunk 5 — POST /api/scan (registry validation + correlation nonce + dispatch)
 
 **Completed:** 2026-06-14

@@ -1,11 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import { loadAllowlist, loadTargets, ConfigError } from '../config/load.js';
 import type { RunReport } from '../schemas/report.js';
+import { RunReportSchema } from '../schemas/report.js';
 import { buildPack } from '../fix/pack.js';
 import { fileFixRequest, MissingFixTokenError, defaultGitHubClient } from '../fix/github.js';
 import type { GitHubHttpClient, EnvReader } from '../fix/github.js';
@@ -15,6 +16,13 @@ import { basicAuthGate, isAuthEnabled } from './auth.js';
 import { foldJobs, appendEvent } from './scan-jobs.js';
 import { preflight } from '../live/preflight.js';
 import { dispatchScan } from './dispatch.js';
+import { verifyOnDemand, verifyGithubRun, runIdExistsOnVolume } from './provenance.js';
+import type { Clock } from './provenance.js';
+import { RUN_ID_RE } from '../schemas/run-id.js';
+import { writeReport } from '../report/json.js';
+import { writeTrend } from '../report/trend.js';
+import { withWorkspaceLock } from '../report/lock.js';
+import type { TrendLine } from '../schemas/trend.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -95,12 +103,15 @@ function readJsonFile(path: string): unknown {
   return JSON.parse(raw) as unknown;
 }
 
-/** Maximum accepted request body size (64 KiB). Fix-request bodies are tiny. */
+/** Default maximum accepted request body size (64 KiB). Fix/scan-request bodies are tiny. */
 const MAX_BODY_BYTES = 64 * 1024;
 
-/** Read the full request body as a UTF-8 string, capped at MAX_BODY_BYTES.
+/** Maximum body size for /api/upload (25 MiB — reports can be large). */
+const UPLOAD_MAX_BODY_BYTES = 25 * 1024 * 1024;
+
+/** Read the full request body as a UTF-8 string, capped at maxBytes (default MAX_BODY_BYTES).
  *  Rejects with a {tooLarge: true} error if the cap is exceeded. */
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, maxBytes: number = MAX_BODY_BYTES): Promise<string> {
   return new Promise((res, rej) => {
     let data = '';
     let byteCount = 0;
@@ -109,7 +120,7 @@ function readBody(req: IncomingMessage): Promise<string> {
       if (aborted) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       byteCount += buf.byteLength;
-      if (byteCount > MAX_BODY_BYTES) {
+      if (byteCount > maxBytes) {
         aborted = true;
         // Drain remaining data silently so the socket stays open long enough
         // for the caller to write the 413 response before destroying.
@@ -544,6 +555,306 @@ async function handleScanPost(
 }
 
 // ---------------------------------------------------------------------------
+// Per-reportsDir in-process upload serialization (M1).
+//
+// writeTrend is a read-modify-write (whole file rewrite via tmp+rename).
+// Concurrent uploads in the same process would interleave and silently drop
+// trend lines (last-rename-wins). This per-key promise chain serializes them
+// within the process. withWorkspaceLock below adds cross-process protection.
+// ---------------------------------------------------------------------------
+
+const uploadQueues = new Map<string, Promise<unknown>>();
+
+function withUploadQueue<T>(reportsDir: string, fn: () => Promise<T>): Promise<T> {
+  const prior = uploadQueues.get(reportsDir) ?? Promise.resolve();
+  const next: Promise<T> = prior.then(() => fn(), () => fn());
+  uploadQueues.set(reportsDir, next.then(() => undefined, () => undefined));
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/upload — bearer-authed + provenance-bound ingest
+// System invariants 3 and 4. Safety-critical: H1, H2, M1 fixes.
+// (§4.2, §7.3, §7.5, §10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle POST /api/upload.
+ *
+ * Safety gates (in order):
+ * 1. Bearer auth FIRST, before any body read: Authorization: Bearer <AUDIT_UPLOAD_TOKEN>.
+ *    Uses timingSafeEqual. Missing/wrong → 401. Missing token env → 401 (runtime-checked).
+ * 2. Body cap 25 MiB (parameterized readBody) → 413.
+ * 3. Parse + branch on trigger:
+ *    - on-demand: verifyOnDemand against foldJobs(dataDir, now). Fail → 409.
+ *    - scheduled/replay: require githubRunId+githubWorkflow+githubSha; verifyGithubRun
+ *      (replay relaxes freshness). Fail → 409. Also runIdExistsOnVolume → 409.
+ * 4. Canonical runId guard (H1 + H2):
+ *    - assert envelope.runId === report.runId (mismatch → 422).
+ *    - validate canonical runId against RUN_ID_RE (fail → 400).
+ * 5. RunReportSchema.safeParse(report) → 422 if invalid, nothing written.
+ * 6. Serialized write (M1): withWorkspaceLock wraps writeReport + writeTrend.
+ *    Append uploaded/report_ingested ONLY after BOTH succeed; any failure → 500.
+ * 7. Respond: on-demand → 200 {runId, jobId}; scheduled/replay → 200 {runId, jobId:null}.
+ */
+async function handleUploadPost(
+  req: IncomingMessage,
+  res: ServerResponse,
+  resolvedEnv: ResolvedEnv,
+  envReader: EnvReader,
+  githubClient: GitHubHttpClient,
+  clock: Clock,
+): Promise<void> {
+  const { dataDir, reportsDir, historyDir } = resolvedEnv;
+
+  // Step 1: Bearer auth — BEFORE any body read (runtime-checked, not startup-required).
+  const uploadToken = envReader('AUDIT_UPLOAD_TOKEN') ?? '';
+  const authHeader = req.headers['authorization'];
+
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    jsonResponse(res, 401, { error: 'Unauthorized: Bearer token required' });
+    return;
+  }
+
+  const providedToken = authHeader.slice('Bearer '.length);
+  let tokenMatch = false;
+  if (uploadToken.length > 0 && providedToken.length > 0) {
+    const expected = Buffer.from(uploadToken, 'utf8');
+    const actual = Buffer.alloc(expected.length);
+    const providedBuf = Buffer.from(providedToken, 'utf8');
+    // Pad/truncate to the same length to prevent length-leak
+    providedBuf.copy(actual, 0, 0, Math.min(providedBuf.length, actual.length));
+    tokenMatch = timingSafeEqual(expected, actual) && providedToken === uploadToken;
+  }
+
+  if (!tokenMatch) {
+    jsonResponse(res, 401, { error: 'Unauthorized: invalid bearer token' });
+    return;
+  }
+
+  // Step 2: Body cap 25 MiB.
+  let body: string;
+  try {
+    body = await readBody(req, UPLOAD_MAX_BODY_BYTES);
+  } catch (bodyErr) {
+    const isTooLarge = typeof bodyErr === 'object' && bodyErr !== null && (bodyErr as { tooLarge?: boolean }).tooLarge === true;
+    if (isTooLarge) {
+      jsonResponse(res, 413, { error: 'Request body too large (max 25 MiB)' });
+    } else {
+      jsonResponse(res, 400, { error: 'Bad request: could not read body' });
+    }
+    return;
+  }
+
+  // Step 3: Parse envelope.
+  let envelope: {
+    trigger?: unknown;
+    jobId?: unknown;
+    targetRepo?: unknown;
+    stagingUrl?: unknown;
+    runId?: unknown;
+    githubRunId?: unknown;
+    githubWorkflow?: unknown;
+    githubSha?: unknown;
+    report?: unknown;
+    markdown?: unknown;
+    sarif?: unknown;
+    trendLine?: unknown;
+  };
+  try {
+    envelope = JSON.parse(body) as typeof envelope;
+  } catch {
+    jsonResponse(res, 400, { error: 'Bad request: invalid JSON' });
+    return;
+  }
+
+  const trigger = envelope.trigger;
+  if (trigger !== 'on-demand' && trigger !== 'scheduled' && trigger !== 'replay') {
+    jsonResponse(res, 400, { error: 'Bad request: trigger must be on-demand, scheduled, or replay' });
+    return;
+  }
+
+  // Envelope runId — will be compared to report.runId in step 4.
+  if (typeof envelope.runId !== 'string' || envelope.runId.length === 0) {
+    jsonResponse(res, 400, { error: 'Bad request: runId required' });
+    return;
+  }
+  const envelopeRunId = envelope.runId;
+
+  // Branch on trigger.
+  if (trigger === 'on-demand') {
+    // Require jobId, targetRepo, stagingUrl for on-demand verification.
+    if (typeof envelope.jobId !== 'string' || envelope.jobId.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: jobId required for on-demand trigger' });
+      return;
+    }
+    if (typeof envelope.targetRepo !== 'string' || envelope.targetRepo.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: targetRepo required for on-demand trigger' });
+      return;
+    }
+    if (typeof envelope.stagingUrl !== 'string' || envelope.stagingUrl.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: stagingUrl required for on-demand trigger' });
+      return;
+    }
+
+    const foldedJobs = foldJobs(dataDir, clock.now());
+    const provenanceResult = verifyOnDemand(
+      { jobId: envelope.jobId, targetRepo: envelope.targetRepo, stagingUrl: envelope.stagingUrl },
+      foldedJobs,
+    );
+    if (!provenanceResult.ok) {
+      jsonResponse(res, 409, { error: `Provenance check failed: ${provenanceResult.reason ?? 'unknown'}` });
+      return;
+    }
+  } else {
+    // scheduled or replay: require githubRunId, githubWorkflow, githubSha.
+    if (typeof envelope.githubRunId !== 'string' || envelope.githubRunId.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: githubRunId required for scheduled/replay trigger' });
+      return;
+    }
+    if (typeof envelope.githubWorkflow !== 'string' || envelope.githubWorkflow.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: githubWorkflow required for scheduled/replay trigger' });
+      return;
+    }
+    if (typeof envelope.githubSha !== 'string' || envelope.githubSha.length === 0) {
+      jsonResponse(res, 400, { error: 'Bad request: githubSha required for scheduled/replay trigger' });
+      return;
+    }
+
+    const workflowRepo = envReader('AUDIT_WORKFLOW_REPO') ?? '';
+    const ghToken = envReader('AUDIT_GH_DISPATCH_TOKEN') ?? '';
+
+    const runVerifyResult = await verifyGithubRun(
+      {
+        githubRunId: envelope.githubRunId,
+        githubWorkflow: envelope.githubWorkflow,
+        githubSha: envelope.githubSha,
+        expectedRepo: workflowRepo,
+        relaxFreshness: trigger === 'replay',
+      },
+      githubClient,
+      clock,
+      ghToken,
+    );
+    if (!runVerifyResult.ok) {
+      jsonResponse(res, 409, { error: `GitHub run verification failed: ${runVerifyResult.reason ?? 'unknown'}` });
+      return;
+    }
+
+    // Dedup: reject if reports/<runId>/ already exists (replay is the recovery path).
+    // We check envelopeRunId here as a pre-canonical guard; the canonical check in step 4
+    // will confirm it matches report.runId before any path is built.
+    if (runIdExistsOnVolume(envelopeRunId, reportsDir)) {
+      jsonResponse(res, 409, { error: `Duplicate runId: ${envelopeRunId} already ingested` });
+      return;
+    }
+  }
+
+  // Step 4: Canonical runId guard (H1 + H2 — SAFETY-CRITICAL).
+  // writeReport builds the path from report.runId; RunReportSchema.runId is only
+  // z.string().min(1) — it does NOT enforce RUN_ID_RE. An envelope-only guard is
+  // bypassable: a body with clean envelope runId but report.runId="../../config"
+  // would write outside reports/.
+  //
+  // We must:
+  //   (a) assert envelope.runId === report.runId (mismatch → 422, H2),
+  //   (b) validate the single canonical runId against RUN_ID_RE (fail → 400, H1).
+  const reportRaw = envelope.report;
+  if (typeof reportRaw !== 'object' || reportRaw === null) {
+    jsonResponse(res, 422, { error: 'Unprocessable: report field required and must be an object' });
+    return;
+  }
+  const reportObj = reportRaw as Record<string, unknown>;
+
+  // (a) H2: envelope.runId must equal report.runId.
+  if (reportObj['runId'] !== envelopeRunId) {
+    jsonResponse(res, 422, { error: `Unprocessable: envelope runId (${envelopeRunId}) does not match report.runId (${String(reportObj['runId'])})` });
+    return;
+  }
+
+  // The canonical runId is now the single agreed-upon value.
+  const canonicalRunId = envelopeRunId;
+
+  // (b) H1: validate against RUN_ID_RE before any path build.
+  if (!RUN_ID_RE.test(canonicalRunId)) {
+    jsonResponse(res, 400, { error: `Bad request: runId does not match required pattern: ${canonicalRunId}` });
+    return;
+  }
+
+  // Step 5: Schema validation.
+  const parseResult = RunReportSchema.safeParse(reportRaw);
+  if (!parseResult.success) {
+    jsonResponse(res, 422, { error: 'Unprocessable: report schema validation failed', details: parseResult.error.issues });
+    return;
+  }
+  const report = parseResult.data;
+
+  // Step 6: Serialized write (M1 — serializes the read-modify-write in writeTrend
+  // so concurrent uploads don't drop trend lines via last-rename-wins).
+  //
+  // Two layers:
+  //   1. withUploadQueue: in-process promise chain queues concurrent uploads per
+  //      reportsDir so only one runs at a time within this process.
+  //   2. withWorkspaceLock: cross-process file lock guards against multiple server
+  //      instances (e.g. during a rolling deploy).
+  const trendPath = resolve(historyDir, 'trend.jsonl');
+  const lockPath = resolve(reportsDir, '.upload-lock');
+  let writeError: Error | undefined;
+
+  try {
+    await withUploadQueue(reportsDir, async () => {
+      await withWorkspaceLock(async () => {
+        await writeReport(report, reportsDir);
+
+        // Write optional markdown/sarif (if present in envelope — no signature change to writeReport).
+        // These are written directly; writeReport handles report.json only.
+        if (typeof envelope.markdown === 'string') {
+          const runDir = resolve(reportsDir, canonicalRunId);
+          writeFileSync(resolve(runDir, 'report.md'), envelope.markdown, 'utf8');
+        }
+        if (typeof envelope.sarif === 'string') {
+          const runDir = resolve(reportsDir, canonicalRunId);
+          writeFileSync(resolve(runDir, 'report.sarif'), envelope.sarif, 'utf8');
+        }
+
+        // Write trend line (read-modify-write under the lock, not an append).
+        if (envelope.trendLine !== undefined && envelope.trendLine !== null) {
+          await writeTrend(envelope.trendLine as TrendLine, trendPath);
+        }
+      }, { lockPath });
+    });
+  } catch (err) {
+    writeError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  if (writeError !== undefined) {
+    jsonResponse(res, 500, { error: `Write failed: ${writeError.message}` });
+    return;
+  }
+
+  // Step 7: Append event + respond. Event is appended ONLY after BOTH writes succeed.
+  if (trigger === 'on-demand') {
+    const jobId = envelope.jobId as string;
+    appendEvent({ event: 'uploaded', jobId, runId: canonicalRunId, at: new Date(clock.now()).toISOString() }, dataDir);
+    jsonResponse(res, 200, { runId: canonicalRunId, jobId });
+  } else {
+    const githubRunId = envelope.githubRunId as string;
+    appendEvent(
+      {
+        event: 'report_ingested',
+        trigger,
+        runId: canonicalRunId,
+        githubRunId,
+        replayed: trigger === 'replay',
+        at: new Date(clock.now()).toISOString(),
+      },
+      dataDir,
+    );
+    jsonResponse(res, 200, { runId: canonicalRunId, jobId: null });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Static SPA asset serving (graceful when ui/dist not built yet)
 // ---------------------------------------------------------------------------
 
@@ -605,6 +916,7 @@ function handleRequest(
   fixHandler: FixHandler,
   envReader: EnvReader,
   githubClient: GitHubHttpClient,
+  clock: Clock,
 ): void {
   const { allowedOrigin, reportsDir, historyDir, dataDir } = resolvedEnv;
   const raw = req.url ?? '/';
@@ -656,6 +968,16 @@ function handleRequest(
     return;
   }
 
+  // Inbound trust boundary POST /api/upload (bearer-authed + provenance-bound — §4.2)
+  if (req.method === 'POST' && url.pathname === '/api/upload') {
+    handleUploadPost(req, res, resolvedEnv, envReader, githubClient, clock).catch(() => {
+      if (!res.headersSent) {
+        jsonResponse(res, 500, { error: 'Internal error' });
+      }
+    });
+    return;
+  }
+
   // Read-only API routes
   if (url.pathname.startsWith('/api/')) {
     if (!handleApi(req, res, url, reportsDir, historyDir, dataDir)) {
@@ -685,6 +1007,7 @@ export interface StartServerOpts {
   env?: EnvReader;
   fixHandler?: FixHandler;
   githubClient?: GitHubHttpClient;
+  clock?: Clock;
 }
 
 /**
@@ -699,6 +1022,7 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
   const fixHandlerArg = typeof opts === 'function' ? opts : opts?.fixHandler;
   const envReader = typeof opts === 'function' ? undefined : opts?.env;
   const githubClientArg = typeof opts === 'function' ? undefined : opts?.githubClient;
+  const clockArg = typeof opts === 'function' ? undefined : opts?.clock;
 
   const env = envReader ?? ((name: string) => process.env[name]);
   const resolved = resolveEnv(env, port);
@@ -727,13 +1051,16 @@ export function startServer(port: number, opts?: FixHandler | StartServerOpts): 
     let resolvedOrigin = allowedOrigin;
     let currentResolved = resolved;
 
-    // The dispatch GitHub client is separate from the fix GitHub client.
+    // The dispatch/verify GitHub client is shared between dispatch and upload provenance.
     // In production both default to the fetch-based defaultGitHubClient.
-    // Tests inject githubClientArg to spy on the dispatch URL.
+    // Tests inject githubClientArg to spy on requests.
     const dispatchGithubClient = githubClientArg ?? defaultGitHubClient;
 
+    // Injectable clock — tests inject a fake; production uses Date.now().
+    const serverClock: Clock = clockArg ?? { now: () => Date.now() };
+
     const server = createServer((req, res) => {
-      handleRequest(req, res, currentResolved, handler, env, dispatchGithubClient);
+      handleRequest(req, res, currentResolved, handler, env, dispatchGithubClient, serverClock);
     });
 
     server.on('error', reject);

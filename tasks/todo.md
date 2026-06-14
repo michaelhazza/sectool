@@ -36,6 +36,16 @@ Active backlog. Items captured here are queued for work; resolved items move to 
   - Why: all 5 context packs reference `architecture.md` anchors; the doc doesn't exist yet (fresh adoption).
   - Approach: author after audit-tool v1 lands its real architecture; anchor IDs per framework convention.
 
+## From builder — 2026-06-14
+
+- [ ] [origin:builder-C6:2026-06-14] [status:open] `withWorkspaceLock` (src/report/lock.ts) is fail-fast on contention (throws WorkspaceLockedError immediately when held by a live process), NOT a queuing mutex. C6 works around this with an in-process `withUploadQueue` promise chain that ensures only one upload enters the lock at a time. Future chunks or refactors should be aware: `withWorkspaceLock` is cross-process protection only; it does NOT serialize same-process callers.
+  - Why: plan said to use `withWorkspaceLock` for M1 serialization, but the M1 test requires both concurrent uploads to succeed (200). Concurrent uploads in the same process would both fail with WorkspaceLockedError → 500 without the in-process queue layer.
+  - Approach: in-process layer already added (withUploadQueue). No action needed unless cross-process real queueing is required.
+
+- [ ] [origin:builder-C6:2026-06-14] [status:open] Pre-existing `/api/trend` vs `/api/history/trend` route mismatch (plan gap #5) — `ui/src/api.ts` calls `/api/history/trend` but `server.ts` serves `/api/trend`. Not fixed per surgical-changes rule.
+  - Why: pre-existing mismatch noted in plan gaps as out-of-scope.
+  - Approach: rename route in server.ts or update client call in a dedicated cleanup chunk.
+
 ## From builder — 2026-06-13
 
 - [ ] [origin:builder-P2-3:2026-06-13] [status:open] `osv-scanner` exits 1 when vulnerabilities are found (same as gitleaks) — `defaultExecOsv` in `src/static/scanners/osv.ts` uses `execFileAsync` directly and will throw when the binary exits 1 (findings present), which the orchestrator will record as a family `failed` rather than a successful scan with findings.

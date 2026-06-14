@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startServer, CSRF_NONCE, type AuditServer, type FixHandler } from './server.js';
-import { appendEvent } from './scan-jobs.js';
+import { appendEvent, foldJobs } from './scan-jobs.js';
 import { loadAllowlist, loadTargets, ConfigError } from '../config/load.js';
 import { preflight } from '../live/preflight.js';
 import type { GitHubRequest, GitHubResponse } from '../fix/github.js';
@@ -1070,6 +1070,559 @@ describe('POST /api/scan — registry safety gate', () => {
     } finally {
       await failSrv?.stop();
       try { rmSync(failDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/upload — bearer auth + provenance + schema + atomic write (Chunk 6)
+// Tests cover all plan-specified cases: H1, H2, M1, bearer, provenance, schema.
+// ---------------------------------------------------------------------------
+
+const UPLOAD_TOKEN = 'test-upload-token-secret';
+const WORKFLOW_PATH = '.github/workflows/on-demand-scan.yml';
+const WORKFLOW_REPO = 'https://github.com/acme/audit-workflows';
+const GOOD_SHA = 'abc123def456abc123def456abc123def456abc123';
+const GOOD_GITHUB_RUN_ID = '12345';
+const VALID_RUN_ID = '2026-06-14T10-00-00Z-abcd';
+
+// "Now" for the upload test clock — evaluated at module load so it is the real current
+// time. Dispatch events are seeded 5 minutes earlier, always within the 30-min TTL.
+const UPLOAD_NOW = Date.now();
+const DISPATCH_AT = new Date(UPLOAD_NOW - 5 * 60 * 1000).toISOString();
+const fakeClock = { now: () => UPLOAD_NOW };
+
+function makeMinimalReport(runId: string = VALID_RUN_ID): Record<string, unknown> {
+  return {
+    runId,
+    date: '2026-06-14',
+    findings: [],
+    targets: [],
+    meta: {
+      status: 'success',
+      failures: [],
+      scannerStatus: [],
+      startedAt: '2026-06-14T10:00:00.000Z',
+      finishedAt: '2026-06-14T10:30:00.000Z',
+      toolVersion: '1.0.0',
+    },
+  };
+}
+
+function makeGoodGithubRun(): Record<string, unknown> {
+  // run started 30 minutes ago — within the 2-hour freshness window.
+  return {
+    id: 12345,
+    status: 'completed',
+    head_sha: GOOD_SHA,
+    path: WORKFLOW_PATH,
+    workflow_id: 99,
+    run_started_at: new Date(UPLOAD_NOW - 30 * 60 * 1000).toISOString(),
+  };
+}
+
+function makeOnDemandEnvelope(runId: string = VALID_RUN_ID, jobId: string = 'aabbcc1122334455aabbcc1122334455'): Record<string, unknown> {
+  return {
+    trigger: 'on-demand',
+    jobId,
+    targetRepo: 'my-app',
+    stagingUrl: 'https://staging.example.com',
+    runId,
+    report: makeMinimalReport(runId),
+  };
+}
+
+function makeScheduledEnvelope(runId: string = VALID_RUN_ID): Record<string, unknown> {
+  return {
+    trigger: 'scheduled',
+    runId,
+    githubRunId: GOOD_GITHUB_RUN_ID,
+    githubWorkflow: WORKFLOW_PATH,
+    githubSha: GOOD_SHA,
+    report: makeMinimalReport(runId),
+  };
+}
+
+function bearerHeader(token: string = UPLOAD_TOKEN): Record<string, string> {
+  return { Authorization: `Bearer ${token}` };
+}
+
+describe('POST /api/upload — bearer auth', () => {
+  let uploadSrv: AuditServer;
+  const uploadTmpDir = resolve(tmpdir(), `audit-upload-bearer-${process.pid}`);
+
+  beforeAll(async () => {
+    mkdirSync(resolve(uploadTmpDir, 'history'), { recursive: true });
+    mkdirSync(resolve(uploadTmpDir, 'reports'), { recursive: true });
+    uploadSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 200, body: makeGoodGithubRun() }),
+      clock: fakeClock,
+    });
+  });
+
+  afterAll(async () => {
+    await uploadSrv.stop();
+    try { rmSync(uploadTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('returns 401 when Authorization header is missing — no body read', async () => {
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(makeOnDemandEnvelope()));
+    expect(status).toBe(401);
+  });
+
+  it('returns 401 when bearer token is wrong', async () => {
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(makeOnDemandEnvelope()),
+      bearerHeader('wrong-token'),
+    );
+    expect(status).toBe(401);
+  });
+
+  it('returns 401 when token env is not set (runtime-checked)', async () => {
+    // Server with no token configured
+    const noTokenDir = resolve(tmpdir(), `audit-upload-notoken-${process.pid}`);
+    mkdirSync(resolve(noTokenDir, 'history'), { recursive: true });
+    let noTokenSrv: AuditServer | undefined;
+    try {
+      noTokenSrv = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return noTokenDir;
+          return undefined; // No AUDIT_UPLOAD_TOKEN
+        },
+        clock: fakeClock,
+      });
+      const { status } = await post(
+        noTokenSrv.port, '/api/upload', JSON.stringify(makeOnDemandEnvelope()),
+        bearerHeader('any-token'),
+      );
+      expect(status).toBe(401);
+    } finally {
+      await noTokenSrv?.stop();
+      try { rmSync(noTokenDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
+
+describe('POST /api/upload — on-demand provenance', () => {
+  const uploadTmpDir = resolve(tmpdir(), `audit-upload-ondemand-${process.pid}`);
+  const JOB_ID = 'aabbcc1122334455aabbcc1122334455';
+  let uploadSrv: AuditServer;
+
+  beforeAll(async () => {
+    mkdirSync(resolve(uploadTmpDir, 'history'), { recursive: true });
+    mkdirSync(resolve(uploadTmpDir, 'reports'), { recursive: true });
+
+    // Seed a dispatched job that we'll accept uploads for.
+    // Dispatch at DISPATCH_AT = UPLOAD_NOW - 5 min, within the 30-min TTL.
+    appendEvent(
+      { event: 'requested', jobId: JOB_ID, targetRepo: 'my-app', stagingUrl: 'https://staging.example.com', at: DISPATCH_AT },
+      uploadTmpDir,
+    );
+    appendEvent(
+      { event: 'dispatched', jobId: JOB_ID, at: DISPATCH_AT },
+      uploadTmpDir,
+    );
+
+    uploadSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 200, body: makeGoodGithubRun() }),
+      clock: fakeClock,
+    });
+  });
+
+  afterAll(async () => {
+    await uploadSrv.stop();
+    try { rmSync(uploadTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('returns 409 for unknown jobId', async () => {
+    const envelope = makeOnDemandEnvelope(VALID_RUN_ID, 'unknown-job-id-000000000000000000');
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(envelope),
+      bearerHeader(),
+    );
+    expect(status).toBe(409);
+  });
+
+  it('returns 409 when targetRepo does not match the job', async () => {
+    const envelope = {
+      ...makeOnDemandEnvelope(VALID_RUN_ID, JOB_ID),
+      targetRepo: 'wrong-repo',
+    };
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(envelope),
+      bearerHeader(),
+    );
+    expect(status).toBe(409);
+  });
+
+  it('happy path: dispatched→uploaded flip, 200 {runId, jobId}', async () => {
+    const { status, body } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(makeOnDemandEnvelope(VALID_RUN_ID, JOB_ID)),
+      bearerHeader(),
+    );
+    expect(status).toBe(200);
+    const json = JSON.parse(body) as { runId: string; jobId: string };
+    expect(json.runId).toBe(VALID_RUN_ID);
+    expect(json.jobId).toBe(JOB_ID);
+
+    // Job must now be in 'complete' state (uploaded event appended).
+    const jobs = foldJobs(uploadTmpDir, UPLOAD_NOW);
+    const job = jobs.find((j) => j.jobId === JOB_ID);
+    expect(job?.state).toBe('complete');
+    expect(job?.runId).toBe(VALID_RUN_ID);
+  });
+
+  it('returns 409 for already-uploaded job (replay guard)', async () => {
+    // The previous test already uploaded this job; it is now 'complete'.
+    const newRunId = '2026-06-14T11-00-00Z-bbbb'; // different runId to avoid H1/H2 rejection
+    const envelope = makeOnDemandEnvelope(newRunId, JOB_ID);
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(envelope),
+      bearerHeader(),
+    );
+    expect(status).toBe(409);
+  });
+});
+
+describe('POST /api/upload — scheduled/replay provenance', () => {
+  const uploadTmpDir = resolve(tmpdir(), `audit-upload-scheduled-${process.pid}`);
+  let uploadSrv: AuditServer;
+  let capturedRequests: GitHubRequest[];
+
+  beforeAll(async () => {
+    mkdirSync(resolve(uploadTmpDir, 'history'), { recursive: true });
+    mkdirSync(resolve(uploadTmpDir, 'reports'), { recursive: true });
+    capturedRequests = [];
+
+    uploadSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        if (name === 'AUDIT_WORKFLOW_REPO') return WORKFLOW_REPO;
+        if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+        return undefined;
+      },
+      githubClient: (req: GitHubRequest): Promise<GitHubResponse> => {
+        capturedRequests.push(req);
+        return Promise.resolve({ status: 200, body: makeGoodGithubRun() });
+      },
+      clock: fakeClock,
+    });
+  });
+
+  afterAll(async () => {
+    await uploadSrv.stop();
+    try { rmSync(uploadTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  beforeEach(() => {
+    capturedRequests = [];
+  });
+
+  it('rejects when githubRunId is missing → 400', async () => {
+    const envelope = { trigger: 'scheduled', runId: VALID_RUN_ID, githubWorkflow: WORKFLOW_PATH, githubSha: GOOD_SHA, report: makeMinimalReport() };
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+    expect(status).toBe(400);
+  });
+
+  it('rejects when GitHub run verification fails (unknown run) → 409', async () => {
+    const failSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        if (name === 'AUDIT_WORKFLOW_REPO') return WORKFLOW_REPO;
+        if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 404, body: {} }),
+      clock: fakeClock,
+    });
+    try {
+      const runId2 = '2026-06-14T10-00-00Z-1111';
+      const envelope = makeScheduledEnvelope(runId2);
+      const { status } = await post(failSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+      expect(status).toBe(409);
+    } finally {
+      await failSrv.stop();
+    }
+  });
+
+  it('rejects when GitHub run is not completed → 409', async () => {
+    const inProgressRun = { ...makeGoodGithubRun(), status: 'in_progress' };
+    const inProgSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        if (name === 'AUDIT_WORKFLOW_REPO') return WORKFLOW_REPO;
+        if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 200, body: inProgressRun }),
+      clock: fakeClock,
+    });
+    try {
+      const runId3 = '2026-06-14T10-00-00Z-2222';
+      const { status } = await post(inProgSrv.port, '/api/upload', JSON.stringify(makeScheduledEnvelope(runId3)), bearerHeader());
+      expect(status).toBe(409);
+    } finally {
+      await inProgSrv.stop();
+    }
+  });
+
+  it('rejects run whose name matches but path/workflow_id do NOT match → 409 (named §4.2 test)', async () => {
+    // Run has a display `name` that matches `on-demand-scan` but path and workflow_id differ.
+    const wrongPathRun = {
+      ...makeGoodGithubRun(),
+      path: 'completely/different/path.yml',
+      workflow_id: 999,
+      name: WORKFLOW_PATH, // display name matches — must NOT be used
+    };
+    const wrongPathSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        if (name === 'AUDIT_WORKFLOW_REPO') return WORKFLOW_REPO;
+        if (name === 'AUDIT_GH_DISPATCH_TOKEN') return 'ghp_test';
+        return undefined;
+      },
+      githubClient: (): Promise<GitHubResponse> => Promise.resolve({ status: 200, body: wrongPathRun }),
+      clock: fakeClock,
+    });
+    try {
+      const runId4 = '2026-06-14T10-00-00Z-3333';
+      const { status } = await post(wrongPathSrv.port, '/api/upload', JSON.stringify(makeScheduledEnvelope(runId4)), bearerHeader());
+      expect(status).toBe(409);
+    } finally {
+      await wrongPathSrv.stop();
+    }
+  });
+
+  it('happy path: scheduled upload → 200 {runId, jobId: null}', async () => {
+    const runId5 = '2026-06-14T10-00-00Z-4444';
+    const { status, body } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(makeScheduledEnvelope(runId5)),
+      bearerHeader(),
+    );
+    expect(status).toBe(200);
+    const json = JSON.parse(body) as { runId: string; jobId: null };
+    expect(json.runId).toBe(runId5);
+    expect(json.jobId).toBeNull();
+  });
+
+  it('returns 409 for duplicate runId (scheduled/replay dedup)', async () => {
+    // runId5 was just ingested above — re-sending the same runId should 409.
+    const runId5 = '2026-06-14T10-00-00Z-4444';
+    const { status } = await post(
+      uploadSrv.port, '/api/upload', JSON.stringify(makeScheduledEnvelope(runId5)),
+      bearerHeader(),
+    );
+    expect(status).toBe(409);
+  });
+});
+
+describe('POST /api/upload — canonical runId guard (H1, H2)', () => {
+  const uploadTmpDir = resolve(tmpdir(), `audit-upload-runid-${process.pid}`);
+  const JOB_ID_2 = 'ccddee1122334455ccddee1122334455';
+  let uploadSrv: AuditServer;
+
+  beforeAll(async () => {
+    mkdirSync(resolve(uploadTmpDir, 'history'), { recursive: true });
+    mkdirSync(resolve(uploadTmpDir, 'reports'), { recursive: true });
+
+    // Dispatch at DISPATCH_AT = UPLOAD_NOW - 5 min, within the 30-min TTL.
+    appendEvent(
+      { event: 'requested', jobId: JOB_ID_2, targetRepo: 'my-app', stagingUrl: 'https://staging.example.com', at: DISPATCH_AT },
+      uploadTmpDir,
+    );
+    appendEvent(
+      { event: 'dispatched', jobId: JOB_ID_2, at: DISPATCH_AT },
+      uploadTmpDir,
+    );
+
+    uploadSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        return undefined;
+      },
+      clock: fakeClock,
+    });
+  });
+
+  afterAll(async () => {
+    await uploadSrv.stop();
+    try { rmSync(uploadTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('H1: clean envelope runId but report.runId is a traversal path → 422/400, NO file written', async () => {
+    const traversalRunId = '../../config';
+    const envelope = {
+      trigger: 'on-demand',
+      jobId: JOB_ID_2,
+      targetRepo: 'my-app',
+      stagingUrl: 'https://staging.example.com',
+      runId: VALID_RUN_ID, // clean envelope runId
+      report: makeMinimalReport(traversalRunId), // report.runId is a traversal path
+    };
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+    // Envelope runId !== report.runId → 422 (mismatch detected before path build)
+    expect(status === 422 || status === 400).toBe(true);
+    // No file must have been written to either the clean envelope runId or the traversal path
+    expect(existsSync(resolve(uploadTmpDir, 'reports', VALID_RUN_ID))).toBe(false);
+    expect(existsSync(resolve(uploadTmpDir, 'reports', '..', '..', 'config'))).toBe(false);
+  });
+
+  it('H2: envelope.runId ≠ report.runId → 422, no file written', async () => {
+    const envelope = {
+      trigger: 'on-demand',
+      jobId: JOB_ID_2,
+      targetRepo: 'my-app',
+      stagingUrl: 'https://staging.example.com',
+      runId: VALID_RUN_ID,
+      report: makeMinimalReport('2026-06-14T11-00-00Z-ffff'), // different runId
+    };
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+    expect(status).toBe(422);
+    expect(existsSync(resolve(uploadTmpDir, 'reports', VALID_RUN_ID))).toBe(false);
+    expect(existsSync(resolve(uploadTmpDir, 'reports', '2026-06-14T11-00-00Z-ffff'))).toBe(false);
+  });
+
+  it('malformed runId (traversal-shaped) → 400, no file written', async () => {
+    const traversalId = '../../evil';
+    const envelope = {
+      trigger: 'on-demand',
+      jobId: JOB_ID_2,
+      targetRepo: 'my-app',
+      stagingUrl: 'https://staging.example.com',
+      runId: traversalId,
+      report: makeMinimalReport(traversalId),
+    };
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+    expect(status).toBe(400);
+  });
+
+  it('schema rejection (422) — report missing required fields', async () => {
+    const envelope = {
+      trigger: 'on-demand',
+      jobId: JOB_ID_2,
+      targetRepo: 'my-app',
+      stagingUrl: 'https://staging.example.com',
+      runId: VALID_RUN_ID,
+      report: { runId: VALID_RUN_ID }, // missing date, findings, targets, meta
+    };
+    const { status } = await post(uploadSrv.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+    expect(status).toBe(422);
+  });
+});
+
+describe('POST /api/upload — M1: concurrent uploads both land trend lines', () => {
+  const uploadTmpDir = resolve(tmpdir(), `audit-upload-m1-${process.pid}`);
+  const JOB_A = 'eeee111122223333eeee111122223333';
+  const JOB_B = 'ffff444455556666ffff444455556666';
+  const RUN_A = '2026-06-14T10-00-00Z-aaaa';
+  const RUN_B = '2026-06-14T10-00-00Z-bbbb';
+  let uploadSrv: AuditServer;
+
+  beforeAll(async () => {
+    mkdirSync(resolve(uploadTmpDir, 'history'), { recursive: true });
+    mkdirSync(resolve(uploadTmpDir, 'reports'), { recursive: true });
+
+    // Dispatch at DISPATCH_AT = UPLOAD_NOW - 5 min, within the 30-min TTL.
+    for (const jobId of [JOB_A, JOB_B]) {
+      appendEvent({ event: 'requested', jobId, targetRepo: 'my-app', stagingUrl: 'https://staging.example.com', at: DISPATCH_AT }, uploadTmpDir);
+      appendEvent({ event: 'dispatched', jobId, at: DISPATCH_AT }, uploadTmpDir);
+    }
+
+    uploadSrv = await startServer(0, {
+      env: (name: string) => {
+        if (name === 'DATA_DIR') return uploadTmpDir;
+        if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+        return undefined;
+      },
+      clock: fakeClock,
+    });
+  });
+
+  afterAll(async () => {
+    await uploadSrv.stop();
+    try { rmSync(uploadTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('two concurrent uploads with distinct runIds both land — neither trend line dropped (M1)', async () => {
+    const envelopeA = {
+      ...makeOnDemandEnvelope(RUN_A, JOB_A),
+      trendLine: { runId: RUN_A, date: '2026-06-14', targets: {} },
+    };
+    const envelopeB = {
+      ...makeOnDemandEnvelope(RUN_B, JOB_B),
+      trendLine: { runId: RUN_B, date: '2026-06-14', targets: {} },
+    };
+
+    const [rA, rB] = await Promise.all([
+      post(uploadSrv.port, '/api/upload', JSON.stringify(envelopeA), bearerHeader()),
+      post(uploadSrv.port, '/api/upload', JSON.stringify(envelopeB), bearerHeader()),
+    ]);
+
+    expect(rA.status).toBe(200);
+    expect(rB.status).toBe(200);
+
+    // Both trend lines must be present — serialized write prevents last-rename-wins.
+    const { readFileSync: readF } = await import('node:fs');
+    const trendRaw = readF(resolve(uploadTmpDir, 'history', 'trend.jsonl'), 'utf8');
+    const trendLines = trendRaw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { runId: string });
+    const runIds = trendLines.map((l) => l.runId);
+    expect(runIds).toContain(RUN_A);
+    expect(runIds).toContain(RUN_B);
+  });
+});
+
+describe('POST /api/upload — write failure → 500, no uploaded event', () => {
+  it('write failure mid-upload → 500, no uploaded event', async () => {
+    const failTmpDir = resolve(tmpdir(), `audit-upload-writefail-${process.pid}`);
+    const JOB_FAIL = '9999aaaa1111bbbb9999aaaa1111bbbb';
+    mkdirSync(resolve(failTmpDir, 'history'), { recursive: true });
+    // Note: intentionally NOT creating reports/ dir — writeReport will fail
+    // because mkdirSync inside writeReport should still work, but we'll
+    // simulate write failure by making reports a FILE instead of a directory.
+    writeFileSync(resolve(failTmpDir, 'reports'), 'not-a-dir');
+
+    // Dispatch at DISPATCH_AT = UPLOAD_NOW - 5 min, within the 30-min TTL.
+    appendEvent({ event: 'requested', jobId: JOB_FAIL, targetRepo: 'my-app', stagingUrl: 'https://staging.example.com', at: DISPATCH_AT }, failTmpDir);
+    appendEvent({ event: 'dispatched', jobId: JOB_FAIL, at: DISPATCH_AT }, failTmpDir);
+
+    let failSrv2: AuditServer | undefined;
+    try {
+      failSrv2 = await startServer(0, {
+        env: (name: string) => {
+          if (name === 'DATA_DIR') return failTmpDir;
+          if (name === 'AUDIT_UPLOAD_TOKEN') return UPLOAD_TOKEN;
+          return undefined;
+        },
+        clock: fakeClock,
+      });
+
+      const runIdFail = '2026-06-14T10-00-00Z-dead'; // 'dead' = valid 4 hex chars
+      const envelope = makeOnDemandEnvelope(runIdFail, JOB_FAIL);
+      const { status } = await post(failSrv2.port, '/api/upload', JSON.stringify(envelope), bearerHeader());
+      expect(status).toBe(500);
+
+      // Job must NOT have an 'uploaded' event — stays in_progress/dispatched state
+      const jobs = foldJobs(failTmpDir, UPLOAD_NOW);
+      const job = jobs.find((j) => j.jobId === JOB_FAIL);
+      expect(job?.state).not.toBe('complete');
+    } finally {
+      await failSrv2?.stop();
+      try { rmSync(failTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 });
