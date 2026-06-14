@@ -614,8 +614,7 @@ async function handleScanPost(
     // parseOwnerRepo throws when AUDIT_WORKFLOW_REPO is missing or malformed.
     const reason = dispatchErr instanceof Error ? dispatchErr.message : 'dispatch error';
     appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('Scan dispatch failed: AUDIT_WORKFLOW_REPO is missing or invalid.');
+    jsonResponse(res, 502, { error: 'Scan dispatch not configured — set AUDIT_WORKFLOW_REPO and AUDIT_GH_DISPATCH_TOKEN so the dashboard can trigger the GitHub Actions scan.' });
     return;
   }
 
@@ -625,8 +624,7 @@ async function handleScanPost(
   } else {
     const reason = `github ${result.status}`;
     appendEvent({ event: 'dispatch_failed', jobId, reason, at: new Date().toISOString() }, dataDir);
-    res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end('Scan dispatch failed: GitHub returned an error. Check AUDIT_WORKFLOW_REPO and AUDIT_GH_DISPATCH_TOKEN.');
+    jsonResponse(res, 502, { error: `Scan dispatch failed: GitHub returned ${result.status}. Check AUDIT_WORKFLOW_REPO and the AUDIT_GH_DISPATCH_TOKEN scope.` });
   }
 }
 

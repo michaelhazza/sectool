@@ -197,7 +197,7 @@ describe('addStagingTarget', () => {
       repo: 'test-repo',
       activeScan: false,
       enabled: true,
-    } as Parameters<typeof addStagingTarget>[0];
+    };
 
     const result = await addStagingTarget(stagingTarget, true, opts);
 
@@ -228,7 +228,7 @@ describe('addStagingTarget', () => {
       repo: 'test-repo',
       activeScan: false,
       enabled: true,
-    } as Parameters<typeof addStagingTarget>[0];
+    };
 
     const result = await addStagingTarget(stagingTarget, false, opts);
 
@@ -249,7 +249,7 @@ describe('addStagingTarget', () => {
       repo: 'test-repo',
       activeScan: false,
       enabled: true,
-    } as Parameters<typeof addStagingTarget>[0];
+    };
 
     await expect(addStagingTarget(stagingTarget, false, opts)).rejects.toBeInstanceOf(ValidationError);
   });
@@ -264,7 +264,7 @@ describe('addStagingTarget', () => {
       repo: 'test-repo',
       activeScan: false,
       enabled: true,
-    } as Parameters<typeof addStagingTarget>[0];
+    };
 
     // This will fail because the addHost would add an IP which is rejected by AllowlistSchema
     await expect(addStagingTarget(stagingTarget, true, opts)).rejects.toBeInstanceOf(ValidationError);
@@ -283,7 +283,7 @@ describe('editStagingTarget + removeStagingTarget', () => {
     // Set up a staging target with its host on the allowlist
     const opts = makeOpts(env);
     await addStagingTarget(
-      { name: 'staging-1', url: 'https://staging.example.com', repo: 'test-repo', activeScan: false, enabled: true } as Parameters<typeof addStagingTarget>[0],
+      { name: 'staging-1', url: 'https://staging.example.com', repo: 'test-repo', activeScan: false, enabled: true },
       true,
       opts,
     );
@@ -330,7 +330,7 @@ describe('removeHost', () => {
     const opts = makeOpts(env);
     // Add a staging target using the host
     await addStagingTarget(
-      { name: 'staging-1', url: 'https://example.com', repo: 'test-repo', activeScan: false, enabled: true } as Parameters<typeof addStagingTarget>[0],
+      { name: 'staging-1', url: 'https://example.com', repo: 'test-repo', activeScan: false, enabled: true },
       false,
       opts,
     );

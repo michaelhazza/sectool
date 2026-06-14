@@ -197,7 +197,13 @@ describe('parseOwnerRepo', () => {
     expect(result.repo).toBe('automation-v1');
   });
 
-  it('throws on an unrecognized URL format', () => {
+  it('parses the bare owner/repo form (documented AUDIT_WORKFLOW_REPO shape)', () => {
+    const result = parseOwnerRepo('breakoutsolutions/sectool');
+    expect(result.owner).toBe('breakoutsolutions');
+    expect(result.repo).toBe('sectool');
+  });
+
+  it('throws on an unrecognized format (no slash)', () => {
     expect(() => parseOwnerRepo('not-a-github-url')).toThrow();
   });
 });

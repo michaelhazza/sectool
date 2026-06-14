@@ -38,7 +38,7 @@ jobs:
             -e AUDIT_STAGING_AUTOMATION_PASS_B \
             -v "${{ github.workspace }}/reports:/app/reports" \
             audit-tool:weekly \
-            audit run
+            run
 
       - name: Upload report artifacts
         if: always()

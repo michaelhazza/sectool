@@ -115,7 +115,14 @@ export function parseOwnerRepo(repoUrl: string): { owner: string; repo: string }
   if (sshMatch?.[1] && sshMatch[2]) {
     return { owner: sshMatch[1], repo: sshMatch[2] };
   }
-  throw new Error(`Cannot parse owner/repo from URL: ${repoUrl}`);
+  // Bare "owner/repo" form (exactly two non-slash segments) — the documented
+  // shape of AUDIT_WORKFLOW_REPO (e.g. "breakoutsolutions/sectool"). Anchored so
+  // it only matches a bare pair, never a URL (which the patterns above handle).
+  const bareMatch = /^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(repoUrl.trim());
+  if (bareMatch?.[1] && bareMatch[2]) {
+    return { owner: bareMatch[1], repo: bareMatch[2] };
+  }
+  throw new Error(`Cannot parse owner/repo from: ${repoUrl}`);
 }
 
 export function authHeaders(token: string): Record<string, string> {
