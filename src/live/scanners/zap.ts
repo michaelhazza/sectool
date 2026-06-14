@@ -354,36 +354,27 @@ export const defaultExecZap: ExecZap = async (args: readonly string[]): Promise<
     // Read the report from the temp file ZAP wrote to (set in the YAML)
     reportContent = readFileSync(reportFile, 'utf8');
   } catch (err) {
-    // ZAP -autorun exits non-zero in two distinct cases:
-    //   exit 1: alerts found at or above the configured threshold (expected — the report is valid)
-    //   exit 2+: genuine tool error (bad args, binary not found, internal crash)
-    // Discriminate by checking whether the report file was written. If it exists
-    // and is parseable, treat the run as successful (findings-present path).
-    // If not, re-throw so the orchestrator marks the family failed.
+    // ZAP -autorun exits non-zero for several NON-fatal reasons while still
+    // writing a valid report: alerts found at/above threshold (exit 1), and
+    // benign plan warnings such as an unrecognised parameter (exit 2). The exit
+    // code is therefore not a reliable failure signal — read the report on ANY
+    // exit, and only mark the family failed when no parseable report exists.
     const execErr = err as NodeJS.ErrnoException & { code?: number };
     const exitCode = execErr.code;
-    if (typeof exitCode === 'number' && exitCode === 1) {
-      try {
-        reportContent = readFileSync(reportFile, 'utf8');
-        // Report was written — clean up yaml tmp and proceed to parse
-        try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
-        try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
-        try {
-          return JSON.parse(reportContent) as ZapReport;
-        } catch {
-          return { alerts: [] };
-        }
-      } catch {
-        // Report file not written — genuine tool error
-      }
-    }
+    let written: string | undefined;
+    try { written = readFileSync(reportFile, 'utf8'); } catch { written = undefined; }
     try { unlinkSync(tmpFile); } catch { /* ignore cleanup errors */ }
     try { unlinkSync(reportFile); } catch { /* ignore cleanup errors */ }
-    // Surface the real ZAP failure (exit code + stderr/stdout tail) rather than
-    // a bare "Command failed" — the orchestrator records this in the run report
-    // so a failed zap family is diagnosable without shelling into the container.
-    // The automation framework prints plan/job errors to STDOUT, while the JVM
-    // banner goes to stderr — capture BOTH so the failure cause is visible.
+    if (written !== undefined && written.trim().length > 0) {
+      try {
+        return JSON.parse(written) as ZapReport;
+      } catch {
+        // Report present but unparseable — fall through to the thrown error.
+      }
+    }
+    // No usable report — surface the real failure (exit code + both streams) so
+    // the orchestrator records a diagnosable reason. The automation framework
+    // prints plan/job errors to STDOUT; the JVM banner goes to stderr.
     const stderr = (execErr as { stderr?: string }).stderr ?? '';
     const stdout = (execErr as { stdout?: string }).stdout ?? '';
     const detail = [
