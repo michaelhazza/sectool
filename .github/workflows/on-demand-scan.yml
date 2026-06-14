@@ -19,6 +19,12 @@ on:
         description: "RunId to replay (leave empty for a live scan)"
         required: false
         type: string
+      # ImplInv-6: input key "config_sha" MUST exactly match the dispatch body inputs.config_sha
+      # key in src/ui/dispatch.ts. A mismatch is caught only by CI (GitHub returns 422).
+      config_sha:
+        description: "Pushed config SHA to verify and check out (ImplInv-6). When set, the workflow verifies this SHA is reachable from CONFIG_BRANCH then checks it out so the scan uses the exact committed config. Leave empty to use the branch tip."
+        required: false
+        type: string
 
 jobs:
   scan:
@@ -35,6 +41,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and pin config SHA (ImplInv-6)
+        # When config_sha is provided, verify it is reachable from CONFIG_BRANCH
+        # then check it out so the scan uses the exact pushed config — not a later
+        # tip that may have diverged. When empty, the branch tip checked out above is used.
+        # Fail loudly if the SHA is not reachable: scanning stale or arbitrary config is unsafe.
+        if: ${{ inputs.config_sha != '' }}
+        env:
+          CONFIG_BRANCH: ${{ vars.CONFIG_BRANCH || 'main' }}
+        run: |
+          git fetch --quiet origin "$CONFIG_BRANCH"
+          if ! git merge-base --is-ancestor "${{ inputs.config_sha }}" "origin/$CONFIG_BRANCH"; then
+            echo "ERROR: config_sha ${{ inputs.config_sha }} is not reachable from origin/$CONFIG_BRANCH — refusing to scan."
+            exit 1
+          fi
+          git checkout "${{ inputs.config_sha }}"
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
