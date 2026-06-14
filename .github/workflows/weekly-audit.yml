@@ -30,6 +30,8 @@ jobs:
         # staging hosts only. All live traffic is gated by config/allowed-staging-hosts.json.
         # Secrets are passed via --env so they are available inside the container.
         run: |
+          # Container runs as non-root USER audit — make the bind-mounted reports dir writable.
+          mkdir -p reports && chmod 777 reports
           docker run --rm \
             -e AUDIT_GITHUB_READ_TOKEN \
             -e AUDIT_STAGING_AUTOMATION_USER_A \

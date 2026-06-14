@@ -76,6 +76,9 @@ jobs:
         # (defense-in-depth via existing preflight — spec §7.2).
         if: ${{ inputs.replay_run_id == '' }}
         run: |
+          # The container runs as non-root USER audit; make the bind-mounted
+          # reports dir writable so it can create the workspace lock + write the report.
+          mkdir -p reports && chmod 777 reports
           docker run --rm \
             -e AUDIT_GITHUB_READ_TOKEN \
             -e AUDIT_STAGING_AUTOMATION_USER_A \
