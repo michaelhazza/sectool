@@ -109,3 +109,14 @@ the deployment and must be treated accordingly.
 ## Corrections
 
 - (none yet)
+
+## Audit patterns (full audit, 2026-07-02)
+
+### [2026-07-02] Pattern — two git-clone token channels diverged
+The config-write path (`src/ui/config-git.ts`) deliberately supplies `AUDIT_GIT_WRITE_TOKEN` out-of-band via `GIT_ASKPASS` because spec §7 (HIGH-2) forbids `http.extraHeader` (the header value lands in git's argv). The static-scan clone path (`src/static/orchestrator.ts:90-91`) still uses `-c http.extraHeader=AUTHORIZATION: basic <base64>` for `AUDIT_GITHUB_READ_TOKEN`, placing the token in argv, and its comment wrongly claims the credential "never appears in the process argument list." When hardening one token channel, check every `git clone`/`git fetch` call — there are two, with different token-handling maturity.
+
+### [2026-07-02] Pattern — allowlist invariant only guards the scanner URL, not the login pre-step
+`assertAllowlisted`/`preflight` gate the scan target, but `src/live/auth.ts:establishSession` builds `loginUrl = target.url + auth.loginPath` by raw string concatenation and issues credential-bearing GET/POST via `fetch` without re-validating the resulting host against the allowlist. Any config field that becomes a network destination (loginPath, and by extension redirect-following in ZAP/Nuclei) is a second, ungated path out of the "no I/O to non-allowlisted host" invariant. Audit every raw `fetch`/scanner target for allowlist re-validation, not just the CLI entrypoint.
+
+### [2026-07-02] Pattern — `z.string().url()` is not a transport allowlist
+`gitUrl` (`src/schemas/targets.ts`) and any URL validated only with Zod `.url()` accept `ext::`, `file://`, `ssh://` etc. For values that reach `git clone` this is an RCE/file-read surface (`ext::` runs commands). URL schema fields that feed a subprocess must additionally pin the scheme (`https` only) and the clone must set `GIT_ALLOW_PROTOCOL`. Adding `--` before positional clone args (done 2026-07-02) blocks option injection but NOT malicious transports.
