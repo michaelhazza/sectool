@@ -90,7 +90,11 @@ export async function defaultAcquireRepo(
     const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
     cloneArgs.push(`-c`, `http.extraHeader=AUTHORIZATION: basic ${encoded}`);
   }
-  cloneArgs.push(target.gitUrl, tmpDir);
+  // `--` terminates git option parsing so a gitUrl can never be interpreted as
+  // a git option (defense-in-depth against argv option injection). Note this
+  // does NOT constrain the transport scheme (ext::/file:// are still valid
+  // positionals) — schema-level scheme restriction is tracked separately.
+  cloneArgs.push('--', target.gitUrl, tmpDir);
 
   try {
     await execFileAsync('git', cloneArgs);
