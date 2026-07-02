@@ -12,9 +12,29 @@ const StackTagSchema = z.enum([
   'zod',
 ]);
 
+// gitUrl must be an https URL. `git clone` honours transport helpers baked into
+// the URL scheme — `ext::<cmd>` executes an arbitrary command on the clone host
+// and `file://` reads the local filesystem. Restricting the scheme at the schema
+// layer (validated on every 2FA-gated config write) keeps those transports out
+// of the argv positional entirely; the `--` separator in the clone call is only
+// a second line of defence against option injection.
+const HttpsGitUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (u) => {
+      try {
+        return new URL(u).protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'gitUrl must use the https scheme (ext::/file://ssh:// transports are rejected)' },
+  );
+
 const RepoSchema = z.object({
   name: z.string().min(1),
-  gitUrl: z.string().url(),
+  gitUrl: HttpsGitUrlSchema,
   localPath: z.string().nullable(),
   stackTags: z.array(StackTagSchema),
   publicRoutes: z.array(z.string()),
@@ -31,9 +51,23 @@ const SuccessCheckSchema = z.object({
   jsonHasKey: z.string().optional(),
 });
 
+// loginPath is string-concatenated onto the allowlisted target URL in
+// establishSession (src/live/auth.ts) and fetched with real credentials. If it
+// could carry its own host (e.g. ".evil.com/login", "//evil.com", or a
+// backslash the URL parser folds to "/"), the concatenated URL would resolve to
+// an off-allowlist host and exfiltrate credentials. Constrain it to a
+// root-relative path so the host can only ever be the allowlisted target.
+const RootRelativePathSchema = z
+  .string()
+  .min(1)
+  .startsWith('/', 'loginPath must be root-relative (start with "/")')
+  .refine((p) => !p.startsWith('//') && !p.includes('\\'), {
+    message: 'loginPath must not start with "//" or contain a backslash (off-host redirect hardening)',
+  });
+
 const AuthFormSchema = z.object({
   kind: z.literal('form'),
-  loginPath: z.string().min(1),
+  loginPath: RootRelativePathSchema,
   method: z.string().min(1).default('POST'),
   userField: z.string().min(1),
   passField: z.string().min(1),

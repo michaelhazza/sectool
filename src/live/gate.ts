@@ -107,8 +107,13 @@ export function assertAllowlisted(
     );
   }
 
-  // (b) exact enabled-entry hostname match
-  const matched = allowlist.hosts.some((entry) => entry.host === hostname);
+  // (b) exact enabled-entry hostname match. URL.hostname is already lowercased
+  // by the WHATWG parser, but an allowlist entry may carry mixed case; compare
+  // case-insensitively so a valid entry cannot silently fail to match (a
+  // fail-closed correctness bug that would block a legitimately allowlisted host).
+  const matched = allowlist.hosts.some(
+    (entry) => entry.host.toLowerCase() === hostname,
+  );
   if (!matched) {
     throw new AllowlistViolationError(
       `Host "${hostname}" is not on the allowlist — add it to config/allowed-staging-hosts.json via PR (§4.2)`,

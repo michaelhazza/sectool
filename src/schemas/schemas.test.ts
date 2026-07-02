@@ -337,6 +337,119 @@ describe('Allowlist host validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// gitUrl scheme restriction — https only (audit H1)
+// ---------------------------------------------------------------------------
+
+function registryWithRepo(gitUrl: string) {
+  return {
+    repos: [
+      {
+        name: 'r',
+        gitUrl,
+        localPath: null,
+        stackTags: [],
+        publicRoutes: [],
+        enabled: true,
+      },
+    ],
+    stagingTargets: [],
+  };
+}
+
+describe('RepoSchema gitUrl scheme restriction', () => {
+  it('accepts an https git URL', () => {
+    const result = TargetRegistrySchema.safeParse(
+      registryWithRepo('https://github.com/org/repo.git'),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an ext:: transport (command execution on clone host)', () => {
+    const result = TargetRegistrySchema.safeParse(
+      registryWithRepo('ext::sh -c "id"'),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file:// transport (local filesystem read)', () => {
+    const result = TargetRegistrySchema.safeParse(
+      registryWithRepo('file:///etc/passwd'),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an ssh:// transport', () => {
+    const result = TargetRegistrySchema.safeParse(
+      registryWithRepo('ssh://git@github.com/org/repo.git'),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a plain http:// git URL', () => {
+    const result = TargetRegistrySchema.safeParse(
+      registryWithRepo('http://github.com/org/repo.git'),
+    );
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loginPath must be root-relative (credential host-swap hardening — audit M2)
+// ---------------------------------------------------------------------------
+
+describe('AuthForm loginPath root-relative constraint', () => {
+  it('accepts a normal root-relative path', () => {
+    const result = TargetRegistrySchema.safeParse(
+      validRegistry({
+        activeScan: false,
+        auth: authConfig({ loginPath: '/login', testUsers: oneUser }),
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a host-swapping path (.evil.com/login)', () => {
+    const result = TargetRegistrySchema.safeParse(
+      validRegistry({
+        activeScan: false,
+        auth: authConfig({ loginPath: '.evil.com/login', testUsers: oneUser }),
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a protocol-relative path (//evil.com/login)', () => {
+    const result = TargetRegistrySchema.safeParse(
+      validRegistry({
+        activeScan: false,
+        auth: authConfig({ loginPath: '//evil.com/login', testUsers: oneUser }),
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a backslash path (\\evil.com/login)', () => {
+    const result = TargetRegistrySchema.safeParse(
+      validRegistry({
+        activeScan: false,
+        auth: authConfig({ loginPath: '\\evil.com/login', testUsers: oneUser }),
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an absolute URL as loginPath', () => {
+    const result = TargetRegistrySchema.safeParse(
+      validRegistry({
+        activeScan: false,
+        auth: authConfig({ loginPath: 'https://evil.com/login', testUsers: oneUser }),
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Baseline — rejects truncated-findingId-only, rejects mismatched findingId
 // ---------------------------------------------------------------------------
 

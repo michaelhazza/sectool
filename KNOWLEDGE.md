@@ -120,3 +120,13 @@ The config-write path (`src/ui/config-git.ts`) deliberately supplies `AUDIT_GIT_
 
 ### [2026-07-02] Pattern — `z.string().url()` is not a transport allowlist
 `gitUrl` (`src/schemas/targets.ts`) and any URL validated only with Zod `.url()` accept `ext::`, `file://`, `ssh://` etc. For values that reach `git clone` this is an RCE/file-read surface (`ext::` runs commands). URL schema fields that feed a subprocess must additionally pin the scheme (`https` only) and the clone must set `GIT_ALLOW_PROTOCOL`. Adding `--` before positional clone args (done 2026-07-02) blocks option injection but NOT malicious transports.
+
+### [2026-07-02] Fixes applied on `audit/full-2026-07-02`
+Three of the deferred audit findings were fixed at the schema/gate layer (unit-tested, all four gates green):
+- **H1** — `gitUrl` now pinned to `https` via `HttpsGitUrlSchema` (`src/schemas/targets.ts`); `ext::`/`file://`/`ssh://` rejected at config-parse time (both config-load and the 2FA-gated config-write path parse through this schema).
+- **M2** — `loginPath` constrained to a root-relative path (`RootRelativePathSchema`): must start with a single `/`, no `//` prefix, no backslash — so `establishSession`'s `target.url + loginPath` concat can never resolve to an off-allowlist host.
+- **L1** — `assertAllowlisted` host match is now case-insensitive (`src/live/gate.ts`), closing a fail-closed correctness bug where a mixed-case allowlist entry never matched the (already-lowercased) URL host.
+Still deferred (need Docker/integration verification or touch the clone token channel): M1 (read token in git argv → move to `GIT_ASKPASS`), M3 (ZAP `includePaths` regex over-match), L2 (repo-name charset in `mkdtemp`), L4 (unkeyed audit-cache hash-chain). See `tasks/todo.md` tag `origin:audit:full:2026-07-02`.
+
+### [2026-07-02] Gotcha — git-integration tests flake under full-suite parallelism on Windows
+`src/ui/config-git.test.ts` and `config-write.test.ts` shell out to real `git clone`/`commit`/`push` against local temp bare repos. Under `vitest run` (full parallel suite) on Windows they fail intermittently with `Command failed: git clone … remote.git … working`; the failure count scales with concurrent load (observed 0 alone → 1 for the two suites → 14 in the full 1070-test run) — classic temp-dir/file-lock contention, not a code regression. `npx vitest run --no-file-parallelism` runs the full suite green (1070/1070). When these specific tests fail in a parallel run, re-run sequentially before treating it as a real failure.

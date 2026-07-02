@@ -137,6 +137,26 @@ describe('assertAllowlisted — hostname not on allowlist', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Case-insensitive host match (fail-closed correctness — audit L1)
+// ---------------------------------------------------------------------------
+
+describe('assertAllowlisted — case-insensitive host match', () => {
+  it('matches a mixed-case allowlist entry against a lowercased URL host', () => {
+    const mixedCaseList = makeAllowlist([{ host: 'Staging.Example.Breakout.Dev' }]);
+    const target = assertAllowlisted(`https://${STAGING_HOST}/`, mixedCaseList);
+    expect(target.hostname).toBe(STAGING_HOST);
+  });
+
+  it('matches an uppercase URL host (URL parser lowercases it) against a lowercase entry', () => {
+    const target = assertAllowlisted(
+      `https://STAGING.EXAMPLE.BREAKOUT.DEV/`,
+      SINGLE_HOST_ALLOWLIST,
+    );
+    expect(target.hostname).toBe(STAGING_HOST);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Non-default port rejected (§4.2 clause c)
 // ---------------------------------------------------------------------------
 

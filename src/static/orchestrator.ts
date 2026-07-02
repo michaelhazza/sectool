@@ -91,9 +91,9 @@ export async function defaultAcquireRepo(
     cloneArgs.push(`-c`, `http.extraHeader=AUTHORIZATION: basic ${encoded}`);
   }
   // `--` terminates git option parsing so a gitUrl can never be interpreted as
-  // a git option (defense-in-depth against argv option injection). Note this
-  // does NOT constrain the transport scheme (ext::/file:// are still valid
-  // positionals) — schema-level scheme restriction is tracked separately.
+  // a git option (defense-in-depth against argv option injection). The transport
+  // scheme itself is constrained to https at the schema layer (HttpsGitUrlSchema
+  // in src/schemas/targets.ts), so ext::/file:// positionals never reach here.
   cloneArgs.push('--', target.gitUrl, tmpDir);
 
   try {
