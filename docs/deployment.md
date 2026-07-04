@@ -273,6 +273,16 @@ this repo only** — no broader repository or organisation permissions. This is 
 highest-value secret in the deployment; a compromise allows pushing arbitrary
 content to `CONFIG_BRANCH`. Keep it scoped as narrowly as GitHub allows.
 
+### Optional fly.io secrets
+
+| Secret | Description | Notes |
+|---|---|---|
+| `AUDIT_CACHE_HMAC_SECRET` | HMAC key that makes the operational audit-cache hash-chain (`history/config-audit.jsonl`) tamper-**evident** rather than merely integrity-checked. | Optional. When set, each chain link is `HMAC-SHA256(secret, prevHash‖entry)` instead of an unkeyed `sha256`, so only a holder of the secret can forge a valid chain. When unset, the chain falls back to the original unkeyed `sha256` (backward-compatible). Git remains the authoritative record either way (spec §8); this only hardens the accelerator. **Enabling it invalidates verification of any pre-existing unkeyed chain** — expected HMAC behaviour; the cache self-heals as new entries append, and git history is unaffected. Use 32+ random bytes (e.g. `openssl rand -hex 32`). Rotate independently of the other secrets. |
+
+```bash
+fly secrets set AUDIT_CACHE_HMAC_SECRET="$(openssl rand -hex 32)"
+```
+
 ### Additional fly.io env vars (set in fly.toml `[env]`)
 
 | Env var | Default | Description |
