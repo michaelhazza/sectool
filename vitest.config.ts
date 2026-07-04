@@ -19,5 +19,11 @@ export default defineConfig({
     // still bounding a genuine hang. (Teardown rmdir also retries on Windows
     // EBUSY; see the maxRetries in those tests' afterEach.)
     testTimeout: 30_000,
+    // The same integration suites do their heavy real-git work in HOOKS —
+    // beforeEach clones/commits/pushes a fixture repo, afterEach does the
+    // (retrying) rmdir — which the 10s default hookTimeout is too tight for on a
+    // loaded Windows box, surfacing as "Hook timed out in 10000ms". Match the
+    // test-body budget so a slow hook doesn't masquerade as a failure.
+    hookTimeout: 30_000,
   },
 });

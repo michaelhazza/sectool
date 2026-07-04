@@ -86,21 +86,44 @@ const defaultOpts: ScanOpts = {
 // ---------------------------------------------------------------------------
 
 describe('cloneTokenEnv (audit M1)', () => {
+  const GH = 'https://github.com/org/repo.git';
+
   it('returns an empty object when no token is provided', () => {
-    expect(cloneTokenEnv(undefined)).toEqual({});
-    expect(cloneTokenEnv('')).toEqual({});
+    expect(cloneTokenEnv(undefined, GH)).toEqual({});
+    expect(cloneTokenEnv('', GH)).toEqual({});
   });
 
-  it('encodes the token as an http.extraHeader Basic auth via GIT_CONFIG_* env', () => {
-    const env = cloneTokenEnv('ghp_secrettoken');
+  it('encodes the token as a URL-scoped http.extraHeader Basic auth via GIT_CONFIG_* env', () => {
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
     expect(env['GIT_CONFIG_COUNT']).toBe('1');
-    expect(env['GIT_CONFIG_KEY_0']).toBe('http.extraHeader');
+    // URL-scoped to the GitHub origin — NOT a global `http.extraHeader`.
+    expect(env['GIT_CONFIG_KEY_0']).toBe('http.https://github.com/.extraHeader');
     const expected = Buffer.from('x-access-token:ghp_secrettoken').toString('base64');
     expect(env['GIT_CONFIG_VALUE_0']).toBe(`AUTHORIZATION: basic ${expected}`);
   });
 
+  it('the header key is host-scoped, never the global http.extraHeader', () => {
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
+    expect(env['GIT_CONFIG_KEY_0']).not.toBe('http.extraHeader');
+    expect(env['GIT_CONFIG_KEY_0']).toContain('github.com');
+  });
+
+  // Regression for the PR-review finding: the GitHub read token must NEVER be
+  // attached to a clone of a non-GitHub host — otherwise a malicious gitUrl in
+  // the registry could exfiltrate it.
+  it('attaches NO credential when the clone host is not GitHub', () => {
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://attacker.example/repo.git')).toEqual({});
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://gitlab.com/org/repo.git')).toEqual({});
+    // Look-alike host that merely contains "github.com" as a substring must not match.
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://github.com.attacker.example/repo.git')).toEqual({});
+  });
+
+  it('attaches NO credential for a malformed gitUrl', () => {
+    expect(cloneTokenEnv('ghp_secrettoken', 'not-a-url')).toEqual({});
+  });
+
   it('does not expose the raw token in any key or value (only base64-encoded in the header)', () => {
-    const env = cloneTokenEnv('ghp_secrettoken');
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
     for (const [k, v] of Object.entries(env)) {
       expect(k).not.toContain('ghp_secrettoken');
       expect(v).not.toContain('ghp_secrettoken');

@@ -61,25 +61,60 @@ async function resolveCommitSha(dir: string): Promise<string | undefined> {
   }
 }
 
+// The read token (AUDIT_GITHUB_READ_TOKEN) is a GitHub credential and must be
+// sent ONLY to GitHub. gitUrl comes from the target registry, whose schema
+// permits any https host — so without this pin, a config writer could set
+// `gitUrl: https://attacker.example/repo.git` and the clone would ship the token
+// to an attacker-controlled server (credential exfiltration). We therefore both
+// (a) attach the header only when the clone host is GitHub, and (b) URL-scope the
+// header to that exact origin so git itself refuses to send it anywhere else.
+const TOKEN_ALLOWED_GIT_HOST = 'github.com';
+
 /**
  * Build the GIT_CONFIG_* env overrides that carry the read token to `git clone`
- * as an `http.extraHeader` — WITHOUT placing it on argv.
+ * as a URL-scoped `http.<origin>/.extraHeader` — WITHOUT placing it on argv, and
+ * ONLY when `gitUrl` targets the trusted GitHub host.
  *
- * `-c http.extraHeader=…` puts the credential in a process-argument element,
- * visible in /proc/<pid>/cmdline and `ps` to any local user (base64 is trivially
- * reversed). GIT_CONFIG_COUNT/KEY_n/VALUE_n (git 2.31+) inject the same config
- * via the environment, which lives in /proc/<pid>/environ — readable only by the
- * same uid. This mirrors the protection the config-write path gets from
- * GIT_ASKPASS, and keeps the token out of the thrown error's `cmd` string.
+ * Why env, not argv: `-c http.extraHeader=…` puts the credential in a
+ * process-argument element, visible in /proc/<pid>/cmdline and `ps` to any local
+ * user (base64 is trivially reversed). GIT_CONFIG_COUNT/KEY_n/VALUE_n (git 2.31+)
+ * inject the same config via the environment (/proc/<pid>/environ — readable only
+ * by the same uid), mirroring the config-write path's GIT_ASKPASS protection and
+ * keeping the token out of the thrown error's `cmd` string.
  *
- * Returns an empty object when no token is provided (unauthenticated clone).
+ * Why URL-scoped + host-gated: a bare `http.extraHeader` is sent on EVERY request
+ * git makes during the clone, i.e. to whatever host `gitUrl` names. Both the
+ * host gate and the URL scope confine the token to GitHub (see git's
+ * `--get-urlmatch` semantics: it matches by host, not string prefix).
+ *
+ * Returns an empty object — no credential attached — when there is no token or
+ * the clone host is not GitHub (public/other-host clones still proceed, just
+ * unauthenticated; a private non-GitHub repo fails without leaking the token).
  */
-export function cloneTokenEnv(token: string | undefined): Record<string, string> {
+export function cloneTokenEnv(
+  token: string | undefined,
+  gitUrl: string,
+): Record<string, string> {
   if (!token) return {};
+
+  let origin: string;
+  let hostname: string;
+  try {
+    const parsed = new URL(gitUrl);
+    origin = parsed.origin;
+    hostname = parsed.hostname;
+  } catch {
+    return {};
+  }
+
+  // Never hand the GitHub token to a non-GitHub host.
+  if (hostname !== TOKEN_ALLOWED_GIT_HOST) return {};
+
   const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
   return {
     GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    // URL-scoped: git sends this header ONLY to requests under `${origin}/`.
+    GIT_CONFIG_KEY_0: `http.${origin}/.extraHeader`,
     GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${encoded}`,
   };
 }
@@ -121,8 +156,9 @@ export async function defaultAcquireRepo(
   ];
 
   // Token channel: pass the auth header via GIT_CONFIG_* env vars (see
-  // cloneTokenEnv) rather than `-c http.extraHeader=...` on argv.
-  const cloneEnv: NodeJS.ProcessEnv = { ...process.env, ...cloneTokenEnv(token) };
+  // cloneTokenEnv) rather than `-c http.extraHeader=...` on argv. The token is
+  // attached only for GitHub-hosted clones and URL-scoped to that origin.
+  const cloneEnv: NodeJS.ProcessEnv = { ...process.env, ...cloneTokenEnv(token, target.gitUrl) };
 
   try {
     await execFileAsync('git', cloneArgs, { env: cloneEnv });
