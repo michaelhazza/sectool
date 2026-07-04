@@ -118,7 +118,11 @@ beforeEach(() => {
 
 afterEach(() => {
   try {
-    rmSync(resolve(env.bare, '..'), { recursive: true, force: true });
+    // maxRetries/retryDelay absorb the transient Windows EBUSY/EPERM that fires
+    // when a just-exited git subprocess still holds a handle on a .git file at
+    // rmdir time (teardown race, not a product bug). The try/catch remains as a
+    // final backstop, but retrying first also stops temp dirs accumulating.
+    rmSync(resolve(env.bare, '..'), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   } catch {
     // best-effort
   }

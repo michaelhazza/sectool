@@ -32,8 +32,19 @@ const HttpsGitUrlSchema = z
     { message: 'gitUrl must use the https scheme (ext::/file://ssh:// transports are rejected)' },
   );
 
+// Repo name is interpolated into a filesystem path (the mkdtemp clone-dir prefix
+// in src/static/orchestrator.ts) and used as a correlation key. Constrain it to a
+// conservative charset so a `/` or `..` can never reach a path (no traversal, no
+// separator). The clone path additionally sanitizes as belt-and-braces.
+const RepoNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z0-9._-]+$/, {
+    message: 'repo name may contain only letters, digits, dot, underscore, and hyphen',
+  });
+
 const RepoSchema = z.object({
-  name: z.string().min(1),
+  name: RepoNameSchema,
   gitUrl: HttpsGitUrlSchema,
   localPath: z.string().nullable(),
   stackTags: z.array(StackTagSchema),

@@ -408,12 +408,27 @@ function yamlQuote(value: string): string {
   return `"${escaped}"`;
 }
 
+/**
+ * Escape regex metacharacters so a literal string can be embedded in a regex.
+ * ZAP context includePaths are Java regular expressions, not literal prefixes:
+ * an unescaped `.` in the URL (e.g. "staging.example.com") matches any char, so
+ * `"https://staging.example.com.*"` would also match "https://staging.example.comX.evil.net/…"
+ * and pull an off-scope sibling host into ZAP's active-scan scope. Escaping the
+ * URL first pins the include pattern to the exact target host.
+ */
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function buildZapAutomationYaml(targetUrl: string, activeMode: boolean, rateLimitRps: number, reportFilePath: string): string {
   const quotedUrl = yamlQuote(targetUrl);
   // The include-path regex suffix MUST be inside the quotes — quoting the URL
   // and then appending `.*` produces `"https://host/".*`, which is invalid YAML
   // (a quoted scalar followed by a bare scalar) and aborts the ZAP plan parse.
-  const quotedIncludePath = yamlQuote(`${targetUrl}.*`);
+  // The URL is regex-escaped (includePaths is a regex) so its dots/slashes match
+  // literally and cannot over-match sibling hosts; the trailing `.*` is the only
+  // active regex metacharacter, matching the path/query under the exact host.
+  const quotedIncludePath = yamlQuote(`${escapeRegex(targetUrl)}.*`);
   const scanPolicy = activeMode
     ? `    - type: activeScan
       parameters:

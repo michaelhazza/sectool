@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { scanRepos, defaultAcquireRepo } from './orchestrator.js';
+import { scanRepos, defaultAcquireRepo, cloneTokenEnv } from './orchestrator.js';
 import type { ScanOpts, ScannerMap, AcquireRepo, ScannerFn } from './orchestrator.js';
 import type { Finding } from '../schemas/finding.js';
 import type { RepoTarget } from '../schemas/targets.js';
@@ -80,6 +80,33 @@ const defaultOpts: ScanOpts = {
   scannerTimeoutMs: 5_000,
   maxParallelTargets: 2,
 };
+
+// ---------------------------------------------------------------------------
+// cloneTokenEnv — read token travels via GIT_CONFIG_* env, never argv (audit M1)
+// ---------------------------------------------------------------------------
+
+describe('cloneTokenEnv (audit M1)', () => {
+  it('returns an empty object when no token is provided', () => {
+    expect(cloneTokenEnv(undefined)).toEqual({});
+    expect(cloneTokenEnv('')).toEqual({});
+  });
+
+  it('encodes the token as an http.extraHeader Basic auth via GIT_CONFIG_* env', () => {
+    const env = cloneTokenEnv('ghp_secrettoken');
+    expect(env['GIT_CONFIG_COUNT']).toBe('1');
+    expect(env['GIT_CONFIG_KEY_0']).toBe('http.extraHeader');
+    const expected = Buffer.from('x-access-token:ghp_secrettoken').toString('base64');
+    expect(env['GIT_CONFIG_VALUE_0']).toBe(`AUTHORIZATION: basic ${expected}`);
+  });
+
+  it('does not expose the raw token in any key or value (only base64-encoded in the header)', () => {
+    const env = cloneTokenEnv('ghp_secrettoken');
+    for (const [k, v] of Object.entries(env)) {
+      expect(k).not.toContain('ghp_secrettoken');
+      expect(v).not.toContain('ghp_secrettoken');
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests: family status accounting

@@ -356,6 +356,37 @@ function registryWithRepo(gitUrl: string) {
   };
 }
 
+describe('RepoSchema name charset restriction (audit L2)', () => {
+  function registryWithRepoName(name: string) {
+    return {
+      repos: [
+        { name, gitUrl: 'https://github.com/org/repo.git', localPath: null, stackTags: [], publicRoutes: [], enabled: true },
+      ],
+      stagingTargets: [],
+    };
+  }
+
+  it('accepts a normal repo name', () => {
+    expect(TargetRegistrySchema.safeParse(registryWithRepoName('automation-v1')).success).toBe(true);
+  });
+
+  it('accepts dots and underscores', () => {
+    expect(TargetRegistrySchema.safeParse(registryWithRepoName('my.repo_v2')).success).toBe(true);
+  });
+
+  it('rejects a name containing a path separator', () => {
+    expect(TargetRegistrySchema.safeParse(registryWithRepoName('a/b')).success).toBe(false);
+  });
+
+  it('rejects a name containing ".." traversal + separator', () => {
+    expect(TargetRegistrySchema.safeParse(registryWithRepoName('../evil')).success).toBe(false);
+  });
+
+  it('rejects a name with whitespace', () => {
+    expect(TargetRegistrySchema.safeParse(registryWithRepoName('bad name')).success).toBe(false);
+  });
+});
+
 describe('RepoSchema gitUrl scheme restriction', () => {
   it('accepts an https git URL', () => {
     const result = TargetRegistrySchema.safeParse(

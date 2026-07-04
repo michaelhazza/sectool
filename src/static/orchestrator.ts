@@ -62,6 +62,29 @@ async function resolveCommitSha(dir: string): Promise<string | undefined> {
 }
 
 /**
+ * Build the GIT_CONFIG_* env overrides that carry the read token to `git clone`
+ * as an `http.extraHeader` — WITHOUT placing it on argv.
+ *
+ * `-c http.extraHeader=…` puts the credential in a process-argument element,
+ * visible in /proc/<pid>/cmdline and `ps` to any local user (base64 is trivially
+ * reversed). GIT_CONFIG_COUNT/KEY_n/VALUE_n (git 2.31+) inject the same config
+ * via the environment, which lives in /proc/<pid>/environ — readable only by the
+ * same uid. This mirrors the protection the config-write path gets from
+ * GIT_ASKPASS, and keeps the token out of the thrown error's `cmd` string.
+ *
+ * Returns an empty object when no token is provided (unauthenticated clone).
+ */
+export function cloneTokenEnv(token: string | undefined): Record<string, string> {
+  if (!token) return {};
+  const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${encoded}`,
+  };
+}
+
+/**
  * Default repo acquirer: reads localPath as-is, or performs a shallow
  * `--depth 1` single-branch default-HEAD clone using `AUDIT_GITHUB_READ_TOKEN`.
  * Submodule init is NOT performed (§6.2 v1 scope).
@@ -81,23 +104,28 @@ export async function defaultAcquireRepo(
   }
 
   const token = process.env['AUDIT_GITHUB_READ_TOKEN'];
-  const tmpDir = await mkdtemp(join(tmpdir(), `audit-clone-${target.name}-`));
+  // Sanitize the repo name before it becomes part of a filesystem path. The
+  // schema already constrains `name` to [A-Za-z0-9._-] (RepoNameSchema), but the
+  // mkdtemp prefix must never contain a path separator or `..` even if this
+  // function is ever called with an unvalidated target — belt-and-braces.
+  const safeName = target.name.replace(/[^A-Za-z0-9._-]/g, '_');
+  const tmpDir = await mkdtemp(join(tmpdir(), `audit-clone-${safeName}-`));
 
-  // Pass the token out-of-argv via http.extraHeader so the credential never
-  // appears in the process argument list (visible via /proc/*/cmdline, ps, etc.).
-  const cloneArgs: string[] = ['clone', '--depth', '1', '--single-branch', '--no-recurse-submodules'];
-  if (token) {
-    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
-    cloneArgs.push(`-c`, `http.extraHeader=AUTHORIZATION: basic ${encoded}`);
-  }
   // `--` terminates git option parsing so a gitUrl can never be interpreted as
   // a git option (defense-in-depth against argv option injection). The transport
   // scheme itself is constrained to https at the schema layer (HttpsGitUrlSchema
   // in src/schemas/targets.ts), so ext::/file:// positionals never reach here.
-  cloneArgs.push('--', target.gitUrl, tmpDir);
+  const cloneArgs: string[] = [
+    'clone', '--depth', '1', '--single-branch', '--no-recurse-submodules',
+    '--', target.gitUrl, tmpDir,
+  ];
+
+  // Token channel: pass the auth header via GIT_CONFIG_* env vars (see
+  // cloneTokenEnv) rather than `-c http.extraHeader=...` on argv.
+  const cloneEnv: NodeJS.ProcessEnv = { ...process.env, ...cloneTokenEnv(token) };
 
   try {
-    await execFileAsync('git', cloneArgs);
+    await execFileAsync('git', cloneArgs, { env: cloneEnv });
   } catch (err) {
     await rm(tmpDir, { recursive: true, force: true });
     throw err;
