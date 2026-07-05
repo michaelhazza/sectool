@@ -120,6 +120,28 @@ export function cloneTokenEnv(
 }
 
 /**
+ * Pin the git clone transport via GIT_ALLOW_PROTOCOL — belt-and-braces on top of
+ * the https-only `gitUrl` schema and the `--` argv separator. This stops git from
+ * using a command-executing (`ext::`) or otherwise unexpected transport even if a
+ * git config rewrite or a future clone-path change tried to introduce one.
+ *
+ * Returns 'https' for every scheme EXCEPT a literal `file:` URL, which returns
+ * 'file'. Production gitUrls are always https (schema-enforced), so they always
+ * pin to 'https'. `file` is reachable only from a `file://` gitUrl, which never
+ * occurs in production and exists solely for the local no-network integration
+ * fixtures; it permits reading a local repo, NOT command execution. `ext::`,
+ * `ssh://`, `git://`, etc. all collapse to 'https' — i.e. are blocked.
+ */
+export function cloneAllowProtocol(gitUrl: string): string {
+  try {
+    if (new URL(gitUrl).protocol === 'file:') return 'file';
+  } catch {
+    // Unparseable URL — fall through to the safe default.
+  }
+  return 'https';
+}
+
+/**
  * Default repo acquirer: reads localPath as-is, or performs a shallow
  * `--depth 1` single-branch default-HEAD clone using `AUDIT_GITHUB_READ_TOKEN`.
  * Submodule init is NOT performed (§6.2 v1 scope).
@@ -155,10 +177,15 @@ export async function defaultAcquireRepo(
     '--', target.gitUrl, tmpDir,
   ];
 
-  // Token channel: pass the auth header via GIT_CONFIG_* env vars (see
-  // cloneTokenEnv) rather than `-c http.extraHeader=...` on argv. The token is
-  // attached only for GitHub-hosted clones and URL-scoped to that origin.
-  const cloneEnv: NodeJS.ProcessEnv = { ...process.env, ...cloneTokenEnv(token, target.gitUrl) };
+  // Clone env: pin the allowed transport (GIT_ALLOW_PROTOCOL) as defense in
+  // depth, and pass the auth header via GIT_CONFIG_* env vars (see cloneTokenEnv)
+  // rather than `-c http.extraHeader=...` on argv. The token is attached only for
+  // GitHub-hosted clones and URL-scoped to that origin.
+  const cloneEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_ALLOW_PROTOCOL: cloneAllowProtocol(target.gitUrl),
+    ...cloneTokenEnv(token, target.gitUrl),
+  };
 
   try {
     await execFileAsync('git', cloneArgs, { env: cloneEnv });

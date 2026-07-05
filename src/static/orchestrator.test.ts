@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { scanRepos, defaultAcquireRepo, cloneTokenEnv } from './orchestrator.js';
+import { scanRepos, defaultAcquireRepo, cloneTokenEnv, cloneAllowProtocol } from './orchestrator.js';
 import type { ScanOpts, ScannerMap, AcquireRepo, ScannerFn } from './orchestrator.js';
 import type { Finding } from '../schemas/finding.js';
 import type { RepoTarget } from '../schemas/targets.js';
@@ -128,6 +128,28 @@ describe('cloneTokenEnv (audit M1)', () => {
       expect(k).not.toContain('ghp_secrettoken');
       expect(v).not.toContain('ghp_secrettoken');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cloneAllowProtocol — pin git clone transport (PR-review hardening)
+// ---------------------------------------------------------------------------
+
+describe('cloneAllowProtocol', () => {
+  it('pins https for an https gitUrl', () => {
+    expect(cloneAllowProtocol('https://github.com/org/repo.git')).toBe('https');
+  });
+
+  it('blocks command-executing / unexpected transports by collapsing them to https', () => {
+    // If git ever received these, GIT_ALLOW_PROTOCOL=https makes it refuse them.
+    expect(cloneAllowProtocol('ext::sh -c "id"')).toBe('https');
+    expect(cloneAllowProtocol('ssh://git@github.com/org/repo.git')).toBe('https');
+    expect(cloneAllowProtocol('git://github.com/org/repo.git')).toBe('https');
+    expect(cloneAllowProtocol('not-a-url')).toBe('https');
+  });
+
+  it('permits file ONLY for a literal file:// URL (local integration fixtures)', () => {
+    expect(cloneAllowProtocol('file:///tmp/bare-repo')).toBe('file');
   });
 });
 
