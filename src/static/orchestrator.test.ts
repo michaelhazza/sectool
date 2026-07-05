@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { scanRepos, defaultAcquireRepo } from './orchestrator.js';
+import { scanRepos, defaultAcquireRepo, cloneTokenEnv, cloneAllowProtocol } from './orchestrator.js';
 import type { ScanOpts, ScannerMap, AcquireRepo, ScannerFn } from './orchestrator.js';
 import type { Finding } from '../schemas/finding.js';
 import type { RepoTarget } from '../schemas/targets.js';
@@ -80,6 +80,78 @@ const defaultOpts: ScanOpts = {
   scannerTimeoutMs: 5_000,
   maxParallelTargets: 2,
 };
+
+// ---------------------------------------------------------------------------
+// cloneTokenEnv — read token travels via GIT_CONFIG_* env, never argv (audit M1)
+// ---------------------------------------------------------------------------
+
+describe('cloneTokenEnv (audit M1)', () => {
+  const GH = 'https://github.com/org/repo.git';
+
+  it('returns an empty object when no token is provided', () => {
+    expect(cloneTokenEnv(undefined, GH)).toEqual({});
+    expect(cloneTokenEnv('', GH)).toEqual({});
+  });
+
+  it('encodes the token as a URL-scoped http.extraHeader Basic auth via GIT_CONFIG_* env', () => {
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
+    expect(env['GIT_CONFIG_COUNT']).toBe('1');
+    // URL-scoped to the GitHub origin — NOT a global `http.extraHeader`.
+    expect(env['GIT_CONFIG_KEY_0']).toBe('http.https://github.com/.extraHeader');
+    const expected = Buffer.from('x-access-token:ghp_secrettoken').toString('base64');
+    expect(env['GIT_CONFIG_VALUE_0']).toBe(`AUTHORIZATION: basic ${expected}`);
+  });
+
+  it('the header key is host-scoped, never the global http.extraHeader', () => {
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
+    expect(env['GIT_CONFIG_KEY_0']).not.toBe('http.extraHeader');
+    expect(env['GIT_CONFIG_KEY_0']).toContain('github.com');
+  });
+
+  // Regression for the PR-review finding: the GitHub read token must NEVER be
+  // attached to a clone of a non-GitHub host — otherwise a malicious gitUrl in
+  // the registry could exfiltrate it.
+  it('attaches NO credential when the clone host is not GitHub', () => {
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://attacker.example/repo.git')).toEqual({});
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://gitlab.com/org/repo.git')).toEqual({});
+    // Look-alike host that merely contains "github.com" as a substring must not match.
+    expect(cloneTokenEnv('ghp_secrettoken', 'https://github.com.attacker.example/repo.git')).toEqual({});
+  });
+
+  it('attaches NO credential for a malformed gitUrl', () => {
+    expect(cloneTokenEnv('ghp_secrettoken', 'not-a-url')).toEqual({});
+  });
+
+  it('does not expose the raw token in any key or value (only base64-encoded in the header)', () => {
+    const env = cloneTokenEnv('ghp_secrettoken', GH);
+    for (const [k, v] of Object.entries(env)) {
+      expect(k).not.toContain('ghp_secrettoken');
+      expect(v).not.toContain('ghp_secrettoken');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cloneAllowProtocol — pin git clone transport (PR-review hardening)
+// ---------------------------------------------------------------------------
+
+describe('cloneAllowProtocol', () => {
+  it('pins https for an https gitUrl', () => {
+    expect(cloneAllowProtocol('https://github.com/org/repo.git')).toBe('https');
+  });
+
+  it('blocks command-executing / unexpected transports by collapsing them to https', () => {
+    // If git ever received these, GIT_ALLOW_PROTOCOL=https makes it refuse them.
+    expect(cloneAllowProtocol('ext::sh -c "id"')).toBe('https');
+    expect(cloneAllowProtocol('ssh://git@github.com/org/repo.git')).toBe('https');
+    expect(cloneAllowProtocol('git://github.com/org/repo.git')).toBe('https');
+    expect(cloneAllowProtocol('not-a-url')).toBe('https');
+  });
+
+  it('permits file ONLY for a literal file:// URL (local integration fixtures)', () => {
+    expect(cloneAllowProtocol('file:///tmp/bare-repo')).toBe('file');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests: family status accounting

@@ -414,3 +414,32 @@ describe('buildZapAutomationYaml — URL quoting (fix 8)', () => {
     expect(yaml).not.toContain('/dev/stdout');
   });
 });
+
+// ---------------------------------------------------------------------------
+// includePaths regex-escaping — scope confinement (audit M3)
+// ---------------------------------------------------------------------------
+
+describe('buildZapAutomationYaml — includePaths regex escaping (audit M3)', () => {
+  it('regex-escapes the dots in the host so the include pattern matches literally', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.dev/', false, 10, '/tmp/report.json');
+    // Each `.` in the URL must be escaped (`\.`) inside the include pattern, and
+    // the whole value is then YAML-escaped (`\\` → `\\\\`), so the literal `\.`
+    // appears as `\\.` in the emitted YAML string.
+    expect(yaml).toContain('https://staging\\\\.example\\\\.dev/.*');
+  });
+
+  it('does not emit an unescaped "host.*" that would match sibling hosts', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.com/', false, 10, '/tmp/report.json');
+    // The vulnerable form is the unescaped `com.*` (regex: `com` + any chars),
+    // which matches `com` + anything (e.g. `comX.evil.net`). After escaping, the
+    // only bare `.` immediately before `*` is the intended trailing `.*`.
+    expect(yaml).not.toContain('staging.example.com.*');
+  });
+
+  it('escapes regex metacharacters embedded in the URL path', () => {
+    const yaml = buildZapAutomationYaml('https://staging.example.dev/a+b(c)/', false, 10, '/tmp/report.json');
+    // `+`, `(`, `)` are regex metachars and must be backslash-escaped in the
+    // include pattern (then YAML-doubled), never left active.
+    expect(yaml).toContain('a\\\\+b\\\\(c\\\\)');
+  });
+});

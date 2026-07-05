@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { resolve, dirname, extname } from 'node:path';
+import { resolve, dirname, extname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import { loadAllowlist, loadTargets, ConfigError } from '../config/load.js';
@@ -1330,8 +1330,12 @@ function handleStatic(req: IncomingMessage, res: ServerResponse, url: URL): bool
 
   const fullPath = resolve(SPA_DIR, assetPath);
 
-  // Prevent path traversal above SPA_DIR
-  if (!fullPath.startsWith(SPA_DIR)) {
+  // Prevent path traversal above SPA_DIR. Compare against SPA_DIR + sep (not a
+  // bare prefix) so a sibling directory sharing the SPA_DIR name prefix
+  // (e.g. `<parent>/dist-evil` vs `<parent>/dist`) cannot be reached via
+  // `../dist-evil/...`. The exact-SPA_DIR case never occurs (assetPath is
+  // always a file under it), but allow it defensively.
+  if (fullPath !== SPA_DIR && !fullPath.startsWith(SPA_DIR + sep)) {
     jsonResponse(res, 403, { error: 'Forbidden' });
     return true;
   }

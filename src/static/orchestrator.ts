@@ -61,6 +61,86 @@ async function resolveCommitSha(dir: string): Promise<string | undefined> {
   }
 }
 
+// The read token (AUDIT_GITHUB_READ_TOKEN) is a GitHub credential and must be
+// sent ONLY to GitHub. gitUrl comes from the target registry, whose schema
+// permits any https host — so without this pin, a config writer could set
+// `gitUrl: https://attacker.example/repo.git` and the clone would ship the token
+// to an attacker-controlled server (credential exfiltration). We therefore both
+// (a) attach the header only when the clone host is GitHub, and (b) URL-scope the
+// header to that exact origin so git itself refuses to send it anywhere else.
+const TOKEN_ALLOWED_GIT_HOST = 'github.com';
+
+/**
+ * Build the GIT_CONFIG_* env overrides that carry the read token to `git clone`
+ * as a URL-scoped `http.<origin>/.extraHeader` — WITHOUT placing it on argv, and
+ * ONLY when `gitUrl` targets the trusted GitHub host.
+ *
+ * Why env, not argv: `-c http.extraHeader=…` puts the credential in a
+ * process-argument element, visible in /proc/<pid>/cmdline and `ps` to any local
+ * user (base64 is trivially reversed). GIT_CONFIG_COUNT/KEY_n/VALUE_n (git 2.31+)
+ * inject the same config via the environment (/proc/<pid>/environ — readable only
+ * by the same uid), mirroring the config-write path's GIT_ASKPASS protection and
+ * keeping the token out of the thrown error's `cmd` string.
+ *
+ * Why URL-scoped + host-gated: a bare `http.extraHeader` is sent on EVERY request
+ * git makes during the clone, i.e. to whatever host `gitUrl` names. Both the
+ * host gate and the URL scope confine the token to GitHub (see git's
+ * `--get-urlmatch` semantics: it matches by host, not string prefix).
+ *
+ * Returns an empty object — no credential attached — when there is no token or
+ * the clone host is not GitHub (public/other-host clones still proceed, just
+ * unauthenticated; a private non-GitHub repo fails without leaking the token).
+ */
+export function cloneTokenEnv(
+  token: string | undefined,
+  gitUrl: string,
+): Record<string, string> {
+  if (!token) return {};
+
+  let origin: string;
+  let hostname: string;
+  try {
+    const parsed = new URL(gitUrl);
+    origin = parsed.origin;
+    hostname = parsed.hostname;
+  } catch {
+    return {};
+  }
+
+  // Never hand the GitHub token to a non-GitHub host.
+  if (hostname !== TOKEN_ALLOWED_GIT_HOST) return {};
+
+  const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    // URL-scoped: git sends this header ONLY to requests under `${origin}/`.
+    GIT_CONFIG_KEY_0: `http.${origin}/.extraHeader`,
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${encoded}`,
+  };
+}
+
+/**
+ * Pin the git clone transport via GIT_ALLOW_PROTOCOL — belt-and-braces on top of
+ * the https-only `gitUrl` schema and the `--` argv separator. This stops git from
+ * using a command-executing (`ext::`) or otherwise unexpected transport even if a
+ * git config rewrite or a future clone-path change tried to introduce one.
+ *
+ * Returns 'https' for every scheme EXCEPT a literal `file:` URL, which returns
+ * 'file'. Production gitUrls are always https (schema-enforced), so they always
+ * pin to 'https'. `file` is reachable only from a `file://` gitUrl, which never
+ * occurs in production and exists solely for the local no-network integration
+ * fixtures; it permits reading a local repo, NOT command execution. `ext::`,
+ * `ssh://`, `git://`, etc. all collapse to 'https' — i.e. are blocked.
+ */
+export function cloneAllowProtocol(gitUrl: string): string {
+  try {
+    if (new URL(gitUrl).protocol === 'file:') return 'file';
+  } catch {
+    // Unparseable URL — fall through to the safe default.
+  }
+  return 'https';
+}
+
 /**
  * Default repo acquirer: reads localPath as-is, or performs a shallow
  * `--depth 1` single-branch default-HEAD clone using `AUDIT_GITHUB_READ_TOKEN`.
@@ -81,19 +161,34 @@ export async function defaultAcquireRepo(
   }
 
   const token = process.env['AUDIT_GITHUB_READ_TOKEN'];
-  const tmpDir = await mkdtemp(join(tmpdir(), `audit-clone-${target.name}-`));
+  // Sanitize the repo name before it becomes part of a filesystem path. The
+  // schema already constrains `name` to [A-Za-z0-9._-] (RepoNameSchema), but the
+  // mkdtemp prefix must never contain a path separator or `..` even if this
+  // function is ever called with an unvalidated target — belt-and-braces.
+  const safeName = target.name.replace(/[^A-Za-z0-9._-]/g, '_');
+  const tmpDir = await mkdtemp(join(tmpdir(), `audit-clone-${safeName}-`));
 
-  // Pass the token out-of-argv via http.extraHeader so the credential never
-  // appears in the process argument list (visible via /proc/*/cmdline, ps, etc.).
-  const cloneArgs: string[] = ['clone', '--depth', '1', '--single-branch', '--no-recurse-submodules'];
-  if (token) {
-    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
-    cloneArgs.push(`-c`, `http.extraHeader=AUTHORIZATION: basic ${encoded}`);
-  }
-  cloneArgs.push(target.gitUrl, tmpDir);
+  // `--` terminates git option parsing so a gitUrl can never be interpreted as
+  // a git option (defense-in-depth against argv option injection). The transport
+  // scheme itself is constrained to https at the schema layer (HttpsGitUrlSchema
+  // in src/schemas/targets.ts), so ext::/file:// positionals never reach here.
+  const cloneArgs: string[] = [
+    'clone', '--depth', '1', '--single-branch', '--no-recurse-submodules',
+    '--', target.gitUrl, tmpDir,
+  ];
+
+  // Clone env: pin the allowed transport (GIT_ALLOW_PROTOCOL) as defense in
+  // depth, and pass the auth header via GIT_CONFIG_* env vars (see cloneTokenEnv)
+  // rather than `-c http.extraHeader=...` on argv. The token is attached only for
+  // GitHub-hosted clones and URL-scoped to that origin.
+  const cloneEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_ALLOW_PROTOCOL: cloneAllowProtocol(target.gitUrl),
+    ...cloneTokenEnv(token, target.gitUrl),
+  };
 
   try {
-    await execFileAsync('git', cloneArgs);
+    await execFileAsync('git', cloneArgs, { env: cloneEnv });
   } catch (err) {
     await rm(tmpDir, { recursive: true, force: true });
     throw err;

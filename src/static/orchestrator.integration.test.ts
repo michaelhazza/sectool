@@ -67,13 +67,15 @@ beforeAll(async () => {
     const { stdout } = await execFileAsync('git', ['-C', workDir, 'rev-parse', 'HEAD']);
     seedCommitSha = stdout.trim();
   } finally {
-    await rm(workDir, { recursive: true, force: true });
+    // Retry rmdir to absorb the transient Windows EBUSY/EPERM from a git handle
+    // still open at cleanup time (teardown race, not a product bug).
+    await rm(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }, 60_000);
 
 afterAll(async () => {
   if (gitAvailable && bareRepoDir) {
-    await rm(bareRepoDir, { recursive: true, force: true });
+    await rm(bareRepoDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });
 

@@ -124,7 +124,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(tmpDir, { recursive: true, force: true });
+  // maxRetries/retryDelay absorb the transient Windows EBUSY/EPERM that fires
+  // when a just-exited git subprocess (or the AV/indexer) still holds a handle
+  // on a .git file at rmdir time — a teardown race, not a product bug. Without
+  // it, a locked handle turns cleanup into a spurious test failure on Windows.
+  await rm(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 // ---------------------------------------------------------------------------

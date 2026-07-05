@@ -11,5 +11,19 @@ export default defineConfig({
     // failures. Disable cross-file parallelism so the safety exit-condition test
     // is deterministic. Tests within a file already run sequentially.
     fileParallelism: false,
+    // The config-git / config-write / static-clone integration tests shell out to
+    // real `git` (a single test can spawn ~30 clone/fetch/commit/push processes
+    // against a local bare repo). On a loaded machine — especially Windows, where
+    // process spawn + AV scanning is slower — that legitimately exceeds the 5s
+    // default and times out spuriously. 30s gives real-git work headroom while
+    // still bounding a genuine hang. (Teardown rmdir also retries on Windows
+    // EBUSY; see the maxRetries in those tests' afterEach.)
+    testTimeout: 30_000,
+    // The same integration suites do their heavy real-git work in HOOKS —
+    // beforeEach clones/commits/pushes a fixture repo, afterEach does the
+    // (retrying) rmdir — which the 10s default hookTimeout is too tight for on a
+    // loaded Windows box, surfacing as "Hook timed out in 10000ms". Match the
+    // test-body budget so a slow hook doesn't masquerade as a failure.
+    hookTimeout: 30_000,
   },
 });

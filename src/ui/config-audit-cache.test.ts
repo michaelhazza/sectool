@@ -296,3 +296,91 @@ describe('canonical serialization — key-order independence', () => {
     expect(resultA.entries[0]!.hash).toBe(resultB.entries[0]!.hash);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HMAC keying — tamper-evidence when AUDIT_CACHE_HMAC_SECRET is set (audit L4)
+// ---------------------------------------------------------------------------
+
+describe('config-audit-cache HMAC keying (audit L4)', () => {
+  const ENV_KEY = 'AUDIT_CACHE_HMAC_SECRET';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = saved;
+  });
+
+  it('a chain written and read under the same secret verifies', () => {
+    const dir = tmpDir();
+    try {
+      process.env[ENV_KEY] = 'super-secret-key';
+      const path = CONFIG_AUDIT_PATH(dir);
+      appendAuditEntry(makeEntry(), path);
+      appendAuditEntry(makeEntry({ action: 'remove-host' }), path);
+      const result = readAuditChain(path);
+      expect(result.integrityOk).toBe(true);
+      expect(result.entries).toHaveLength(2);
+    } finally {
+      rmDir(dir);
+    }
+  });
+
+  it('keyed hashes differ from unkeyed hashes for the same entry', () => {
+    const dir = tmpDir();
+    try {
+      const path = CONFIG_AUDIT_PATH(dir);
+      delete process.env[ENV_KEY];
+      appendAuditEntry(makeEntry(), path);
+      const unkeyed = readAuditChain(path).entries[0]!.hash;
+
+      const dir2 = tmpDir();
+      try {
+        const path2 = CONFIG_AUDIT_PATH(dir2);
+        process.env[ENV_KEY] = 'super-secret-key';
+        appendAuditEntry(makeEntry(), path2);
+        const keyed = readAuditChain(path2).entries[0]!.hash;
+        expect(keyed).not.toBe(unkeyed);
+      } finally {
+        rmDir(dir2);
+      }
+    } finally {
+      rmDir(dir);
+    }
+  });
+
+  it('a chain written under a secret fails verification once the secret changes (tamper-evidence)', () => {
+    const dir = tmpDir();
+    try {
+      const path = CONFIG_AUDIT_PATH(dir);
+      process.env[ENV_KEY] = 'original-secret';
+      appendAuditEntry(makeEntry(), path);
+      expect(readAuditChain(path).integrityOk).toBe(true);
+
+      // Attacker without the secret cannot forge a valid chain; a different key
+      // (or a removed key) makes the recomputed HMAC diverge → integrity fails.
+      process.env[ENV_KEY] = 'attacker-guess';
+      expect(readAuditChain(path).integrityOk).toBe(false);
+    } finally {
+      rmDir(dir);
+    }
+  });
+
+  it('falls back to unkeyed sha256 when no secret is set (backward compatible)', () => {
+    const dir = tmpDir();
+    try {
+      delete process.env[ENV_KEY];
+      const path = CONFIG_AUDIT_PATH(dir);
+      appendAuditEntry(makeEntry(), path);
+      const result = readAuditChain(path);
+      expect(result.integrityOk).toBe(true);
+      // sha256 hex digest is 64 chars — same shape as before the change.
+      expect(result.entries[0]!.hash).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      rmDir(dir);
+    }
+  });
+});
