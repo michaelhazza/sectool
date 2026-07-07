@@ -1,21 +1,13 @@
 # Current Focus
 
-**Status:** MERGE_READY
+**Status:** NONE
 
-**Slug:** ui-live-config
-**Branch:** feature/ui-live-config (PR base: feature/flyio-dashboard-deployment — stacked)
-**Spec:** docs/superpowers/specs/2026-06-14-ui-live-config-editing-design.md
+**Slug:** —
+**Branch:** —
+**Spec:** —
 
-> Stacked on the flyio-dashboard PR (#1). ui-live-config makes the host allowlist
-> + registry live-editable through the dashboard (2FA-gated, git as source of
-> truth) — a deliberate rewrite of the v1 §4 "no override path" contract (see
-> ADR-0007, CLAUDE.md). 8 chunks (C0-C8); claude-plan-review (3 HIGH + 5 MED
-> applied pre-build); adversarial review (2 HIGH revspec-injection + TOTP-brute
-> + 4 MED/LOW fixed). Gates green: lint/typecheck/build:server/build:client/
-> test:unit 1055. PR #2 awaiting final human review — NOT auto-merged (highest-
-> stakes change: a repo-write token on the dashboard + the safety-contract rewrite).
-
-**Prior (flyio-dashboard):** PR #1 open, MERGE_READY, awaiting review.
+> No active build. The concurrency lock is released — a new sprint/spec/build may
+> start. All prior builds have landed on the default branch (`claude/lucid-albattani-kczh64`).
 
 > Update this file when starting a new sprint, spec, or active feature branch. Status field is read by `context-pack-loader` to auto-pick a context pack.
 >
@@ -29,17 +21,26 @@
 
 ## Notes
 
-**Status: MERGE_READY (flyio-dashboard)** — fly.io deployment of the dashboard
-with on-demand scan triggering. 10 chunks built (env/auth/scan-jobs/healthz/
-scan-jobs API/`POST /api/scan`/`POST /api/upload`/CI workflows + uploader/
-Dockerfile.ui + fly.toml/UI Run-a-scan panel/docs). Reviewed: claude-plan-review
-(2 HIGH + 5 MED applied pre-build), spec-conformance (dropdown contract fixed),
-adversarial-reviewer (2 confirmed + 3 likely holes fixed: bearer compare,
-exact-URL scan gate, upload TOCTOU dedup, Basic-Auth method scoping, slow-loris
-timeouts, read-route traversal guard). Local gates green: lint ✓ typecheck ✓
-build:server ✓ build:client ✓ test:unit 924/924 ✓. Benchmark is Docker-only
-locally (scanner binaries live in the image) — validated by CI's benchmark job.
-PR open for final human review (not auto-merged, per operator). Also fixed a
-pre-existing Windows fast-glob bug in the AST harness. Last updated: 2026-06-14.
+**MERGED (full-audit) — PR #3, 2026-07-05.** Full-mode security audit of the app
+and its scan surfaces. Fixed H1 (gitUrl https-pin), M2 (loginPath root-relative),
+M1 (read-token off argv → host-scoped `GIT_CONFIG` header), M3 (ZAP includePaths
+regex-escaping), L1 (case-insensitive allowlist), L2 (repo-name charset), L4
+(opt-in HMAC audit-cache chain via `AUDIT_CACHE_HMAC_SECRET`), plus clone
+transport pinning (`GIT_ALLOW_PROTOCOL`). Two external PR-review rounds folded in
+(token host-scoping to github.com; `GIT_ALLOW_PROTOCOL`). Test-stability:
+`maxRetries` teardowns + `testTimeout`/`hookTimeout` 30s for the real-`git`
+integration suites on Windows. Merge commit `d6b6025`; CI green. Operational
+follow-ups tracked in `tasks/todo.md` (`origin:audit:full:2026-07-02`): rotate the
+`.dispatch-token` PAT; set `AUDIT_CACHE_HMAC_SECRET` to enable L4 tamper-evidence;
+Docker ZAP re-verify for M3.
+
+**MERGED (ui-live-config) — PR #2, 2026-06-14.** Live config/allowlist editing via
+the dashboard (2FA-gated, git as source of truth). Rewrote the v1 §4 "no override
+path" contract (ADR-0007). 8 chunks; claude-plan-review + adversarial review
+applied pre-build.
+
+**MERGED (flyio-dashboard) — PR #1, 2026-06-14.** fly.io deployment of the
+dashboard with on-demand scan triggering. 10 chunks; claude-plan-review +
+spec-conformance + adversarial-reviewer applied.
 
 **Prior (audit-tool-v1):** MERGED baseline at branch base 306410b.
