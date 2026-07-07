@@ -45,12 +45,12 @@ The `appliedMigrations: string[]` field in `.framework-state.json` is the source
 
 ## Authoring a new migration
 
-1. Look at the most recent migration file as a template
-2. Name it `v<version>.js` matching `.claude/FRAMEWORK_VERSION` at the time of authoring
+1. Copy `migrations/_template.js` to `v<version>.js`, matching `.claude/FRAMEWORK_VERSION` at the time of authoring. The template documents the full contract: exported `migrate(ctx)` signature, the `applied`/`skipped`/`conflict` return statuses and their state-recording semantics, and worked examples of the shared helpers.
+2. Use the shared helpers in `migrations/_helpers.js` (content normalisation + hashing, single-`*` glob expansion, state read/persist, the adopt-if-matches loop, idempotent `.gitignore` append) — do not copy-paste boilerplate from older migrations. The pre-v2.30.0 migrations (v2.8.0/v2.12.0/v2.13.0/v2.27.0) keep their inline copies deliberately: they have already run across the fleet and are frozen; do not refactor them onto the helpers. `_helpers.js` and `_template.js` are underscore-prefixed so the runner's discovery regex (`^v<semver>\.js$`) never executes them and the `migrations/v*.js` manifest glob never deploys them.
 3. Make it idempotent (use `existsSync`, content hashing, or marker files)
-4. Test by running `node scripts/run-migrations.js <consumer-root> <previous-version> <this-version>` against a smoke target
+4. **Tests are a required deliverable for every new migration.** Extend `tests/migrations.test.ts` (fixture harness: temp consumer root + fake framework root) with coverage for the new migration — at minimum fresh apply, idempotent re-run, and any conflict path. Run `npx tsx --test tests/migrations.test.ts`. Additionally smoke-test the real flow with `node scripts/run-migrations.js <consumer-root> <previous-version> <this-version>` against a smoke target
 5. Update `CHANGELOG.md` to reference the migration: `Migration: <script-name> — <what-it-does-and-why>`
-6. Ensure the file is in `manifest.json` `managedFiles` (the `migrations/*.js` glob covers it automatically)
+6. Ensure the file is in `manifest.json` `managedFiles` (the `migrations/v*.js` glob covers it automatically)
 
 ## Why migrations, not just sync.js
 

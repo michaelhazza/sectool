@@ -11,7 +11,7 @@
  * list and surfaces NEEDS_DISCUSSION per §3c rule 2 when it is non-empty.
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { resolveBaseRef } from './resolveBaseRef.js';
 import {
   buildFocusedDiffPackage,
@@ -31,13 +31,14 @@ function runGit(args: string): string {
  * Read the full diff for a single file against the base ref.
  */
 function getFileDiff(filePath: string, baseRef: string): string {
-  try {
-    return execSync(`git diff ${baseRef}...HEAD -- "${filePath}"`, {
-      encoding: 'utf-8',
-    });
-  } catch {
-    return '';
-  }
+  // spawnSync with array args avoids shell interpretation of filePath — a
+  // path containing quotes or shell metacharacters cannot break out of the
+  // argument (same rationale as sync.js getSubmoduleCommit).
+  const result = spawnSync('git', ['diff', `${baseRef}...HEAD`, '--', filePath], {
+    encoding: 'utf-8',
+  });
+  if (result.error || result.status !== 0) return '';
+  return result.stdout ?? '';
 }
 
 /**

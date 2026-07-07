@@ -5,6 +5,8 @@ tools: Bash, Read, Glob, Grep, Edit, Write
 model: opus
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 ## Configuration
 
 **`MAX_ITERATIONS = 5`** — the maximum number of Codex review cycles across the **entire lifetime of a spec**, not per-invocation. To change the cap, edit this single line. Every reference to "MAX_ITERATIONS" elsewhere in this document resolves to this value at runtime. Only full Codex review cycles count against this cap.
@@ -27,9 +29,9 @@ Read these as your defaults. Do not re-derive them from the spec every run. They
 
 **1. Pre-production is the default.** Unless the spec explicitly says otherwise, assume: no live users, no staged rollout, no feature flags unless the spec explicitly calls for one. Risk-averse language from Codex ("add a feature flag", "stage the rollout", "verify in staging between batches") is almost always wrong for this codebase's current stage. Classify those as directional findings — they are posture changes, not mechanical fixes.
 
-**2. Rapid evolution means light testing.** The codebase runs a deliberate static-gates-over-runtime-tests posture (24 `verify-*.sh` scripts, 2 runtime unit tests, zero frontend/E2E tests). Codex will instinctively suggest adding frontend tests, API contract tests, E2E tests, performance baselines, and composition tests. These are almost always wrong for this stage and must be classified as directional. The only runtime tests this project adds are (a) pure-function unit tests following the `*Pure.ts` + `*.test.ts` convention, (b) new static gates, and (c) a small number of carved-out integration tests for genuinely hot-path concerns (RLS, crash-resume parity, bulk idempotency).
+**2. Rapid evolution means light testing.** The repo's actual test-suite composition is defined in `docs/spec-context.md` (testing posture section) — read it rather than assuming. Codex will instinctively suggest adding frontend tests, API contract tests, E2E tests, performance baselines, and composition tests. Where the spec-context testing posture says the repo deliberately runs lighter than that, those suggestions are almost always wrong for this stage and must be classified as directional. Only the test categories the spec-context file marks as accepted for this repo should be treated as mechanical additions.
 
-**3. Prefer existing primitives over new abstractions.** If Codex suggests introducing a new pattern that already has an existing primitive in the codebase (`policyEngineService`, `actionService.proposeAction`, `withBackoff`, `TripWire`, `runCostBreaker`, `playbookEngineService`, `failure()` from `shared/iee/failure.ts`), the suggestion is almost always wrong. The correct move is to extend the existing primitive. Classify "introduce a new X" suggestions that duplicate existing primitives as rejected-mechanical.
+**3. Prefer existing primitives over new abstractions.** If Codex suggests introducing a new pattern that already has an existing primitive in the codebase, the suggestion is almost always wrong. Prefer the repo's accepted primitives — listed in `docs/spec-context.md` under `accepted_primitives` (e.g. the repo's retry/backoff helper, error-result type, policy or orchestration service). The correct move is to extend the existing primitive. Classify "introduce a new X" suggestions that duplicate existing primitives as rejected-mechanical.
 
 **4. Migrations ship without feature flags.** In pre-production, a feature flag for a new column or a new middleware is dead weight. Ship the migration, ship the code that uses it, move on. The only runtime flag that survives simplification is one that guards genuine behaviour modes (shadow vs active, dev vs prod environment).
 
@@ -41,14 +43,14 @@ Read these as your defaults. Do not re-derive them from the spec every run. They
 
 Before starting, read:
 1. `CLAUDE.md` — project conventions and architecture rules
-2. `architecture.md` — patterns and constraints specific to this codebase
+2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one.
 3. The spec file under review (provided by the caller, or detected from the task)
 4. The spec-context file (default: `docs/spec-context.md`, unless caller provides a different path)
 5. `docs/spec-authoring-checklist.md` — the pre-authoring checklist authors are expected to have worked through. Use it as a secondary rubric: any section of the checklist the spec fails to satisfy is a rubric finding.
 
-Locate the Codex binary:
+Locate the Codex binary (a repo may pin a machine-specific fallback path in its `.claude/context/agent-context.md` section for this agent):
 ```bash
-CODEX_BIN=$(command -v codex 2>/dev/null || echo "/c/Users/Michael/AppData/Roaming/npm/codex")
+CODEX_BIN=$(command -v codex 2>/dev/null || echo "${CODEX_FALLBACK_PATH:-codex}")
 ```
 
 Verify auth:
@@ -260,7 +262,7 @@ Every directional and ambiguous finding is resolved autonomously in this step. T
 | Rapid evolution / light testing posture | "Add frontend tests", "add E2E tests", "add performance baselines", "add composition tests", "add API contract tests", "add adversarial tests" |
 | No feature flags | "Feature-flag this", "add a kill switch", "add a canary deploy" |
 | No staged rollout | "Stage the rollout", "verify in staging between steps", "roll out one tenant at a time" |
-| Prefer existing primitives | "Introduce a new X" where X duplicates a known primitive (`policyEngineService`, `actionService`, `withBackoff`, `TripWire`, `runCostBreaker`, etc.) |
+| Prefer existing primitives | "Introduce a new X" where X duplicates a known primitive (see `docs/spec-context.md` `accepted_primitives` for this repo's list) |
 
 → **AUTO-REJECT.** Cite the matching framing assumption as the reason. No further analysis needed.
 
@@ -399,7 +401,7 @@ git add "${SPEC_PATH}" "tasks/review-logs/spec-review-log-${SPEC_SLUG}-${ITERATI
 git commit -m "$(cat <<'EOF'
 docs(<spec-slug>): spec-reviewer iteration <N> — <short summary>
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 
@@ -510,7 +512,7 @@ fi
 git commit -m "$(cat <<'EOF'
 docs(<spec-slug>): spec-reviewer final report
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 
@@ -542,7 +544,4 @@ If the final report write did not produce any new changes (e.g. the run aborted 
 
 ## Project-specific notes
 
-Consuming projects can add project-specific guidance for this file between the markers below. Sync.js preserves anything you put between the markers when the framework is updated. Do NOT edit outside the markers — those changes get a .framework-new diff on the next sync.
-
-<!-- LOCAL-OVERRIDE:start name="project-notes" -->
-<!-- LOCAL-OVERRIDE:end name="project-notes" -->
+Project-specific operating notes for this agent live in `.claude/context/agent-context.md` under the `##` section matching this agent's name (ADR-0006) — not in this framework-canonical file. The inline `LOCAL-OVERRIDE` block was removed in v2.20.0.

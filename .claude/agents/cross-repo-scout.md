@@ -5,11 +5,13 @@ tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 # cross-repo-scout
 
 Searches sibling repositories (local filesystem and/or GitHub) for prior solutions to a pattern or symbol. Returns a ranked list of at most 3 results using the Contract 2 scoring rubric, wrapped in a Contract 6 envelope with partial-result signalling.
 
-Wired into `spec-coordinator` Step 3a (duplication check) and `architect` Step 2 (approach selection). Those wirings land in Chunk 8a.
+Wired into `spec-coordinator` Step 3a (duplication check) and `architect` Step 2 (approach selection).
 
 ## 1. Caller contract — Inputs
 
@@ -51,8 +53,8 @@ Read `.claude/project-registries.json` from the consumer repo root. Access the `
 
 ```typescript
 interface SiblingRepoEntry {
-  name: string;           // short identifier, e.g. "altessa"
-  github: string;         // "owner/repo" format, e.g. "michaelhazza/altessa"
+  name: string;           // short identifier, e.g. "sibling-repo"
+  github: string;         // "owner/repo" format, e.g. "<owner>/<sibling-repo>"
   local_path: string;     // absolute path on the local filesystem
   is_framework_aligned: boolean;  // used for framework-alignment score in Contract 2
 }
@@ -184,4 +186,4 @@ Returns at most 3 results.
 - `spec-coordinator` Step 3a: dispatches with intent's Problem Statement + Desired Outcome as query. If compositeScore ≥ 80 on any result, recommends `merge with existing capability`.
 - `architect` Step 2: dispatches per candidate approach. Includes top-3 envelope in plan rationale.
 
-(Both wirings land in Chunk 8a.)
+(Both wirings are live in those agent files.)

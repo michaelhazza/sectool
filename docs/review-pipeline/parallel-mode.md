@@ -140,7 +140,7 @@ When the operator approves a proposal, the agent:
 3. Appends an entry to `tasks/review-logs/prompt-evolution-log.md` using the template in that file's header. Every edit is recorded with rationale, before/after, operator decision, and test outcome.
 4. Records the apply in the round's session log alongside the round's triage.
 
-**Note on framework canonical:** prompts live in `scripts/chatgpt-reviewPure.ts` (project-specific). Today the learning edits are project-local — each project tunes its own prompts based on its own A/B history. Promoting `chatgpt-reviewPure.ts` to framework-managed (so improvements cascade across projects) is a separate decision; flag the proposal but do not auto-apply to the framework.
+**Note on framework canonical:** `scripts/chatgpt-reviewPure.ts` (including the prompts) has been **framework-managed since v2.8.0** — it syncs from the framework submodule. A learning edit applied in a consuming repo therefore marks the file `customisedLocally` and will surface as a `.framework-new` merge on the next framework sync. That is the intended flow: tune locally, and when an edit proves out, upstream it to the framework repo (open a PR there) so the improvement cascades to every consuming project instead of being re-derived per repo.
 
 ### When the learning step does nothing
 

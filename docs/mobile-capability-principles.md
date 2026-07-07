@@ -143,6 +143,8 @@ Required: every hover-triggered behaviour must also fire on tap, focus, or be pe
 
 **The test.** Imagine using the UI with no mouse, only a finger. Every action must be reachable.
 
+This rule is also enforced at design time through the behaviour manifest: the **Interactive states** row of [`behaviour-manifest-template.md`](./behaviour-manifest-template.md) requires every hover state to declare its tap equivalent. Pin it there, do not re-document it per screen.
+
 ## Keyboard handling
 
 When the on-screen keyboard opens on a mobile device, it consumes roughly the bottom half of the viewport. Layouts that did not plan for this break visibly.
@@ -155,6 +157,8 @@ Required behaviour:
 - **No fixed-position elements over the keyboard.** A fixed bottom navigation bar that floats above the keyboard is a UX failure on most platforms; hide it when the keyboard is open.
 
 Test explicitly on every form-bearing screen: login, search, comment, modal, bottom-sheet.
+
+Keyboard-open behaviour is also pinned at design time: the **Input behaviour** row of [`behaviour-manifest-template.md`](./behaviour-manifest-template.md) requires each form screen to state its keyboard-open handling (focused input stays visible, submit reachable). Pin it there, do not re-document it per screen.
 
 ## Safe-area handling
 

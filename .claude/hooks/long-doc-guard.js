@@ -49,7 +49,7 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    const basename = filePath.split('/').pop() || filePath;
+    const basename = filePath.split(/[/\\]/).pop() || filePath;
     const chars = content.length;
     const lines = content.split('\n').length;
     // Rough chunk sizing: aim for ~4KB per chunk, minimum 3 chunks.
@@ -95,6 +95,6 @@ process.stdin.on('end', () => {
 function isDocFile(filePath) {
   if (!filePath) return false;
   if (DOC_EXT_RE.test(filePath)) return true;
-  const basename = filePath.split('/').pop() || '';
+  const basename = filePath.split(/[/\\]/).pop() || '';
   return DOC_BASENAME_RE.test(basename);
 }

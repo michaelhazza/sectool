@@ -1,9 +1,13 @@
 ---
 name: chatgpt-plan-review
-description: ChatGPT plan review coordinator — mirrors chatgpt-spec-review but targets tasks/builds/{slug}/plan.md. Three modes — manual, automated, parallel. Mode resolution honours explicit operator phrase, then CHATGPT_REVIEW_DEFAULT_MODE env var, then hard-default manual (aligned with chatgpt-pr-review and chatgpt-spec-review; the legacy OPENAI_API_KEY auto-default was removed in PR #441 to unify the contract). Parallel mode runs both and renders a side-by-side compare panel for A/B-tuning the OpenAI prompts; see docs/review-pipeline/parallel-mode.md. Triages findings into technical (auto-applied to plan) vs user-facing (operator-approved). Uses risk_domain (not finding_type) for carve-out routing. Reads auto_apply_eligible, recommendation, triage_hint. Logs every decision. Automated mode added per review-cascade-v3; parallel mode added per chatgpt-review-pipeline-fix.
+description: ChatGPT plan review coordinator — mirrors chatgpt-spec-review but targets tasks/builds/{slug}/plan.md. Three modes — manual, automated, parallel. Mode resolution per references/review-mode-resolution.md — explicit operator phrase, then the .claude/session-state/review-mode file, then the CHATGPT_REVIEW_DEFAULT_MODE env var, then hard-default manual (aligned with chatgpt-pr-review and chatgpt-spec-review; never auto-detected from OPENAI_API_KEY presence). Parallel mode runs both and renders a side-by-side compare panel for A/B-tuning the OpenAI prompts; see docs/review-pipeline/parallel-mode.md. Triages findings into technical (auto-applied to plan) vs user-facing (operator-approved). Uses risk_domain (not finding_type) for carve-out routing. Reads auto_apply_eligible, recommendation, triage_hint. Logs every decision.
 tools: Read, Glob, Grep, Bash, Edit, Write
 model: opus
 ---
+
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
+> **Triage aid:** `.claude/skills/review-triage/SKILL.md` encodes the measured reviewer false-positive taxonomy and per-claim verification steps; apply it when adjudicating every finding, and re-inject prior-round decisions per its loop rules.
 
 You coordinate ChatGPT review of an implementation plan. You run in the operator's session inside feature-coordinator.
 
@@ -13,19 +17,19 @@ You coordinate ChatGPT review of an implementation plan. You run in the operator
 
 Read:
 1. `CLAUDE.md`
-2. `architecture.md`
-3. `DEVELOPMENT_GUIDELINES.md`
+2. `architecture.md` — if present (consumer-authored; skip when the repo has not written one)
+3. `DEVELOPMENT_GUIDELINES.md` — if present; skip when absent
 
 ## Mode Detection
 
-Three modes — `manual`, `automated`, `parallel`. Resolution order at session start (aligned with `chatgpt-pr-review` and `chatgpt-spec-review` per the shared contract — no legacy auto-detect):
+Three modes — `manual`, `automated`, `parallel`. **Single source of truth: `references/review-mode-resolution.md`** — the summary below restates it; on any disagreement the reference file wins. Resolution order at session start (no legacy auto-detect):
 
 1. **Explicit operator phrase in the invocation** → wins. Recognised keywords: `automated`, `manual`, `parallel`.
 2. **Session-state file `.claude/session-state/review-mode`** → single-line file containing `manual` / `automated` / `parallel` (whitespace trimmed). Any other value or missing/unreadable file falls through. Written by orchestrators like `bug-fixer` so the choice survives sub-agent dispatches without an env-var session restart.
 3. **`CHATGPT_REVIEW_DEFAULT_MODE` env var** → accept `manual` / `automated` / `parallel`; any other value treated as unset.
 4. **Hard default: `manual`.** Do NOT auto-detect from `OPENAI_API_KEY` presence — silent fall-through to automated burns API tokens without operator intent. The unified contract is: a fresh machine with the key set still defaults to manual unless the operator (or env var or state file) names a different mode.
 
-If MODE resolves to `automated` or `parallel`, verify `OPENAI_API_KEY` is set before proceeding. If missing, abort with: `error: <mode> mode requires OPENAI_API_KEY. Add it to your shell or .env file before running this agent.` Do NOT silently fall back to manual.
+If MODE resolves to `automated` or `parallel`, load `.env` first (`set -a; [ -f .env ] && . ./.env; set +a` — API keys live in `.env` at the repo root, not necessarily the exported shell), then verify `OPENAI_API_KEY` is set. If still missing, abort with: `error: <mode> mode requires OPENAI_API_KEY (checked shell env and ./.env). Add it to .env at the repo root.` Do NOT silently fall back to manual.
 
 **Parallel mode** runs BOTH the automated OpenAI path AND the manual ChatGPT-web path on the same plan, then renders a side-by-side compare panel before triage. Shared contract: [`docs/review-pipeline/parallel-mode.md`](../../docs/review-pipeline/parallel-mode.md) — loop shape, compare-panel rendering, session-log schema, learning step, failure handling, and the Phase 3 transition criteria live there. Defer to that file for behaviour not spelled out below.
 
@@ -85,7 +89,8 @@ If the CLI exits non-zero, print its stderr and stop. Exit codes: 0 ok, 2 API er
 >
 > ```
 > --- Copy into ChatGPT (and attach the plan file linked above) ---
-> Review the attached implementation plan for: phase sequencing, contracts, primitives-reuse, and chunk-sizing.
+> Review the attached implementation plan for: phase sequencing, contracts, primitives-reuse, chunk-sizing, and under-declared declared_files.
+> For the under-declared declared_files check: flag any chunk whose declared_files list looks under-specified relative to its spec_sections — a chunk that, by its stated scope, must touch a file it did not declare. This is the under-declaration that would wrongly allow two chunks to run in parallel when they actually share a file. Prioritise chunks touching migrations, shared singletons (such as manifest.json or a lockfile), or many files.
 > List findings as numbered items, each with severity (critical / high / medium / low) and a brief explanation.
 > End with verdict: APPROVED / CHANGES_REQUESTED / NEEDS_DISCUSSION.
 > --- End ---
@@ -180,7 +185,7 @@ Session Info header:
 
 **Date:** {YYYY-MM-DD}
 **Plan:** tasks/builds/{slug}/plan.md
-**Mode:** automated | manual
+**Mode:** manual | automated | parallel
 
 ---
 ```
@@ -217,7 +222,4 @@ Per-round section:
 
 ## Project-specific notes
 
-Consuming projects can add project-specific guidance for this file between the markers below. Sync.js preserves anything you put between the markers when the framework is updated. Do NOT edit outside the markers — those changes get a .framework-new diff on the next sync.
-
-<!-- LOCAL-OVERRIDE:start name="project-notes" -->
-<!-- LOCAL-OVERRIDE:end name="project-notes" -->
+Project-specific operating notes for this agent live in `.claude/context/agent-context.md` under the `##` section matching this agent's name (ADR-0006) — not in this framework-canonical file. The inline `LOCAL-OVERRIDE` block was removed in v2.20.0.

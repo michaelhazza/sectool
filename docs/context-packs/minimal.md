@@ -2,12 +2,12 @@
 
 For: trivial changes — single-file fix, typo, comment-only change. No design decisions.
 
-Status: scaffold (2026-05-03).
+Status: template — anchors must be mapped at adoption.
 
 ## Sources
 
 - `CLAUDE.md` § Local Dev Agent Fleet (the table only, ~30 lines)
-- `architecture.md#key-files-per-domain` (the table only, ~50 lines)
+- `architecture.md` `{{ARCHITECTURE_ANCHOR:key-files-index}}` (the table only — placeholder token; ADAPT.md Phase 3b / the adopting operator maps it to the real anchor)
 - `references/test-gate-policy.md` (one screen)
 
 ## Skip

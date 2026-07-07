@@ -3,7 +3,7 @@
 /**
  * v2.13.0 migration — two halves, one migrate() function.
  *
- * Half 1 (Chunk 1): idempotently append 'tasks/builds/[*]/.phase'
+ * Half 1 (Chunk 1): idempotently append 'tasks/builds/*/.phase'
  * to the consumer .gitignore so per-build phase marker files are not
  * committed to version control. Phase markers are ephemeral coordination
  * state; they must not appear in git history.

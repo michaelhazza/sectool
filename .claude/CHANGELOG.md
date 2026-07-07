@@ -32,6 +32,232 @@ Repos can stay on older versions intentionally. The framework is designed to be 
 
 ---
 
+## 2.30.1 — 2026-07-07
+
+**Highlights:** packaging fix — `CONTRIBUTING.md` and `SECURITY.md` become `adopt-only` (seeded once, consumer-owned thereafter).
+
+**Fixed:** 2.30.0 shipped `CONTRIBUTING.md` and `SECURITY.md` as `mode: sync`, but both files' content is framework-repo-specific (contributor workflow for the framework itself; the framework's security posture). In a consuming repo, sync mode overwrite-conflicts with the consumer's own CONTRIBUTING/SECURITY docs — the origin repo's real `CONTRIBUTING.md` surfaced as a `.framework-new` conflict on first 2.30.0 sync. `adopt-only` seeds the files into repos that lack them and leaves existing consumer versions untouched.
+
+## 2.30.0 — 2026-07-07 — Audit remediation: sync-engine hardening, self-testing CI, fleet tooling
+
+**Highlights:** Implements all five workstreams of the 2026-07-07 exhaustive framework audit (issue #32, ~45 findings). Sync engine: false-conflict short-circuit + self-healing state, atomic managed writes, adopt-divergence detection, downgrade guard, orphaned-conflict scan, symlink refusal. Fleet tooling: three-way `.framework-new` merge helper + `/claudemerge`, `/claudeupdate --status`, `/framework-init`, `/release`, `/framework-doctor`. CI now discovers tests by glob (4 shipped test files that never ran now run — one immediately caught a real agent regression), `npm test`/`npm ci` work locally, and frontmatter/schema/link/bundle-hygiene validation gates ship. Three new hooks close the Bash bypass of config protection, enforce KNOWLEDGE.md append-only, and warn on unresolved merges at session start. Consumer machinery generalised: code-graph generator (completes the previously inert freshness hook), five generic verify-gates, parameterised regression-scribe, three review hunt-targets upstreamed. Three new skills; cross-skill dedupe with declared owners; ADR-0014 created; origin-project pollution stripped from the bundle.
+
+**Breaking / migration notes:**
+- Migration `v2.30.0.js` appends `*.framework-new` to consumer `.gitignore` (idempotent).
+- Hooks manifest glob replaced with per-file entries; hook `*.test.js` files no longer sync to consumers (already-synced copies are harmless; `/cleanfiles` or manual delete).
+- `--adopt` now flags pre-existing divergent files (`customisedLocally: true` + `.framework-new`) instead of silently baselining them — matches the documented contract.
+- sync.js refuses downgrades unless `--force-downgrade`.
+- Code-graph cache format bumped to v2; consumers get a one-time rebuild. `verify-duplicate-blocks.sh` needs jscpd (via npx).
+
+**Added:** `scripts/framework-merge.js` + `/claudemerge`; `/framework-init`, `/release`, `/framework-doctor`; `/claudeupdate --status`; `migrations/_helpers.js` + `_template.js` + `v2.30.0.js`; `tests/migrations.test.ts` + `tests/sync-hardening.test.ts`; hooks `bash-config-guard` (protects config paths AND KNOWLEDGE.md from all Bash write shapes), `knowledge-append-guard` (strict append-only: any non-tail-append edit requires HITL), `framework-merge-reminder` (+ tests for long-doc-guard, correction-nudge, code-graph-freshness-check); `scripts/run-tests.js` (glob test discovery), `scripts/validate-framework.js` (+allowlist; frontmatter, schema-compile, links, bundle hygiene); `package.json` scripts + pinned devDependencies + lockfile; `scripts/build-code-graph.ts` + `scripts/code-graph-health-check.ts` (dependency-free); `scripts/gates/` (5 generic verify-gates + README); `regression-scribe` agent (parameterised); skills `dependency-upgrades`, `performance`, `logging-observability`; ADR-0014 (coordinators run inline) + consumer-owned local-ADRs slot in the ADR index; `docs/capabilities-template.md`, `docs/codebase-audit-framework-template.md`, `docs/agent-selection.md`, `CONTRIBUTING.md`, `SECURITY.md`; `tasks/builds/_example/spec.md` + `chunk-learnings.md`; `tasks/runbooks/README.md`; G3 row in `references/iteration-caps.md`; builder DB-migration carve-out; finalisation Step 12.5 advisory release notes; experiment-runner P95 worked example.
+
+**Changed:** CI runs via npm scripts with glob discovery, `npm ci`, fetch-depth 0, removedFiles-absence + schemas-changelog gates; `config-protection` repo-root walk-up fixes a silent fail-open; audit-runner holds its push until its self-run post-audit review pass completes; mockup-reviewer promoted to Opus; chatgpt-plan-review description restores the session-state mode tier and drops provenance slugs; adversarial-reviewer "Phase 1 advisory" renamed "advisory (rollout mode)"; consumer-only doc cites marked "if present" across 15 agents; read-instruction restored as first body line in the three chatgpt-review agents (2.28.0 regression caught by the newly-running e2e test); cross-skill rules deduplicated with declared owners; sibling frontend skill triggers made disjoint; db-concurrency bullets split; `chatgpt-reviewPure.ts` gains three hunt-targets from the consumer review-learning loop; SYNC.md documents the far-behind squash path and automated gitignore step; MIGRATION-FROM-COPY-PASTE.md §3 corrected (no prompts; seed substitutions, then `--adopt`); README What-ships regenerated (manifest-authoritative footnote); ADAPT.md Phase 3c seeds project-registries from the existing template.
+
+**Removed:** origin-project pollution from the bundle — 5 real build dirs under `tasks/builds/`, 8 origin review logs, `tasks/review-logs/openai-raw/` and `.parallel-mode/` raw model output (bundle-hygiene gate now enforces this); redundant `.framework-new` gitignore manual step.
+
+**Deferred (explicitly not in this release):** running the review-tier redundancy audit (runbook `references/review-tier-redundancy-audit.md`; requires accumulated `_index.jsonl` decision data that does not exist yet).
+
+## 2.29.0 — 2026-07-07 — /cleanfiles repo-maintenance command
+
+**Highlights:** New operator command `/cleanfiles` — a repo-maintenance sweep for the working files every consuming repo accumulates (KNOWLEDGE.md, tasks/todo.md, lessons, review logs, merged-build artifacts, stale current-focus pointers, prototypes, session state). Audit-first with operator confirmation, archive-with-pointer for knowledge content, git-history-backed removal for the rest, docs-only diff guard, one reviewable commit on a `chore/cleanfiles-<date>` branch. Configurable retention via `.claude/cleanfiles.json`.
+
+**Breaking:** none — purely additive. The command syncs to consumers via the existing `.claude/commands/*.md` manifest glob.
+
+**Added:**
+- `.claude/commands/cleanfiles.md` — the `/cleanfiles` command: modes (`audit`, default confirm-then-apply, `--yes`), 9 cleaning targets with per-target process, hard safety rules (never delete knowledge; untracked files report-only; docs-only guard), size thresholds for suggesting a sweep, and the before/after report format.
+- README What-ships row for `.claude/commands/`.
+
+## 2.28.2 — 2026-07-07
+
+**Highlights:** settings-merge idempotency fix — hook identity now recognises every `$CLAUDE_PROJECT_DIR` quoting variant, so consumer `settings.json` hooks no longer duplicate on every sync.
+
+**Fixed:** `sync.js` `frameworkHookIdentity` / `isFrameworkOwnedCommand` only matched the `${CLAUDE_PROJECT_DIR}` (braced, unquoted) prefix; when 2.28.0 changed canonical hook commands to the quoted `"$CLAUDE_PROJECT_DIR"` style, every framework hook stopped being recognised as framework-owned and the settings merge appended a fresh copy of every hook on every sync (consumers accumulated 2-3 registrations per hook; duplicated config-protection instances also consumed the one-shot HITL sentinel and deadlocked approved edits). Identity is now normalised to the `.claude/hooks/<file>` suffix across all prefix spellings (braced/unbraced/quoted/bare), `isFrameworkOwnedCommand` delegates to it, and merged hook lists dedupe by identity (first occurrence wins; agent-type hooks without a `command` key dedupe by full shape). Existing accumulated duplicates collapse to one entry per hook on the next sync. Regression suite: `tests/settings-merge.test.ts § hook identity — quoting variants`.
+
+## 2.28.1 — 2026-07-07
+
+**Highlights:** lint-hygiene patch for the build-scheduler validator pair — no behaviour change.
+
+**Fixed:** `scripts/build-scheduler/validatePlanMetadata.ts` used `let` for a never-reassigned binding (fails `prefer-const` in strict consumer repos); now `const`. `scripts/build-scheduler/__tests__/validatePlanMetadata.test.ts` cast invalid-input fixtures with `as any` (fails `no-explicit-any`); now `as never`. Both changes make canonical content identical to what lint-strict consumers (origin repo) had to fork locally, eliminating those forks.
+
+## 2.28.0 — 2026-07-06 — Distilled-judgment skill library
+
+**Highlights:** Ships 14 new portable skills distilled from a consuming repo's accumulated engineering knowledge base (~470 lessons) and an exhaustive mine of its full review-log corpus (~1,900 logs in 194 batches across the Codex, ChatGPT, Claude, and spec-conformance reviewer families; ~5,300 accepted-defect and ~1,300 rejected-finding mentions). Each skill encodes the recurring defect classes reviewers actually caught, as write-time rules, so builders prevent at authoring time what the review pipeline previously caught two tiers later. Skills are trigger-described for automatic surfacing and wired into the builder and reviewer agent contracts.
+
+**Breaking:** none — purely additive. Consuming repos receive the skills as `new` files on next sync; no migration required.
+
+**Added:**
+- `tenant-isolation` — multi-tenant data boundaries: RLS context loss in jobs/workers/webhooks, FK non-propagation, explicit tenant predicates, client-supplied scope ids, IDOR on nested routes.
+- `postgres-migrations` — SQL three-valued logic, CHECK/enum/index discipline, ORM↔migration sync, renumbering protocol.
+- `db-concurrency` — upsert/idempotency-key correctness, guarded state transitions, lock discipline, queue retry/recovery, DB-time rules.
+- `wire-it-through` — the "shipped but unwired" class: consumer-site verification for every new artifact, boundary field tracing, client↔server contract parity, value-set renames.
+- `fail-loud` — fail-closed defaults, catch-block rules, 4xx/5xx contracts, observability of failure.
+- `ci-gate-integrity` — gates that cannot fail: grep-gate pitfalls, diff-gate refs, baselines, workflow consolidation, Actions specifics.
+- `test-discipline` — vacuous tests, mock/reorder hazards, test-kind selection, fixture determinism, verifiable acceptance criteria.
+- `review-triage` — the measured false-positive taxonomy for adjudicating external/LLM reviewer findings, per-claim verification steps, loop-convergence signals, the security auto-apply carve-out.
+- `spec-hygiene` — grounding specs in the real tree, document self-consistency sweeps, contract-level rules, the ranked conformance checklist.
+- `frontend-correctness` — React state lifecycle, async races, permission fail-closed, data-handling pitfalls.
+- `security-hardening` — tokens/nonces, SSRF/redirects, injection surfaces (URL, shell, SQL fragments, ReDoS, prompt), authorization shape.
+- `frontend-design-check` — thin trigger skill routing direct UI edits (outside the mockup pipeline) to the canonical design docs and the five hard rules.
+- `refactor-safely` — moves/splits/renames/deletions: move-executed-as-copy, replace-all indentation misses, split verification, dead-code caution, merge-conflict provenance.
+- `llm-integration` — the model as an unreliable injectable dependency: self-report distrust, echo canonicalisation, prompt trust channels, lock/retry/budget shape, judge harness rules.
+
+**Changed:**
+- `builder.md` — Step 3 now requires consulting the matching skill(s) before writing code in a covered area (table added to the minimal-change checks).
+- `pr-reviewer.md` — Specific Things to Check points at the defect-pattern skills as a review checklist source.
+- `dual-reviewer.md`, `chatgpt-pr-review.md`, `chatgpt-spec-review.md`, `chatgpt-plan-review.md` — adjudication sections point at the `review-triage` skill.
+- `README.md` — What-ships table reflects 16 portable skills.
+
+---
+
+## 2.27.0 — 2026-07-05 — Harness-audit remediation + visual-craft layer
+
+**Highlights:** Largest hardening release to date, driven by a full-harness audit (spec + findings in `tasks/builds/harness-audit-remediation/`). Closes verified hook bypasses (config-protection MultiEdit, phase-lock fail-closed), removes an LLM-output shell-injection surface in the review apply path, fixes the sync engine's same-version rebaseline trap, and reconciles every cross-agent contradiction the audit catalogued (double-merge hazard, spec-location split, review-mode defaults, doc-sync cardinality, test-runner idiom, gate-name collision). Purges origin-project leakage from all canonical files. Adds CI, and ships the visual-craft layer for the mockup pipeline (design-language template, reviewer Axis 5, mandatory polish round).
+
+**Breaking / migration notes for consuming repos:**
+- **Origin-specific content moved out of canonical agents.** Repos that relied on baked-in specifics (the origin PR-review checklist, adversarial-reviewer identifiers, Codex fallback path, mockup nav/route registry pins) must now pin them in `.claude/context/agent-context.md` under the matching agent section (ADR-0006). Machine-specific Codex path: set `CODEX_FALLBACK_PATH` or pin in agent-context.
+- **Spec location standardised on `tasks/builds/{slug}/spec.md`.** Repos using a dated-specs directory keep it but must stub the canonical path (spec-coordinator Step 6 back-compat rule).
+- **`chatgpt-pr-review` INVOCATION CONTEXT.** Coordinators must pass `coordinator-invoked`; the agent's own merge/label/CI steps are forbidden in that context (double-merge fix).
+- **Review-mode default is `manual` everywhere** — the `OPENAI_API_KEY`-presence auto-default is gone from feature-coordinator too. Opt into automated via `CHATGPT_REVIEW_DEFAULT_MODE=automated` (see `references/review-mode-resolution.md`).
+- **Finalisation auto-fix guardrails renamed G1–G4 → AF1–AF4.** Any local prose citing the old names should be updated.
+- **`doNotTouch` is now enforced** as a hard write-refusal by sync.js, and `manifest.frameworkVersion` must match `FRAMEWORK_VERSION`.
+- Deleting an unwanted agent now requires a `syncIgnore` entry (ADAPT Phase 1.5 / MIGRATION §4 document the mechanism; the old "deletions stick" claim was false).
+
+**Added:** `references/review-mode-resolution.md` (MODE/AUTONOMY single source of truth); `references/iteration-caps.md` (all 18 loop caps in one table); `references/review-tier-redundancy-audit.md` (the 2.21.0 measurement method as a runbook — prerequisite for cutting review tiers); `docs/design-language-template.md` + two-doc contract section in `frontend-design-principles.md`; mockup-reviewer **Axis 5 — Visual craft** (gating with a design-language doc, advisory without); mandatory visual polish round in mockup-coordinator/spec-coordinator (default-on, operator opt-out recorded in the log); `tasks/review-logs/prompt-evolution-log.md` template; `.github/workflows/ci.yml` (all four test suites + manifest/settings validity + version consistency); `.claude/hooks/config-protection.test.js` (28 cases); `scripts/verify-chatgpt-model.ts` (restored); `migrations/v2.27.0.js`; `.claude/hooks/package.json` and `references/project-extensions-convention.md` now managed.
+
+**Changed:** doc-sync verdict tables derive from the `docs/doc-sync.md` registry at run time (hard-coded 6/7-doc templates removed; `docs/design-language.md` registered conditionally); test-runner rule unified (single-file runner rule in `references/test-gate-policy.md`); chatgpt-pr-review standalone CI loop aligned with the coordinator (5 remedies, label-pull-first, squash); adversarial-reviewer → opus, mockup-reviewer → sonnet; context packs use `{{ARCHITECTURE_ANCHOR:...}}` tokens mapped at ADAPT Phase 3b; ADAPT/README/MIGRATION counts and submodule narrative corrected; spec-context template gains the four §9 testing-posture keys; co-author trailers normalised; spec-coordinator Step 3a revise loop capped at 3.
+
+**Fixed:** config-protection MultiEdit bypass (verified by execution; extractor now consumes top-level `file_path` — and the hook self-protects `.claude/settings.json` + hooks, with the sentinel bound to the relative path); phase-lock blocking legitimate writes when `CLAUDE_PROJECT_DIR` unset, and `..`-paths in unrestricted phases; shell injection via reviewer-controlled strings in `applyFindings.ts`/`buildDiffPackage.ts` (spawnSync array args; acceptance_check hardened across two review rounds to a command-SHAPE allowlist — `npm run <lint|typecheck|build*>`, `npx vitest run <path>`, `npx tsx --test <path>`, `vitest run <path>`, read-only `git <diff|status|rev-parse>` — with control-char/quote rejection and shell-less execution, closing both newline injection and overbroad binary authorization like `git clean -fdx`/`npx rimraf`); sync.js same-version runs now rebaseline resolved merges (maintenance mode); malformed consumer settings.json aborts instead of being overwritten; `callResponsesApi` timeout + 429/5xx retry; chatgpt-review.ts exit-code contract; schemas CHANGELOG reconciled to shipped enums and `reality_checker` removed from pr-context; missing 2.3.0/2.16.1 changelog headings backfilled; release-notify workflow fails loudly; settings.json hook paths quoted + SessionStart timeout; ~20 dangling references to unshipped specs/ADR-0014 stripped or inlined; dead scaffold text ("Chunk 8a/10", "(NEW)", superseded S0 force-rule, duplicate step numbers) removed.
+
+**Removed:** `reality_checker` key from `pr-context.schema.json`; personal Windows Codex path, "Automation OS" naming, `michaelhazza/altessa` example, `worker/.eslintrc` protection, origin primitives/test-stats/prototype paths from all canonical files; fictitious sync.js "Going backward" guard from SYNC.md.
+
+## 2.26.0 — 2026-07-04 — Builder reuse-before-duplicate check
+
+**Highlights:** Adds minimal-change check 5 (**Reuse-before-duplicate**) to `builder.md`. Repeated code blocks are the field's most-reported Claude Code failure mode, yet the builder's binding write-time checklist omitted the CLAUDE.md §6 "never duplicate logic" rule, and the Three-Similar-Lines check read like copy-paste licence. The new check requires the builder to Grep for an existing helper before writing a familiar-looking block, clarifies that Three-Similar-Lines limits new abstraction and never blocks reuse, and warns that projects with a duplicate-block CI gate (e.g. a jscpd ratchet baseline) fail on any net-new duplicated block. Sourced from the 2026-07-04 coding-process audit in the Automation OS repo (`docs/audits/coding-process-audit-2026-07-04.md` there), which mapped an external best-practice post against the pipeline: this was the single write-time gap found.
+
+**Changed:**
+- `.claude/agents/builder.md` — minimal-change check 5 (**Reuse-before-duplicate**) added; checklist intro updated to note checks 4-5 are field-sourced additions.
+
+**Breaking:** none.
+
+---
+
+## 2.25.0 — 2026-06-19 — Parallel worktree builders for independent chunks
+
+**Highlights:** Adds opt-in concurrent chunk dispatch to the `feature-coordinator` Step 6 build loop. Provably-independent chunks (disjoint `declared_files`, no shared `exclusive_resources`, no `depends_on` edge) can now build concurrently, each in its own git worktree, and integrate back to the feature branch serially in stable chunk-id order. Two new pure modules drive scheduling: `computeWaves.ts` (deterministic wave scheduler, unit-tested) and `validatePlanMetadata.ts` (plan-metadata validator, unit-tested). Architect now emits a snake_case `id`, `declared_files`, `depends_on`, `exclusive_resources` per chunk. File identity is compared case-insensitively (Windows/macOS-safe), and the diff-apply merge-back uses intent-to-add so a builder's untracked new files are integrated. The strict-sequential default is preserved byte-identically (A8 by non-execution: the new machinery is unreachable without an explicit opt-in). Integration uses `git apply --3way` (diff-apply, not `git merge`). Rollout: opt-in via `launch feature coordinator parallel` for the first 3 builds; then a one-line maintainer change flips the default.
+
+**Added:**
+- `scripts/build-scheduler/computeWaves.ts` — pure deterministic wave scheduler. Input: `ChunkNode[]` + `concurrencyCap`. Output: `Wave[]` + `serialisedReasons[]`. Algorithm: cycle detection, Kahn topological layering (stable by chunk-id), greedy pairwise-disjoint wave packing within each layer. Serialised-reason priority: `dependency` > `exclusive-resource` > `file-overlap` > `cap-spill`.
+- `scripts/build-scheduler/__tests__/computeWaves.test.ts` — Vitest unit tests (A1-A5, A8 support, cap-spill, cycle, unknown-dep-id, serialisedReasons priority).
+- `scripts/build-scheduler/validatePlanMetadata.ts` — pure plan-metadata validator + `parsePlanMetadata` (single snake_case-to-camelCase normalisation point). Path canonicalisation: backslash-to-slash, collapse double-slashes, resolve `.` segments, case-fold for intersection; rejects absolute paths, `..` segments, empty strings.
+- `scripts/build-scheduler/__tests__/validatePlanMetadata.test.ts` — Vitest unit tests (A6, snake_case fixture, path-canonicalisation cases, dangling deps, duplicate ids).
+- `docs/decisions/0008-parallel-worktree-builders.md` — ADR capturing the decision, safety argument, and alternatives considered.
+
+**Changed:**
+- `.claude/agents/architect.md` — per-chunk output spec now requires an `id:`, `declared_files:`, `depends_on:`, `exclusive_resources:` YAML block and a `## Build parallelism` section. Conservative-default stance and singleton-survey instruction added.
+- `.claude/agents/feature-coordinator.md` — Step 6 rewritten as a wave loop. Strict-sequential mode (the default) is gated off before any new machinery runs; when `effectiveCap == 1` or the opt-in phrase is absent, the old Step 6 loop runs verbatim. Parallel mode (opt-in phrase present, worktree available, `effectiveCap >= 2`): parse + validate plan metadata, compute waves, dispatch multi-chunk waves concurrently with `isolation: "worktree"`, serialise merge-back as a transaction in ascending chunk-id order using `git apply --3way`, clean-branch precondition + post-commit clean-state assertion, crash-safety resume (dirty branch on resume = reset + re-run), INDEPENDENCE_VIOLATION quarantine for remaining unintegrated siblings.
+- `.claude/agents/claude-plan-review.md` — under-declared `declared_files` hunt target added.
+- `.claude/agents/chatgpt-plan-review.md` — same under-declared-`declared_files` hunt target mirrored.
+- `.claude/agents/builder.md` — worktree-awareness note added (§6.1): builder may run inside an isolated git worktree; no behavioural change required.
+- `docs/decisions/README.md` — ADR-0008 row added; local-ADR reservation moved to 0009 (ADR-0007 was taken by the concurrently-merged grounded-mockups work).
+- `docs/doc-sync.md` — trigger row added for build-loop orchestration and chunk-metadata format changes.
+- `manifest.json` — `frameworkVersion` reconciled from 2.20.0 to 2.25.0; ADR-0008 row registered.
+
+**Breaking:** none. Strict-sequential mode is the default. No existing workflow changes without the explicit opt-in phrase.
+
+---
+
+## 2.24.0 — 2026-06-19 — Render-grounded mockups + behaviour capture
+
+> Version assigned during the coordinated reconcile with the parallel-worktree-builders work (which merged second and took 2.25.0). The grounded-mockups change merged first and takes 2.24.0; its files synced at merge time, the version number is finalised here.
+
+**Highlights:** The mockup pipeline now grounds designs in the *real rendered current state* of the surfaces they extend, not in a reading of the source code, and pins *interaction behaviour* as a first-class written deliverable. A new Playwright-driven capture script reuses each consuming repo's existing UI-test server + storageState auth to capture, per extended surface, a real screenshot (375/768/1280), a de-duplicated page-wide token sheet, and a structured DOM outline (real nav/tabs/headings/column-headers/status-pills). `mockup-reviewer` verifies the mockup against that observed capture (Axis 1) instead of re-reading the same source, closing the "designer and reviewer both trust the same wrong inference" loop. A behaviour manifest (fixed checklist) captures reveal model, interactive/async states, transitions, primary-action feedback, and input behaviour, gated for completeness (Axis 4) and pulled into the spec. Render-grounding is default-on when renderable, always degradable, never a hard gate. Generic across repos: the capture script references conventional consuming-repo paths only (ADR-0006) and degrades to source-read grounding where no UI-test harness exists. Rationale: ADR-0007.
+
+**Added:**
+- `scripts/mockup/capture-surface.ts` — impure Playwright orchestrator (attaches to the consuming repo's UI-test server, captures existing surfaces only, atomic screenshot writes, graceful degradation). Shipped; exercised live in consuming repos.
+- `scripts/mockup/capture-surfacePure.ts` + `scripts/__tests__/capture-surfacePure.test.ts` — pure token-sheet de-dup + DOM-outline pruning, Vitest-tested.
+- `scripts/mockup/capture-manifestPure.ts` + `scripts/__tests__/capture-manifestPure.test.ts` — capture-manifest contract (discriminated-union per-screen entry) + validator, Vitest-tested. The gate `mockup-reviewer` Axis 1 trusts.
+- `docs/behaviour-manifest-template.md` — fixed, grep-able interaction-behaviour checklist (`adopt-only`).
+- `docs/decisions/0007-ground-mockups-in-real-render.md` — ADR for the methodology choice (synced).
+
+**Changed:**
+- `mockup-designer` — Step 0a gains a render-capture sub-step (capture before drafting; ground in captured tokens + DOM outline; explicit logged fallback) and per-screen capture-status enumeration; new Step 3c authors the behaviour manifest.
+- `mockup-reviewer` — Axis 1 gains capture-aware checks (capture-present-or-downgrade-justified, mockup-matches-captured-vocabulary, token fidelity, fallback-explicit); new Axis 4 gates behaviour-manifest completeness; preamble + tier lists updated to four axes.
+- `spec-coordinator` — Step 6 pulls the behaviour manifest into an `## Interaction behaviour` spec section; Step 5/Step 9 handoff records the capture + behaviour manifests.
+- `mockup-coordinator` — per-round + Step 8 artifact discipline persists the capture and behaviour manifests alongside the existing mockup logs.
+- `docs/frontend-design-principles.md` — new "Ground in the real render" + "Interaction behaviour" subsections.
+- `docs/mobile-capability-principles.md` — hover-only and keyboard-handling rules cross-link the behaviour checklist.
+
+**Version:** assigned 2.24.0 in the coordinated reconcile (see the 2.25.0 entry above). The `managedFiles` entries for the capture scripts, tests, behaviour-manifest template, and ADR-0007 sync as registered; `frameworkVersion` is reconciled to 2.25.0 (the latest of the two coordinated releases).
+
+---
+
+## 2.23.0 — 2026-06-18 — `/fix-ci-gate-debt` command + finalisation gate-debt flag
+
+**Highlights:** A new operator-triggered slash command that exhaustively clears CI gate debt at the root (production code, not the tests/baselines) via a bounded audit→fix→re-audit loop, plus a finalisation-coordinator change that surfaces (never auto-runs) the command when a build merges past inherited trunk-health gate failures. Motivated by a consumer-repo build whose feature branch inherited main's accumulated gate debt (npm-audit, no-direct-boss-work, error-code-taxonomy baseline regressions) on merge and had to admin-squash past it. Generic across repos — the command discovers gates dynamically from each repo's CI workflow(s) and gate manifest; nothing repo-specific is hardcoded.
+
+**Added:**
+- `/fix-ci-gate-debt` (`.claude/commands/fix-ci-gate-debt.md`) — bounded (≤5 iteration) audit→fix→re-audit loop. Un-gameable by design: acceptance is a separate read-only auditor (`scripts/ci-gate-debt-audit.sh`, bootstrapped per-repo on first run) that enumerates gates by parsing the repo's CI config — the fixer cannot move the goalposts. Hard rules: baselines move DOWN only and only with the paired code fix; tests are never weakened/skipped; orphans deleted only after proof; root cause classified (production-bug vs test-bug vs false-positive vs accepted-external-debt) before any fix; cap-reached/stuck escalates rather than games.
+
+**Changed:**
+- `finalisation-coordinator` Step 13 — new §13.3 "Outstanding CI gate-debt flag": when a build completes with any required check still failing (typically inherited trunk-health debt surfaced by the S2/S3 merge, not introduced by the PR), the end-of-phase summary classifies each failure PR-introduced vs inherited and surfaces the `/fix-ci-gate-debt` command for the operator to run manually. It is NOT auto-invoked — debt cleanup is its own reviewable unit, so a feature PR never absorbs repo-wide debt it did not create. A matching plain-English line is added to the §13.1 CEO-summary "Further action required" rule.
+
+---
+
+## 2.22.0 — 2026-06-18 — PR-review hunt targets: persisted-output hygiene, claim/condition consistency, service-wiring test gaps
+
+**Highlights:** Folded three review heuristics into the canonical PR-review prompt (`scripts/chatgpt-reviewPure.ts`, `USER_PROMPT_PR_V2` Hunt targets). They were originally learned during a consumer-repo build and written into that repo's local copy of the script — drift that this release upstreams so every framework consumer gets them and the consumer can re-sync back to canonical. Prompt-content only; no API, schema, or agent-contract change.
+
+**Added:**
+- *Durable-storage / persisted-output hygiene* hunt target — flag upstream- or external-derived strings (readiness reasons, upstream status text, third-party error messages, raw model output) copied verbatim into durable or user-visible storage without an allowlist or content-class guard; recommend a closed enum + counts or an allowlisted projection.
+- *Claim/condition consistency* hunt target — flag a finding, log line, label, or persisted message that asserts a specific cause while its trigger predicate only checks a broader proxy.
+
+**Changed:**
+- *Test quality* hunt target extended — also flag security/permission-critical SERVICE WIRING (permission flags such as `includeRawContent:false`, tenant-scoped id passthrough, dedupe scope, no-raw-body guarantees) left untested when the pure logic is thoroughly covered.
+
+---
+
+## 2.21.0 — 2026-06-18 — Retire `reality-checker` from the review cascade
+
+**Highlights:** Retired the `reality-checker` agent after a cross-repo review-cascade redundancy audit (8 recent multi-tier builds) found it produced **zero net-new findings** in every build it ran, plus one false-assurance pass. Its only real function — refusing to mark a build done without supplied evidence — is retained as a `feature-coordinator` step; the actual code is already verified by `pr-reviewer`, `dual-reviewer`, and `adversarial-reviewer`. The Phase-2 branch-level review pass drops from `… → pr-reviewer → reality-checker → dual-reviewer` to `… → pr-reviewer → dual-reviewer`.
+
+**Breaking:** STANDARD-profile repos lose `reality-checker`. Profile counts: STANDARD 11→10, FULL 24→23. Any automation that invokes `reality-checker` or parses `reality-check-log-*` verdicts must drop it. Historical `reality-check-log-*` files are unaffected.
+
+**Removed:**
+- `.claude/agents/reality-checker.md` — moved to `.claude/agents/_retired/reality-checker-2026-06-18.md` (kept for history per Agent lifecycle; no successor).
+- `feature-coordinator.md` §8.4 (reality-checker invocation step) and its handoff verdict line; former §8.5/§8.6 renumbered to §8.4/§8.5.
+
+**Changed:**
+- `experiment-runner.md` — recommendation surfaces 3→2 (`reality-checker` numeric-gap surface removed).
+- `pr-reviewer.md` — caller-input contract no longer lists `reality-checker`.
+- `.claude/context/agent-context.md` valid-names list; `ADAPT.md` and `README.md` profile lists + counts.
+- `chatgpt-pr-review.md`, `chatgpt-spec-review.md`, `chatgpt-plan-review.md` — the `OPENAI_API_KEY` check now **loads `.env` first** (`set -a; [ -f .env ] && . ./.env; set +a`) before deciding the key is missing. Fixes the recurring false "OPENAI_API_KEY not set" abort when the key lives in `.env` but isn't exported into the shell.
+- `finalisation-coordinator.md` — Invocation section gains an explicit **Trigger phrases** list (`full finalisation`, `finalisation and merge`, etc. all map to the same end-to-end run) and a **Full-finalisation guarantee** block making the mandatory step chain unmissable: run all relevant CI locally (G5) → loop to green → apply `ready-to-merge` → watch Actions, on failure pull-label/fix/re-add/loop → squash-merge → summary report. Documents the finalise-without-merge variant and the distinction from "automated up to PR review."
+
+**Why:** Frontier models plus the existing pr-reviewer / dual-reviewer / adversarial passes already verify the code; the evidence-meta-gate added no net signal. Full evidence and overlap matrix in the consuming repo's `tasks/audits/review-cascade-prune-2026-06-18.md`. The `.env` and finalisation-cue changes are operator-reported papercuts folded into the same version.
+
+## 2.20.0 — 2026-06-17 — Agent files are framework-canonical: per-repo overrides move to a global agent-context file
+
+**Highlights:** Two changes. **(Part B, main)** Agent `.md` files under `.claude/agents/` are now framework-canonical and MUST NOT be edited per-repo (ADR-0006). The inline `LOCAL-OVERRIDE` mechanism is **deprecated for agent files** — all project-specific operating notes for an agent move to the consuming repo's new `.claude/context/agent-context.md`, under a `## <agent-name>` section, which every framework agent reads at the start of every run and treats as binding project context. This is the fleet-wide analogue of `CLAUDE.md`: one file the whole agent fleet reads, owned by the repo, never overwritten by a sync. A long section may link out to a `references/<topic>.md` file. Every framework agent gained one uniform, greppable read-instruction line after its frontmatter, and every agent's inline `project-notes` override slot was removed. **(Part A, small)** ChatGPT-PR review's "always write the diff file every round" mandate is hoisted into a prominent `### Diff-file discipline (manual + parallel)` invariant in `chatgpt-pr-review.md` and the per-round/On-Start steps are relabelled `[MANUAL + PARALLEL]`, closing a discoverability gap where `parallel` mode was covered only by inference; `finalisation-coordinator` Step 5's contract bullet was strengthened to match.
+
+**Breaking:** Consuming repos that carried inline `LOCAL-OVERRIDE` content in any `.claude/agents/*.md` must migrate that content to `.claude/context/agent-context.md` (one `## <agent-name>` section each) and re-sync the agents to clean framework copies. On the next sync, the framework agents no longer declare the `project-notes` slot, so any unmigrated in-slot content is orphaned and dropped (sync warns). Migrate before syncing. The `.claude/context/agent-context.md` template ships `adopt-only`; populate it per repo.
+
+**Added:**
+- `.claude/context/agent-context.md` — `adopt-only` template (manifest entry); the global per-repo agent-context file every framework agent reads each run.
+- `docs/decisions/0006-no-inline-agent-overrides.md` — ADR capturing the rule and rationale.
+- `validate-setup` Step 3a — agent-canonical gate: fails (critical) if any `.claude/agents/*.md` carries an inline `LOCAL-OVERRIDE` block or omits the `agent-context.md` read-instruction.
+- `scripts/__tests__/local-override-e2e.js` STEP 5 — asserts the framework's own agents are LOCAL-OVERRIDE-free and all reference `agent-context.md`.
+
+**Changed:**
+- Every `.claude/agents/*.md` — uniform read-instruction line added after frontmatter; inline `project-notes` `LOCAL-OVERRIDE` slot removed; `## Project-specific notes` section now points at `agent-context.md`.
+- `chatgpt-pr-review.md` — new `### Diff-file discipline (manual + parallel) — MANDATORY, NO EXCEPTIONS` block; On-Start "Prepare Round 1" and per-round step-9 relabelled `[MANUAL + PARALLEL]`.
+- `finalisation-coordinator.md` — Step 5 chatgpt-pr-review contract strengthened (diff file always at round 1, round summary incomplete without the link, mandatory in manual AND parallel); G5 prose references repointed from "the LOCAL-OVERRIDE block" to `.claude/context/agent-context.md`.
+- `ADAPT.md` — new mandatory rule section (ADR-0006).
+
+**Deprecated:**
+- Inline `LOCAL-OVERRIDE` blocks **in agent files only**. The mechanism remains valid for non-agent managed files (docs, references). See `references/local-override-convention.md` (deprecation note at top).
+
+**Migration (consuming repos):** on next sync, expect `.framework-new` for any agent that still carries customised content — migrate the content to `.claude/context/agent-context.md` first, then resolve the `.framework-new` by taking the framework copy, and re-baseline the agent's state entry. Populate `.claude/context/agent-context.md` from the shipped template.
+
 ## 2.19.0 — 2026-06-12 — G5-scoped: diff-scoped pre-merge verification mode for the G5 local CI-parity gate
 
 **Highlights:** The 2.18.0 G5 gate requires the FULL CI-parity suite locally before the ready-to-merge label — on large consuming repos that is 45–60+ minutes per attempt on a dev machine. G5 now has two modes, selected at the new Step 8c.2. **G5-scoped (default when the repo ships `scripts/g5-scoped.sh`)** runs only the checks the branch diff can plausibly trip: lint and typecheck always run in full (cheap, cross-file); test selection uses the runner's related-files mode (e.g. `vitest related --run <changed files>`) per suite, so only test files whose transitive import graph touches the changed code run; static gates are selected by a declarative path-glob → gate-script mapping table pinned in the consuming repo's script. **Full G5 remains as a mandatory escape hatch (not optional):** scoped mode REFUSES (distinct exit code 3) when the diff touches aggregate/global surfaces where subset runs are blind — migration directories, package manifests/lockfiles, the project's shared registry files, `*baseline*` files, the test-runner config, CI workflow files — or when a merge commit from main brought such changes into the branch (the real failure classes: migration-number collisions, baseline drift, allowlist grace-window expiry). Whichever mode runs records `G5 mode: scoped (<N> test files, <M> gates)` or `G5 mode: full (reason: <trigger>)` in the build's `progress.md`. The labeled CI run remains the system of record and the Step 11 label-pull discipline is unchanged; in scoped mode a labeled-CI failure's fix verification runs that check's FULL local-parity command plus a clean scoped pass.
@@ -90,6 +316,12 @@ Repos can stay on older versions intentionally. The framework is designed to be 
 **Breaking:** none.
 
 **Migration:** repos on 2.16.0 pick this up via `git submodule update --remote .claude-framework && node .claude-framework/sync.js`. The `spec-reviewer.md` change is outside the `LOCAL-OVERRIDE` markers, so project notes are preserved. To use `.env` loading for the OpenAI review CLI, ensure `dotenv` is installed in the consuming repo (optional; absent it, export `OPENAI_API_KEY` in the shell as before).
+
+---
+
+## 2.16.1 — 2026-06-08 — (backfilled heading) G1 gate narrowed to scoped lint; typecheck + build deferred to G2
+
+Shipped untagged between 2.16.0 and 2.16.2 (`builder.md` + `feature-coordinator.md`: per-chunk G1 runs scoped `eslint` on touched files plus builder-authored targeted tests only; typecheck and build:server/client moved to the end-of-construction G2 integrated-state gate). Heading backfilled so sync.js changelog-excerpt ranges spanning this version terminate correctly.
 
 ---
 
@@ -704,6 +936,12 @@ Minor-class change — additive agent + resolution tier + branch-resolution algo
 **Notes:**
 - This release closes drift accumulated over v2.2 → v2.3 → v2.4. The portable bundle is now ready to ship to consuming repos. Adoption flow (`ADAPT.md`) and sync flow (`SYNC.md`) are unchanged.
 - App-specific work (RLS migration guard, arch-guard, audit-prevention-gates baselines, `docs/capabilities.md` 10-cluster Asset Register content) is intentionally not portable and stays in the deployed tree only.
+
+---
+
+## 2.3.0 — 2026-05-14 — (backfilled heading) incident-commander agent + docs/incident-response.md
+
+Deployed-only release in the origin repo: added the `incident-commander` agent (SEV classification, timeline scribe, hotfix handoff, post-mortem drive) and `docs/incident-response.md`. Never shipped to the portable bundle on its own — ported to portable in 2.4.0 (see the 2.4.0 entry above). Heading backfilled so sync.js changelog-excerpt ranges spanning this version terminate correctly.
 
 ---
 

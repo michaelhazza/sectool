@@ -58,6 +58,12 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    ```bash
    cd <repo>
 
+   # 6a-pre. Capture pre-bump state (step 3's values, assigned as shell vars —
+   #         FROM_VERSION feeds the migration runner in 6b; OLD_SHA feeds the
+   #         commit message in 6f).
+   FROM_VERSION=$(cat .claude-framework/.claude/FRAMEWORK_VERSION)
+   OLD_SHA=$(git -C .claude-framework rev-parse --short HEAD)
+
    # 6a. Bump the submodule pointer (frameworkRoot now points to TARGET_SHA)
    git submodule update --remote .claude-framework
 
@@ -98,7 +104,7 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    migrations: ran pending migrations in (${FROM_VERSION}, ${TARGET_VERSION}]
    sync.js: applied managed files
 
-   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+   Co-Authored-By: Claude <noreply@anthropic.com>
    EOF
    )"
 
@@ -109,7 +115,8 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
 7. **On `.framework-new` conflict (6d trips):**
    - Do NOT auto-merge or auto-resolve.
    - Stop the one-shot for this repo and report `paused — manual merge of N .framework-new files`.
-   - Surface the file list to the operator. The operator merges, deletes the `.framework-new` sibling, then re-runs `/claudeupdate` for that repo.
+   - Surface the file list to the operator and suggest `/claudemerge` — it three-way merges the clean cases automatically (LOCAL vs last-applied BASE vs framework INCOMING) and leaves only genuine overlapping edits for hand-resolution.
+   - The operator merges (via `/claudemerge` or by hand), deletes any remaining `.framework-new` sibling, then re-runs `/claudeupdate` for that repo.
    - On re-run, any migration that returned `conflict` last time is retried (it is intentionally NOT recorded in `appliedMigrations` until it returns `applied` or `skipped`).
 
 8. **On migration failure (6b throws):**
@@ -130,6 +137,22 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    automation-v1-6th     866c667   866c667   -             -                  skipped — branch feature/foo
    ```
 
+## Status mode (`--status`)
+
+`/claudeupdate --status` is the read-only preview: it runs discovery + state gathering (steps 1–4) and stops. **Zero writes** — no submodule bump, no migrations, no `sync.js`, no commit, no push, in any repo.
+
+Print one table, one row per repo:
+
+```
+Repo                  Current              Target               Branch    Dirty   Eligible
+automation-v1         1702ae0 (2.27.0)     d302e29 (2.29.0)     main      no      yes
+automation-v1-3rd     866c667 (2.25.0)     d302e29 (2.29.0)     main      yes     no — uncommitted changes
+automation-v1-4th     866c667 (2.25.0)     d302e29 (2.29.0)     feat/x    no      no — on branch feat/x
+automation-v1-5th     d302e29 (2.29.0)     d302e29 (2.29.0)     main      no      already current
+```
+
+Columns: Repo; Current sha/version; Target sha/version; Branch; Dirty (working tree or submodule per step 3); Eligible (the step-5 decision, with the skip reason inline). If a repo has pending `.framework-new` files, append `— N .framework-new pending, run /claudemerge` to its Eligible cell. Close with the one-liner: "Run `/claudeupdate` to apply."
+
 ## Rules
 
 - **Never `--force` past dirty state.** If a repo isn't on `main` or has uncommitted work, skip and report. Don't try to be clever.
@@ -142,3 +165,5 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
 ## Arguments
 
 `$ARGUMENTS` — optional. Path to the directory to scan for consuming repos. Defaults to the parent of the current working repo.
+
+`--status` — optional. Read-only mode: discovery + state gathering only, print the per-repo table (see *Status mode*), write nothing. Combinable with a scan path: `/claudeupdate D:/projects/ --status`.

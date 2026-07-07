@@ -8,7 +8,7 @@ Architecture Decision Records — the "why" behind durable choices.
 
 This directory captures the durable decisions: "we chose X over Y, here's why, here's what we'd reconsider if Z." Future sessions retrieve them by domain, not by date.
 
-Lightweight ADR format inspired by Michael Nygard's original. Each ADR is one file, dated, immutable once accepted.
+Lightweight ADR format inspired by Nygard's original. Each ADR is one file, dated, immutable once accepted.
 
 ## Convention
 
@@ -46,13 +46,27 @@ Future sessions retrieve ADRs by:
 
 Update when adding ADRs.
 
+### Framework-shipped (canonical block — sync.js owns these rows; do not edit in consuming repos)
+
 | ADR | Title | Status | Domain |
 |-----|-------|--------|--------|
 | [0001](./0001-mixed-mode-review-agents.md) | Mixed-mode review agents (auto-fix mechanical, route directional) | accepted | review fleet |
 | [0002](./0002-interactive-vs-walkaway-review-agents.md) | Interactive vs walk-away review agent classification | accepted | review fleet |
 | [0005](./0005-risk-class-split-rollout-pattern.md) | Risk-class split rollout for read-vs-write enforcement gaps | accepted | rollout / enforcement |
+| [0006](./0006-no-inline-agent-overrides.md) | Agent files are framework-canonical — no inline per-repo overrides | accepted | framework / agent authoring |
+| [0007](./0007-ground-mockups-in-real-render.md) | Mockups ground in real rendered output, not source inference | accepted | framework / mockup pipeline |
+| [0008](./0008-parallel-worktree-builders.md) | Parallel worktree builders for independent chunks | accepted | build-orchestration |
+| [0014](./0014-coordinators-run-inline.md) | Coordinators and audit-runner run inline — never Agent-tool dispatched | accepted | framework / orchestration |
 
-ADRs 0001, 0002, 0005 ship as part of the framework — they are durable patterns that apply across projects. The numbering gap (no 0003 / 0004 in this bundle) reflects origin-project-specific ADRs that did NOT propagate. Start your project's local ADRs at 0006 to preserve the gap as a marker.
+ADRs 0001, 0002, 0005–0008, and 0014 ship as part of the framework — they are durable patterns that apply across projects. The numbering gaps (no 0003 / 0004, and the jump to 0014) reflect origin-project-specific ADRs that did NOT propagate. Starting your project's local ADRs at 0009 stays valid — 0014 is framework-reserved (consuming repos' agents already cite ADR-0014, so the framework claims that number rather than the next-in-sequence); skip it when numbering local ADRs.
+
+### Local ADRs (consumer-owned)
+
+Consuming repos add index rows for their local ADRs ONLY inside the slot below — `sync.js` preserves in-slot content across framework updates (see `references/local-override-convention.md`); rows added outside it trigger a `.framework-new` conflict on the next sync.
+
+<!-- LOCAL-OVERRIDE:start name="local-adrs" -->
+<!-- Consuming projects: add a table (same four columns: ADR | Title | Status | Domain) listing your local ADRs here. Number from 0009 upward; skip 0014 (framework-reserved). -->
+<!-- LOCAL-OVERRIDE:end name="local-adrs" -->
 
 ---
 

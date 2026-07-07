@@ -15,9 +15,9 @@ Example entry:
 
 ```json
 {
-  "name": "altessa",
-  "github": "michaelhazza/altessa",
-  "local_path": "c:/Files/Projects/altessa",
+  "name": "sibling-app",
+  "github": "<owner>/sibling-app",
+  "local_path": "c:/Files/Projects/sibling-app",
   "is_framework_aligned": true
 }
 ```
@@ -29,15 +29,15 @@ Full configuration in `.claude/project-registries.json`:
   ...other fields...
   "sibling_repos": [
     {
-      "name": "altessa",
-      "github": "michaelhazza/altessa",
-      "local_path": "c:/Files/Projects/altessa",
+      "name": "sibling-app",
+      "github": "<owner>/sibling-app",
+      "local_path": "c:/Files/Projects/sibling-app",
       "is_framework_aligned": true
     },
     {
-      "name": "release-control",
-      "github": "michaelhazza/release-control",
-      "local_path": "c:/Files/Projects/release-control",
+      "name": "another-sibling",
+      "github": "<owner>/another-sibling",
+      "local_path": "c:/Files/Projects/another-sibling",
       "is_framework_aligned": true
     }
   ]
@@ -47,3 +47,7 @@ Full configuration in `.claude/project-registries.json`:
 When the array is empty (`"sibling_repos": []`), cross-repo-scout has no data to search — `spec-coordinator` Step 3a and `architect` Step 2 silently skip the cross-repo prior-art surface.
 
 See `.claude/agents/cross-repo-scout.md` for the full caller contract and scoring rubric details.
+
+## `frameworkVersion` field — schema version, not framework release
+
+The template's `"frameworkVersion": "2.8.0"` records the **schema version the template shape was introduced at**. It is NOT the current framework release version and is deliberately not bumped on framework releases. Leave it as-is when copying the template into your repo; it only changes if the template's schema itself changes shape.

@@ -2,17 +2,19 @@
 
 For: building from a spec or plan — chunk-by-chunk implementation.
 
-Status: scaffold (2026-05-03).
+Status: template — anchors must be mapped at adoption.
 
 ## Sources
 
+> **Anchor placeholders:** `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens below are placeholders. ADAPT.md Phase 3b (or the adopting operator) must map each one to a real heading anchor in the consuming repo's `architecture.md`. Until mapped, fall back to loading the full referenced files.
+
 - `architecture.md`:
-  - `#project-structure`
-  - `#route-conventions`
-  - `#service-layer`
-  - `#migrations`
-  - `#shared-infrastructure-use-these-do-not-reinvent`
-  - `#architecture-rules`
+  - `{{ARCHITECTURE_ANCHOR:project-structure}}`
+  - `{{ARCHITECTURE_ANCHOR:route-conventions}}`
+  - `{{ARCHITECTURE_ANCHOR:service-layer}}`
+  - `{{ARCHITECTURE_ANCHOR:migrations}}`
+  - `{{ARCHITECTURE_ANCHOR:shared-infrastructure}}`
+  - `{{ARCHITECTURE_ANCHOR:architecture-rules}}`
 - `DEVELOPMENT_GUIDELINES.md`:
   - § 2 Tier boundaries
   - § 3 Schema layer rules

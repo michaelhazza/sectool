@@ -20,7 +20,9 @@ This file replaces ~10 duplicated copies of the same rule across the agent fleet
 - `npm run lint`.
 - `npm run typecheck` (or the dual-tsconfig form per `replit.md`).
 - `npm run build:server` / `npm run build:client` when the change touches the build surface.
-- **Targeted execution of unit tests authored for THIS change** — a single test file via `npx tsx <path-to-test>`. Confirm the new test runs and passes. Not to re-run anything else.
+- **Targeted execution of unit tests authored for THIS change** — a single test file at a time, run via **the project's configured test runner** (check `package.json` scripts / config; e.g. `npx vitest run <path-to-test>` in a Vitest repo). Only when the repo has NO configured runner is a bare-runtime fallback (`npx tsx --test <path-to-test>`) acceptable. Confirm the new test runs and passes. Not to re-run anything else.
+
+> **Single-file runner rule (unified 2.27.0):** this paragraph is the ONLY statement of which command runs a targeted test. Agent files reference it instead of naming a command — a repo whose quality gates reject `npx tsx` (e.g. via a verify-test-quality script) and a repo with no runner at all are both covered by the rule above.
 
 Authoring tests and gates is encouraged. Running the full battery of them locally is not. CI handles that.
 

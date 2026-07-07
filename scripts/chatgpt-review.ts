@@ -30,6 +30,8 @@
  *                                        if OpenAI serves a different model than requested.
  *                                        Default: off (warn only).
  *   CHATGPT_REVIEW_PROMPT_VERSION        prompt version to send (default: 2)
+ *   CHATGPT_REVIEW_TIMEOUT_MS            optional per-request timeout in ms
+ *                                        (default: 120000; see chatgpt-review-api.ts)
  *
  * Exit codes:
  *   0  ok — result written to stdout
@@ -263,6 +265,7 @@ function printHelp(): void {
       `  CHATGPT_REVIEW_MODEL                 optional model override\n` +
       `  CHATGPT_REVIEW_EFFORT                optional reasoning-effort override\n` +
       `  CHATGPT_REVIEW_PROMPT_VERSION        optional prompt version (default: 2)\n` +
+      `  CHATGPT_REVIEW_TIMEOUT_MS            optional per-request timeout in ms (default: 120000)\n` +
       `\n` +
       `exit codes:\n` +
       `  0  ok\n` +
@@ -431,13 +434,26 @@ async function main(): Promise<void> {
     userMessage = substitutePromptPlaceholders(userPromptTemplate, vars);
   }
 
-  const { content: rawContent, servedModel } = await callOpenAI(
-    apiKey,
-    parsed.model,
-    parsed.effort,
-    systemPrompt,
-    userMessage,
-  );
+  let rawContent: string;
+  let servedModel: string | null;
+  try {
+    const apiResult = await callOpenAI(
+      apiKey,
+      parsed.model,
+      parsed.effort,
+      systemPrompt,
+      userMessage,
+    );
+    rawContent = apiResult.content;
+    servedModel = apiResult.servedModel;
+  } catch (err) {
+    // Documented contract (header + --help): API errors exit 2 — previously
+    // these propagated to main().catch and exited 1, off-contract.
+    process.stderr.write(
+      `error: OpenAI API call failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(2);
+  }
 
   const modelMatch = compareModels(parsed.model, servedModel);
   const strict = parseStrictModelMatch(process.env.CHATGPT_REVIEW_REQUIRE_MODEL_MATCH);
@@ -596,5 +612,8 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+  // Exit 1 is not part of the documented contract — anything reaching this
+  // catch-all (unreadable --file, missing schema files, unexpected API
+  // failures) maps to the documented "API error or bad arguments" code.
+  process.exit(2);
 });

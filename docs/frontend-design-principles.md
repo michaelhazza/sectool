@@ -87,6 +87,30 @@ If a screen is entirely text, pause and ask: *is there a visual that would commu
 
 The caps in the [complexity budget](#complexity-budget-per-screen) below are about **defaulting away from the dashboard-of-dashboards anti-pattern** — rows of tiles, multi-chart explorers, observability sprawl. They are *not* a mandate against visual richness. Sparklines, inline gauges, status indicators, outcome badges, and load-bearing single hero visualisations are never counted against those caps.
 
+### Visual language — the two-doc contract
+
+This document decides **what goes on screen** (simplicity, complexity budget,
+progressive disclosure). Its sibling, the project's **design language doc**
+(default `docs/design-language.md`, scaffolded from
+`docs/design-language-template.md`), decides **how it looks**: type system,
+colour tokens, spacing/radii/elevation, motion, component recipes, and the
+ten-point craft bar.
+
+The split is load-bearing for the mockup pipeline:
+
+- `mockup-designer` reads BOTH every round — this doc to keep the screen
+  simple, the design language to make it beautiful with the house style; the
+  canonical token sheet (default `prototypes/_tokens.css`) is linked, never
+  forked.
+- `mockup-reviewer` grades operator-overload and grounding against this doc,
+  and **Axis 5 (visual craft)** against the design language's craft bar.
+- `mockup-coordinator` runs a **visual polish round** after the first CLEAN
+  review — craft only, layout/scope/copy frozen.
+
+A repo without a design-language doc still works: designers match the newest
+existing prototypes, Axis 5 degrades to advisory, and every round summary
+flags the missing doc until one is created from the template.
+
 ---
 
 ## What to defer by default
@@ -155,6 +179,20 @@ Read for method, not content. If you're adapting this framework to a new project
      badge conventions, stat-tile rules, banner behaviour, admin-control visibility, etc.
      Sync.js preserves your content here on framework updates. -->
 <!-- LOCAL-OVERRIDE:end name="project-ui-patterns" -->
+
+## Ground in the real render
+
+When a mockup extends an existing page, ground it in that page's real rendered state, not in a reading of its source code. Reading the source tells you roughly what a page should look like; it does not show you the real spacing, fonts, colours, component composition, or current copy that the page actually presents at runtime. A mockup grounded only in source is an approximation of an approximation, and any inaccuracy in it propagates straight into the build as drift.
+
+The mockup pipeline captures the live rendered current state of each surface being extended (a real screenshot, the page's real design tokens, and a structured outline of its real navigation, tabs, headings, table columns, and status labels) and grounds the design in that capture. The Before view of any Before and After pairing is the real capture, not a hand-drawn guess. Observe, do not infer.
+
+This is grounding input, never a gate. When the running app cannot render a surface (the dev server is down, the route is gated, the data is absent, or the surface is brand new), the pipeline falls back to grounding from source, and it records that downgrade with an explicit reason. A failed capture never blocks a design round; it only lowers the grounding quality, visibly.
+
+## Interaction behaviour
+
+Layout is only half of a design. Where things sit is captured in the mockup; how they behave is captured in the behaviour manifest. When interaction behaviour is left unwritten, it gets guessed during the build, and "looks right but feels wrong" is exactly the kind of rework that surfaces late and expensively.
+
+Every UI build carries a behaviour manifest that pins, per screen, the interaction contract: which content reveals on scroll versus on click versus on first paint, every interactive control's states (including the tap equivalent of any hover behaviour), the loading, empty, error, and populated states of each data region, the transitions and motion the design depends on, what the operator sees after the primary action, and how inputs validate and behave with the on-screen keyboard. The fixed checklist lives in [`behaviour-manifest-template.md`](./behaviour-manifest-template.md); do not duplicate its rows here, follow the template. The manifest is the contract the build honours; demonstrating a behaviour inline in the prototype is welcome where it is cheap, but the manifest is the source of truth.
 
 ## Re-check before delivery
 

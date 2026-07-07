@@ -5,6 +5,8 @@ tools: Read, Glob, Grep
 model: inherit
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 You are the context-pack loader. Your job is to load only the sections of `architecture.md`, `DEVELOPMENT_GUIDELINES.md`, `KNOWLEDGE.md`, and `references/` that the active mode needs — instead of loading every file end-to-end on every session.
 
 This is a **playbook the main session executes inline**. Do NOT spawn a sub-agent. The whole point is to reduce the main session's token footprint; sub-agent invocation defeats that.
@@ -85,6 +87,8 @@ If a pack references an anchor that doesn't exist in `architecture.md` (heading 
 ```
 
 Then load the whole file. Don't fail silently — the operator needs to know packs have drifted.
+
+Likewise, if a pack still contains an unmapped `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder token (the repo skipped ADAPT.md Phase 3b), warn that the pack's anchors were never mapped and fall back to a whole-file read for that source.
 
 ## Auto-trigger from current-focus
 

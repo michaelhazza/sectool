@@ -166,10 +166,10 @@ Every new tenant-scoped table (anything with `organisation_id` or `subaccount_id
 
 ### The four requirements
 
-1. **RLS policy** in the same migration that creates the table. See `your project's architecture documentation on tenant isolation (record the section number in \`docs/spec-context.md\`)` for the three-layer model and the exact policy shape.
-2. **Entry in `your project's tenant-isolation manifest`** — this is the manifest that `your project's tenant-isolation gates (CI scripts that enforce manifest coverage)` enforces. Missing entry = CI gate failure.
-3. **Route-level or middleware guard** if the table is accessed via HTTP. Name the guard in the spec (`authenticate`, `requirePermission(key)`, `resolveSubaccount`, or a new guard with a named location).
-4. **Principal-scoped context** if the table is read from an agent execution path. See `your project's architecture documentation on principal-scoped reads`.
+1. **RLS policy** in the same migration that creates the table. See your project's architecture documentation on tenant isolation for the three-layer model and the exact policy shape (record the section reference in `docs/spec-context.md` so reviewers can follow it).
+2. **Entry in your project's tenant-isolation manifest** — the registry file your tenant-isolation CI gates enforce coverage from, if your project has one. Missing entry = CI gate failure.
+3. **Route-level or middleware guard** if the table is accessed via HTTP. Name the guard in the spec (e.g. `authenticate`, `requirePermission(key)`, your tenant-resolution guard, or a new guard with a named location).
+4. **Principal-scoped context** if the table is read from an agent execution path. See your project's architecture documentation on principal-scoped reads, if applicable.
 
 ### Canonical RLS-posture sentence
 
@@ -193,8 +193,8 @@ If your spec introduces behaviour that crosses a transactional or latency bounda
 
 ### The three choices
 
-- **Inline / synchronous** — caller blocks on the operation. Use when the result must be available before the caller returns. Example: prompt assembly during an agent run. Do NOT add a `your project's queue technology (e.g. pg-boss, BullMQ, Sidekiq, Celery)` job row for inline operations.
-- **Queued / asynchronous (`your project's queue technology (e.g. pg-boss, BullMQ, Sidekiq, Celery)`)** — durable, survives restarts, retryable. Use when the operation is decoupled from the caller. Do NOT describe this as "the service does X" in prose — a job processor does X, and the spec should say so.
+- **Inline / synchronous** — caller blocks on the operation. Use when the result must be available before the caller returns. Example: prompt assembly during an agent run. Do NOT add a job row in your project's queue technology (pg-boss, BullMQ, Sidekiq, Celery, or whatever your stack uses) for inline operations.
+- **Queued / asynchronous** — a durable job in your project's queue technology; survives restarts, retryable. Use when the operation is decoupled from the caller. Do NOT describe this as "the service does X" in prose — a job processor does X, and the spec should say so.
 - **Cached / prompt-partition** — for LLM prompt sections that stay constant for a full request lifecycle. If you claim "stable prefix", the partition table and the assembly code must both agree. A prompt partition in `dynamic suffix` with a stated goal of 40–60% cache efficiency is a self-contradicting spec.
 
 ### Consistency pass
@@ -304,12 +304,12 @@ Every hit must reconcile to the same number in the file inventory. Mismatched co
 
 ## Section 9 — Testing posture sanity check
 
-Before adding any test plan to the spec, re-read the testing-related sections of `docs/spec-context.md`:
+Before adding any test plan to the spec, re-read the testing-related sections of `docs/spec-context.md`. The keys below mirror that file's Testing posture block; the values shown are one example fill — your repo's actual values live in `docs/spec-context.md`:
 
 ```yaml
 testing_posture: static_gates_primary
 runtime_tests: pure_function_only
-frontend_tests: none_for_now
+frontend_tests: none
 api_contract_tests: none_for_now
 e2e_tests_of_own_app: none_for_now
 performance_baselines: defer_until_production
@@ -449,9 +449,9 @@ Existing specs without this frontmatter are NOT required to be updated retroacti
 
 ## Section 12 — Lifecycle Declaration and ABCd Estimate blocks (Standard+ only)
 
-Every Standard+ spec must include two governance blocks introduced by the development-lifecycle-governance-upgrade build (`tasks/builds/development-lifecycle-governance-upgrade/spec.md §7.2` and `§7.3`). These blocks are required at spec authoring time (Step 6 of `spec-coordinator`) and are verified by `spec-conformance` via this checklist.
+Every Standard+ spec must include two governance blocks. **This section (12.1 and 12.2) is the authoritative definition of both blocks** — they are required at spec authoring time (Step 6 of `spec-coordinator`) and are verified by `spec-conformance` via this checklist.
 
-### 12.1 Lifecycle Declaration block (required per spec §7.2)
+### 12.1 Lifecycle Declaration block
 
 **What it is:** a five-field Markdown table placed at the top of the spec, after frontmatter, that captures the capability cluster, ownership, launch lifecycle state, risk surface, and review cadence for the capability being shipped.
 
@@ -462,14 +462,14 @@ Every Standard+ spec must include two governance blocks introduced by the develo
 | Field | Rule |
 |---|---|
 | Capability cluster | One or more values from the cluster header in `docs/capabilities.md`, comma-separated when multiple |
-| Capability owner | Handle, or a compliant placeholder per the owner-placeholder rule (§7.4.3 of the governance spec) |
+| Capability owner | Handle, or a clearly-marked placeholder (e.g. `TBD — <role>`) |
 | Lifecycle state on launch | `Inception` or `Growth` only — no other value is valid at first registration |
-| Risk surface | Copied verbatim from `intent.md § Risk Surface`; either the literal string `None.` or a comma-separated list of §7.1.1 vocabulary terms |
+| Risk surface | Copied verbatim from `intent.md § Risk Surface`; either the literal string `None.` or a comma-separated list of terms from the Risk Surface canonical vocabulary (spec-coordinator Step 3) |
 | Review cadence | Free text, e.g. `quarterly`, `biannually`, `on-incident-only` |
 
 **Launch-state restriction:** only `Inception` (no production traffic yet) or `Growth` (live but actively iterating) are valid at first registration. Any other state is a blocking spec review finding.
 
-### 12.2 ABCd Estimate block (required per spec §7.3)
+### 12.2 ABCd Estimate block
 
 **What it is:** a four-row Markdown table placed inside the spec body that sizes the capability across four lifecycle cost dimensions using a coarse S / M / L bucket.
 
@@ -565,8 +565,8 @@ Before invoking `spec-reviewer` on a draft spec, answer yes to all of the follow
 - [ ] **[Section 10]** If a state machine is introduced or modified: valid transitions, forbidden transitions, and status-set closure are declared
 - [ ] **[Section 10]** Every `DB-update-in-transaction → external HTTP call` flow declares a post-write recheck (snapshot inside the tx, re-select after 2xx, `status: 'partial'` + typed errorCode on drift)
 - [ ] **[Section 11]** Spec opens with `Status:` / `Spec date:` / `Last updated:` / `Author:` / `Build slug:` frontmatter
-- [ ] **[Section 12]** Lifecycle Declaration present per spec §7.2 (5 required fields; launch state = `Inception` or `Growth` only)
-- [ ] **[Section 12]** ABCd Estimate present with S/M/L sizing only per spec §7.3 (4 dimensions; no numeric values)
+- [ ] **[Section 12]** Lifecycle Declaration present (5 required fields; launch state = `Inception` or `Growth` only)
+- [ ] **[Section 12]** ABCd Estimate present with S/M/L sizing only (4 dimensions; no numeric values)
 - [ ] **[Section 13]** If spec touches UI: Mobile capability subsection present, one entry per new or modified screen, with tier + shape + nav + table + modal + hover + form + touch fields completed. If spec is pure backend: explicit `Mobile capability: N/A — pure backend, no UI surface` line
 
 If every box is checked, the spec is ready for `spec-reviewer`. If any box is unchecked and you're intentionally leaving it so (e.g. deferring the contract to implementation), mark the deviation inline in the spec's framing section — don't leave it implicit.

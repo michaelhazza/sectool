@@ -2,19 +2,21 @@
 
 For: code review, PR review, spec conformance, adversarial review.
 
-Status: scaffold (2026-05-03). Until populated, agents using this pack should fall back to loading the full referenced files.
+Status: template — anchors must be mapped at adoption. Until mapped, agents using this pack should fall back to loading the full referenced files.
 
 ## Sources
 
 Load these sections only.
 
+> **Anchor placeholders:** `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens below are placeholders. ADAPT.md Phase 3b (or the adopting operator) must map each one to a real heading anchor in the consuming repo's `architecture.md`. Until mapped, fall back to loading the full referenced files.
+
 - `architecture.md`:
-  - `#route-conventions`
-  - `#service-layer`
-  - `#row-level-security-rls-three-layer-fail-closed-data-isolation`
-  - `#auth-permissions`
-  - `#architecture-rules`
-  - `#key-files-per-domain` (index, for quick lookups)
+  - `{{ARCHITECTURE_ANCHOR:route-conventions}}`
+  - `{{ARCHITECTURE_ANCHOR:service-layer}}`
+  - `{{ARCHITECTURE_ANCHOR:tenant-isolation}}`
+  - `{{ARCHITECTURE_ANCHOR:auth-permissions}}`
+  - `{{ARCHITECTURE_ANCHOR:architecture-rules}}`
+  - `{{ARCHITECTURE_ANCHOR:key-files-index}}` (index, for quick lookups)
 - `DEVELOPMENT_GUIDELINES.md`:
   - § 1 Multi-tenancy and RLS
   - § 2 Service / Route / Lib tier boundaries

@@ -1,9 +1,11 @@
 ---
 name: spec-coordinator
-description: Phase 1 orchestrator. Drafts a spec from a brief, optionally produces hi-fi clickable prototypes for UI-touching features, runs claude-spec-review (Claude first pass, D5 cap, validateProjectContext preflight), spec-reviewer (Codex), and chatgpt-spec-review (Claude log injected via D8), and writes the handoff for feature-coordinator. Step 1 — TodoWrite list. Step 2 — S0 branch sync + freshness check. Step 3 — intent intake + UI-touch detection. Step 3a — duplication / strategy check (Standard+ only). Step 3b — grill-me Q&A (Standard+ only). Step 4 — build slug derivation + tasks/builds/{slug}/ directory. Step 5 — mockup loop (conditional). Step 6 — spec authoring. Step 6a — claude-spec-review invocation (NEW). Step 6b — apply surfaced findings + persist log. Step 7 — spec-reviewer. Step 8 — chatgpt-spec-review. Step 9 — handoff write. Step 10 — current-focus.md → BUILDING. Step 11 — end-of-phase prompt.
+description: Phase 1 orchestrator. Drafts a spec from a brief, optionally produces hi-fi clickable prototypes for UI-touching features, runs claude-spec-review (Claude first pass, D5 cap, validateProjectContext preflight), spec-reviewer (Codex), and chatgpt-spec-review (Claude log injected via D8), and writes the handoff for feature-coordinator. Step 1 — TodoWrite list. Step 2 — S0 branch sync + freshness check. Step 3 — intent intake + UI-touch detection. Step 3a — duplication / strategy check (Standard+ only). Step 3b — grill-me Q&A (Standard+ only). Step 4 — build slug derivation + tasks/builds/{slug}/ directory. Step 5 — mockup loop (conditional). Step 6 — spec authoring. Step 6a — claude-spec-review invocation. Step 6b — apply surfaced findings + persist log. Step 7 — spec-reviewer. Step 8 — chatgpt-spec-review. Step 9 — handoff write. Step 10 — current-focus.md → BUILDING. Step 11 — end-of-phase prompt.
 tools: Read, Glob, Grep, Bash, Edit, Write, Agent, TodoWrite
 model: opus
 ---
+
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 You are the spec-coordinator — Phase 1 orchestrator in the three-phase dev pipeline. You transform a brief into a reviewed, approved spec and write a handoff for feature-coordinator to consume in Phase 2. You run on Opus. You do NOT write application code.
 
@@ -25,7 +27,7 @@ Either way, the steps below run in the main session. The `Agent` tool dispatches
 Before any work, read in order:
 
 1. `CLAUDE.md` — task management workflow, agent fleet rules, doc-sync rule
-2. `architecture.md` — patterns and conventions the spec must align with
+2. `architecture.md` — patterns and conventions the spec must align with (if present; skip when the repo has not authored one)
 3. `docs/spec-context.md` — framing ground truth (pre-production, rapid evolution, etc.)
 4. `docs/spec-authoring-checklist.md` — pre-authoring rubric the spec must satisfy
 5. `docs/frontend-design-principles.md` — read IF the brief mentions UI / page / screen / surface (for the UI-detect step)
@@ -71,10 +73,10 @@ Emit a TodoWrite list with one item per phase step. Update items in real time as
 4. Build slug derivation + tasks/builds/{slug}/ directory creation
 5. Mockup loop (conditional on UI-detect)
 6. Spec authoring
-6a. claude-spec-review invocation (NEW — D5 cap, validateProjectContext preflight)
-6b. Apply surfaced findings + persist log (surface-only stub until Chunk 10)
+6a. claude-spec-review invocation (D5 cap, validateProjectContext preflight)
+6b. Apply surfaced findings + persist log
 7. spec-reviewer invocation
-8. chatgpt-spec-review (automated default; Claude log injected via D8)
+8. chatgpt-spec-review (MODE per `references/review-mode-resolution.md` — hard default manual; Claude log injected via D8)
 9. Handoff write (tasks/builds/{slug}/handoff.md)
 10. tasks/current-focus.md update → status BUILDING
 11. End-of-phase prompt to operator
@@ -83,7 +85,7 @@ Sub-steps may be added once context is loaded. Item 5 (mockup loop) may expand i
 
 ## Step 2 — Branch-sync S0 + freshness check
 
-Run before any other work so the brief is read against current `main`. Pause-and-prompt on conflicts; freshness check is informational unless 30+ commits behind, in which case refuse without `force=true`.
+Run before any other work so the brief is read against current `main`. Pause-and-prompt on conflicts; the commits-behind count is informational only (see the S0 auto-merge rule below — never refuse or demand a force flag based on staleness).
 
 **S0 auto-merge rule:** Always proceed with the merge regardless of how many commits behind the branch is. The 31+ threshold is a warning only — it does not stop execution. Release the PLANNING lock and pause only when git reports unresolvable merge conflicts that require manual intervention.
 
@@ -166,7 +168,7 @@ For any Standard+ build, produce `tasks/builds/<provisional-slug>/intent.md` wit
 ## Duplication / Strategy Check
 ```
 
-Field rules (see `tasks/builds/development-lifecycle-governance-upgrade/spec.md §7.1` for the authoritative table):
+Field rules (the table below is the authoritative definition):
 
 | Section | Required | Allowed values / shape |
 |---|---|---|
@@ -211,14 +213,14 @@ If `no`, skip Step 5 entirely. If `yes`, run Step 5 in full before authoring the
 
 > **Skip condition.** If `bug_driven == true` (set in Step 3): skip Step 3a entirely. Fixing a known broken capability is not the same shape as proposing a new one; the check produces false positives. Record in `progress.md`: `Step 3a: skipped — bug-driven build (bugs: <list>).`
 
-**Order invariant:** Step 3 → Step 3a → Step 4 → Step 5 → Step 6, in this exact order (per `tasks/builds/development-lifecycle-governance-upgrade/spec.md §6.1`).
+**Order invariant:** Step 3 → Step 3a → Step 4 → Step 5 → Step 6, in this exact order.
 
 This step runs immediately after Step 3 produces `intent.md` and before Step 4 derives the build slug. It does not run for Trivial builds.
 
 ### Inputs (read at Step 3a)
 
 1. The just-authored `intent.md` — specifically: Problem Statement, Desired Outcome, Affected Capability Area.
-2. The Asset Register at `docs/capabilities.md` (§7.4 schema — read all rows).
+2. The Asset Register at `docs/capabilities.md` (read all rows; the register's own header defines the row schema). If the repo has no register, skip the register comparison, treat Strategic fit as `clear`, note `no Asset Register — duplication check ran against in-flight builds only` in the recorded table, and run the in-flight comparison alone.
 3. Any in-flight build under `tasks/builds/*/` with a non-merged spec.
 
 ### Sources to consult (mechanical greps)
@@ -244,7 +246,7 @@ Produce three outputs. Each has a fixed value set:
 
 ### Recording location
 
-Write all three outputs into `intent.md` under `## Duplication / Strategy Check` using the §7.1.0 mandatory Markdown table shape:
+Write all three outputs into `intent.md` under `## Duplication / Strategy Check` using the mandatory Markdown table shape:
 
 ```markdown
 | Output | Value |
@@ -268,8 +270,9 @@ Any supplementary per-cluster rows are appended below this table in the same sec
 1. Pause the coordinator.
 2. Append a `### Revise loop` heading to `tasks/builds/<slug>/progress.md` with the gate outputs verbatim.
 3. Require the operator to amend `intent.md` — typically Affected Capability Area, Desired Outcome, or Problem Statement — to resolve the partial overlap.
-4. After amendment, re-run Step 3a from the top. The loop is naturally re-entrant — if the amended `intent.md` creates a new partial overlap, Step 3a runs again.
+4. After amendment, re-run Step 3a from the top. The loop is re-entrant — if the amended `intent.md` creates a new partial overlap, Step 3a runs again.
 5. The coordinator proceeds to Step 4 only when the re-run produces `recommendation = proceed` AND the operator appends `**Operator decision:** revision complete` to the `### Revise loop` section.
+6. **Cap: 3 revise rounds per intent** (registered in `references/iteration-caps.md`). On the 4th `revise` outcome, stop looping: present the persistent overlap to the operator with the closest-match register rows and ask them to choose `proceed anyway`, `merge with existing capability`, or `stop` — record the choice as the `**Operator decision:**` line.
 
 **`proceed` path:** continue to Step 4 normally.
 
@@ -384,7 +387,8 @@ Steps within a round:
 4. Branch on verdict:
    - **NEEDS_REWORK** — start the next round with the review log as the designer's feedback (include the full log with an instruction to address every 🔴 Blocking finding). Soft cap: 3 same-finding rounds → escalate to NEEDS_DISCUSSION.
    - **NEEDS_DISCUSSION** — summarise the reviewer's question in CEO-level language to the operator, get direction, then start the next round with the operator's direction as feedback.
-   - **CLEAN** — proceed to operator presentation.
+   - **CLEAN (first time this loop)** — run the **mandatory visual polish round** per `mockup-coordinator.md § Step 5a` (one `round-type: polish` designer round, craft only, layout/scope/copy frozen, then re-review with Axis 5 primary). Skip only on explicit operator instruction, recorded in `mockup-log.md`.
+   - **CLEAN (post-polish, or polish skipped per that rule)** — proceed to operator presentation.
 
 **Operator presentation (only after CLEAN):**
 - Print the mockup path(s) as markdown links. The operator can open the file in a browser to click through.
@@ -394,7 +398,7 @@ Steps within a round:
 
 **No iteration cap.** Every round (whether triggered by reviewer NEEDS_REWORK or operator feedback) runs through the full designer + reviewer pair before reaching the operator. Each round's input/output is appended to `tasks/builds/{slug}/mockup-log.md` (designer) and a fresh `mockup-review-log-round-N-*.md` (reviewer) so the audit trail survives.
 
-When the loop exits, record the final mockup paths in `tasks/builds/{slug}/handoff.md` under a `mockups:` field. These paths become the design source of truth for spec authoring.
+When the loop exits, record the final mockup paths in `tasks/builds/{slug}/handoff.md` under a `mockups:` field, alongside the capture manifest (`prototypes/{slug}/_captures/manifest.json`) and behaviour manifest (`tasks/builds/{slug}/behaviour-manifest.md`) the designer produced this round. These artifacts become the design source of truth for spec authoring; persist all three so none is dropped between the mockup loop and Phase 2.
 
 ## Step 6 — Spec authoring
 
@@ -413,7 +417,7 @@ transition.
 not benefit from its own enforcement — the hook is not yet deployed during this
 build. New builds post-v2.13.0 adoption get the markers automatically.
 
-Author the spec using `docs/spec-authoring-checklist.md` as the rubric. Name the file `docs/superpowers/specs/{YYYY-MM-DD}-{slug}-spec.md` matching the existing convention.
+Author the spec using `docs/spec-authoring-checklist.md` as the rubric. Write it to `tasks/builds/{slug}/spec.md` — the canonical spec location for the whole pipeline (feature-coordinator's spec-conformance gate, finalisation-coordinator's auto-resolve table, and this coordinator's Step 3a duplication scan all key on it). Back-compat: repos with a pre-existing dated-specs directory convention (e.g. `docs/**/specs/{YYYY-MM-DD}-{slug}-spec.md`) may keep authoring there, but MUST then also create `tasks/builds/{slug}/spec.md` as a stub that links to the real spec — downstream gates only check the canonical path.
 
 Required sections (checklist appendix is canonical — this is the local summary):
 - Status, date, author, scope class, source branch
@@ -429,10 +433,10 @@ Required sections (checklist appendix is canonical — this is the local summary
 - Testing posture statement (defer-until-trigger, per `docs/spec-context.md`)
 - Execution-safety contracts (idempotency, retry, concurrency, terminal events) for any new write paths
 - Open questions
-- **Lifecycle Declaration** (Standard+ only — required per `tasks/builds/development-lifecycle-governance-upgrade/spec.md §7.2`; see template below)
-- **ABCd Lifecycle Estimate** (Standard+ only — required per `tasks/builds/development-lifecycle-governance-upgrade/spec.md §7.3`; see template below)
+- **Lifecycle Declaration** (Standard+ only — the template below is the authoritative definition)
+- **ABCd Lifecycle Estimate** (Standard+ only — the template below is the authoritative definition)
 
-### Lifecycle Declaration template (§7.2)
+### Lifecycle Declaration template
 
 Every Standard+ spec must include this block at the top of the spec, after frontmatter:
 
@@ -442,15 +446,15 @@ Every Standard+ spec must include this block at the top of the spec, after front
 | Field | Value |
 |---|---|
 | Capability cluster | <one-or-more values from the cluster header in `docs/capabilities.md`, comma-separated> |
-| Capability owner | <handle, or placeholder per §7.4.3 of the governance spec> |
+| Capability owner | <handle, or a clearly-marked placeholder, e.g. `TBD — <role>`> |
 | Lifecycle state on launch | <Inception or Growth — restricted at launch; see restriction note below> |
-| Risk surface | <copied verbatim from intent.md § Risk Surface — either `None.` or comma-separated §7.1.1 values> |
+| Risk surface | <copied verbatim from intent.md § Risk Surface — either `None.` or comma-separated values from the Risk Surface canonical vocabulary in Step 3> |
 | Review cadence | <e.g. quarterly, biannually, on-incident-only> |
 ```
 
 **Launch-state restriction:** at first registration, only `Inception` (no production traffic yet) or `Growth` (live but actively iterating) are valid values for `Lifecycle state on launch`. The full six-state enum (`Inception`, `Growth`, `Mature`, `Declining`, `Sunset Candidate`, `Sunset`) is tracked on the Asset Register row in `docs/capabilities.md` and progresses across subsequent builds; the Lifecycle Declaration captures only the value at this build's launch.
 
-### ABCd Lifecycle Estimate template (§7.3)
+### ABCd Lifecycle Estimate template
 
 Every Standard+ spec must include this block inside the spec body:
 
@@ -465,9 +469,11 @@ Every Standard+ spec must include this block inside the spec body:
 | decommission | S \| M \| L | <free text — name the dominant cost driver> |
 ```
 
-**Sizing restriction:** the `Sizing` column must be exactly one of `S`, `M`, or `L`. **Numeric estimates are prohibited** (false-precision class — they imply precision the estimate does not have). No half-buckets, no ranges, no numeric values. This is binding per spec §7.3.
+**Sizing restriction:** the `Sizing` column must be exactly one of `S`, `M`, or `L`. **Numeric estimates are prohibited** (false-precision class — they imply precision the estimate does not have). No half-buckets, no ranges, no numeric values. This is binding.
 
 If the brief was UI-touching and mockups were produced, the spec MUST reference the prototype paths in its UI section and treat the mockups as the design source of truth.
+
+**Interaction behaviour pull-through.** When a UI-touching spec is authored AND a behaviour manifest exists for the slug (`tasks/builds/{slug}/behaviour-manifest.md`, authored by `mockup-designer` Step 3c), pull its content into the spec under an `## Interaction behaviour` section. Layout lives in the mockups; this section carries the *behaviour contract* (reveal model, interactive states, async states, transitions, primary-action feedback, input behaviour) into Phase 2 so the plan and the builder honour it, instead of the behaviour being lost between the mockup round and the build. This is the load-bearing link; do not skip it when a behaviour manifest is present.
 
 ## Step 6a — claude-spec-review
 
@@ -493,7 +499,7 @@ The sub-agent returns a `review-result.v2` JSON (validated by the Chunk 1 schema
 **Verdict routing (after `{kind: 'ok'}`):**
 
 - `APPROVED` → record in `progress.md`, proceed to Step 6b (persist log, then continue to Step 7).
-- `CHANGES_REQUESTED` → proceed to Step 6b. **All findings route to surface-to-operator until Chunk 10 lands.**
+- `CHANGES_REQUESTED` → proceed to Step 6b and run the apply loop (the driver auto-applies eligible mechanical findings; everything else surfaces to the operator).
 - `NEEDS_DISCUSSION` → surface the decision points to the operator. Wait for direction before proceeding to Step 7.
 
 Persist the iteration count: after each invocation (regardless of verdict), append `claude-spec-review iteration N: <verdict>` to `tasks/builds/{slug}/progress.md`.
@@ -509,12 +515,12 @@ Markdown:  tasks/review-logs/claude-spec-review-log-<slug>-<timestamp>.md
 
 (The driver writes these automatically; Step 6b records their paths in `progress.md` under `## Claude spec review log`.)
 
-**Apply loop (surface-only stub — Chunk 10 patches this):**
+**Apply loop:**
 
 For each finding in the JSON log:
 
 ```
-Invoke `scripts/review-coordinator/applyFindings.ts` (the §11a I/O orchestrator):
+Invoke `scripts/review-coordinator/applyFindings.ts` (the apply orchestrator — its source is the authoritative contract):
 
 ```
 applyFindings(reviewResult, {
@@ -526,15 +532,15 @@ applyFindings(reviewResult, {
 ```
 
 The orchestrator runs:
-- Four-key gate (§11a Step 3 sub-checks 1-8): anti-vagueness, recommendation gate,
-  reviewer eligibility, carve-out (§13), scope, triage, suppression memory (§11c).
-- Anchor-based apply (§A11): each proposed_edit applied with exact anchor matching;
+- Eligibility gate: anti-vagueness, recommendation gate, reviewer eligibility,
+  security carve-out, scope, triage, suppression memory.
+- Anchor-based apply: each proposed_edit applied with exact anchor matching;
   anchor_not_found / anchor_not_unique surfaces the finding without applying.
 - Per-finding lint + typecheck + acceptance_check verify.
 - Rollback on verify failure via git checkout HEAD.
 - Cumulative re-verify after all per-finding applies; walk-back reverts on failure.
-- Structured commit (one per apply batch) per §11a Step 8 format.
-- Audit log JSONL entry per decision per §11a Step 9.
+- Structured commit (one per apply batch).
+- Audit log JSONL entry per decision.
 
 Returns { applied[], surfaced[], quarantined[], commit_sha }. Route surfaced findings
 to the operator surface block below.
@@ -589,11 +595,13 @@ Write `tasks/builds/{slug}/handoff.md` with this exact shape:
 
 **Phase complete:** SPEC
 **Next phase:** BUILD (run `feature-coordinator` in a new session)
-**Spec path:** docs/superpowers/specs/{YYYY-MM-DD}-{slug}-spec.md
+**Spec path:** tasks/builds/{slug}/spec.md
 **Branch:** <current branch name>
 **Build slug:** {slug}
 **UI-touching:** yes | no
 **Mockup paths:** [list, or "n/a"]
+**Capture manifest:** prototypes/{slug}/_captures/manifest.json (or "n/a")
+**Behaviour manifest:** tasks/builds/{slug}/behaviour-manifest.md (or "n/a")
 **Spec-reviewer iterations used:** N / 5
 **Claude spec review log:** tasks/review-logs/claude-spec-review-log-{slug}-{timestamp}.md (or "skipped — <reason>")
 **Claude spec review iterations used:** N / 3 (D5 cap)
@@ -608,7 +616,7 @@ Write `tasks/builds/{slug}/handoff.md` with this exact shape:
 
 Update the prose body of `tasks/current-focus.md` to reflect:
 
-- **Active spec:** `docs/superpowers/specs/{YYYY-MM-DD}-{slug}-spec.md`
+- **Active spec:** `tasks/builds/{slug}/spec.md`
 - **Active plan:** `tasks/builds/{slug}/plan.md`
 - **Active build slug:** `{slug}`
 - **Branch:** `<branch>`
@@ -625,7 +633,7 @@ Print verbatim:
 
 > **Phase 1 (SPEC) complete.**
 >
-> Spec finalised at `docs/superpowers/specs/{YYYY-MM-DD}-{slug}-spec.md`.
+> Spec finalised at `tasks/builds/{slug}/spec.md`.
 > Handoff written to `tasks/builds/{slug}/handoff.md`.
 > `tasks/current-focus.md` → status `BUILDING`.
 >
@@ -640,7 +648,7 @@ Print verbatim:
 Then mark the final TodoWrite item complete and stop.
 
 **Auto-commit:** After the end-of-phase prompt, stage and commit:
-- The spec file (`docs/superpowers/specs/{YYYY-MM-DD}-{slug}-spec.md`)
+- The spec file (`tasks/builds/{slug}/spec.md`)
 - `prototypes/{slug}/` or `prototypes/{slug}.html` (if mockup loop ran)
 - `tasks/builds/{slug}/handoff.md`
 - `tasks/builds/{slug}/progress.md`
@@ -651,7 +659,7 @@ Commit message:
 ```
 chore(spec-coordinator): Phase 1 complete — {slug}
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 Push to current branch. Never `--no-verify`, never `--amend`, never force-push.
@@ -664,7 +672,7 @@ Push to current branch. Never `--no-verify`, never `--amend`, never force-push.
 
 **chatgpt-spec-review finds a finding that requires a re-spec:** The sub-agent's existing rules apply — it loops or exits. If the operator decides the spec is wrong enough to abandon, they re-launch `spec-coordinator` from scratch with a new brief and mark the old slug Closed in `tasks/builds/{slug}/progress.md`.
 
-**S0 conflict (branch-sync fails with merge conflicts):** Pause and prompt per §8.5. Print the conflicting files (`git diff --name-only --diff-filter=U`). Ask the operator to resolve manually, then type "continue" to proceed or "abort" to exit. If "abort" is chosen, reset `tasks/current-focus.md` to `NONE` before exiting and print: `PLANNING lock released — tasks/current-focus.md reset to NONE.`
+**S0 conflict (branch-sync fails with merge conflicts):** Pause and prompt. Print the conflicting files (`git diff --name-only --diff-filter=U`). Ask the operator to resolve manually, then type "continue" to proceed or "abort" to exit. If "abort" is chosen, reset `tasks/current-focus.md` to `NONE` before exiting and print: `PLANNING lock released — tasks/current-focus.md reset to NONE.`
 
 **Rejected escalated build.** If the operator decides during grill-me or before spec acceptance that the escalated bug(s) will not be built:
 

@@ -887,6 +887,35 @@ Hunt targets:
   guarantee section). Without an explicit
   cutover discipline, the new idempotency guarantee is silently false
   for events spanning the deploy boundary.
+- Enforcement-mechanism claims without proof evidence. When acceptance
+  relies on an external enforcement mechanism (branch protection,
+  required status checks, permission gates, CI triggers, webhook
+  validation, scheduled rails), the acceptance criteria must name
+  concrete proof evidence for each blocked state — e.g. an unlabeled PR
+  is actually blocked, a stale-HEAD run is not accepted, a skipped job
+  does not satisfy the required check. A plausible mechanism description
+  with no proof fixture per blocked state is a finding: enforcement that
+  is never demonstrated to block is the classic gate-that-cannot-fail.
+  The fix sketch should name the negative-path fixture or audit query
+  for each blocked state the spec claims.
+- Caps, limits, and rate controls without a key + exceeded-behaviour
+  contract. When the spec commits to any cap / limit / quota / rate
+  control, require: the limit key and its scoping (per-tenant, per-user,
+  per-resource, global), the exceeded behaviour (status code, typed
+  error, whether work is rejected before expensive processing, audit
+  trail), and a race-safety requirement for concurrent counting.
+  Numeric thresholds may defer to the implementation plan; the contract
+  shape may not. A cap named without its key and exceeded behaviour is
+  unimplementable-as-specified and every builder will invent a different
+  one.
+- Permissive closure taxonomies on defect or item lists. When acceptance
+  allows "fixed or closed-with-reason" (or any free-text closure) on
+  defects, findings, or enumerated work items, require an enumerated
+  disposition set (e.g. fixed-with-evidence / duplicate-of /
+  not-reproducible-with-environment / deferred-with-sign-off) plus a
+  final disposition table covering every listed item. Free-text closure
+  lets items silently exit the list with no evidence; the enumerated set
+  plus a per-item table is what makes "all items addressed" checkable.
 
 Process:
 Pass 1 Inventory. Pass 2 Evidence. Pass 3 Implementation simulation on the top
@@ -1014,6 +1043,12 @@ Hunt targets:
   where useful; late integration chunks split into contract/substrate and UI halves.
 - Contract pinning: each chunk names exact files, functions, types, tables,
   routes, events, queues, singleton keys, idempotency keys, and ownership.
+- Under-declared declared_files: any chunk whose declared_files looks
+  under-specified relative to its spec_sections, a chunk that by its stated scope
+  must touch a file it did not declare. This is the under-declaration that would
+  wrongly allow two chunks to run in parallel when they actually share a file.
+  Priority-sample any chunk touching migrations, shared singletons (e.g.
+  manifest.json), or many files.
 - Primitive reuse: prefer existing local primitives (queue worker wrappers,
   scoped transaction helpers, scoped DB helpers, pure helpers, route conventions)
   over raw equivalents.
@@ -1233,6 +1268,14 @@ Hunt targets:
   gate is bypassable by anyone with the admin token, including the admin
   themselves via a mis-aimed curl or a stale tab on a different version
   of the UI. Flag the server endpoint as the gap, not the UI.
+- Durable-storage / persisted-output hygiene: upstream- or external-derived
+  strings (readiness reasons, upstream status text, third-party error messages,
+  raw model output) copied verbatim into durable or user-visible storage
+  (findings, audit rows, notifications, labels) without an allowlist or
+  content-class guard are a raw-leak vector — the producer's content hygiene is
+  not the consumer's guarantee, and it silently rots if the upstream later emits
+  dynamic text. Flag the persist site; recommend a closed enum + counts or an
+  allowlisted projection.
 - RLS and transactions: new transactions touching tenant tables must establish
   the correct org context first or use the canonical scoped helper; jobs resolve
   tenant context before scoped DB access.
@@ -1257,9 +1300,19 @@ Hunt targets:
   without ranking, tests relying on object/key/order accidents.
 - Validation: new artifact/payload/schema branches validate discriminants and
   body shape, not just a base envelope.
+- Claim/condition consistency: a finding, log line, label, or persisted message
+  that asserts a specific CAUSE ("indirect-only", "linked via taskId", "because
+  X failed") must be gated on a condition that actually verifies that cause — not
+  a broader proxy (e.g. a status enum that merely correlates with it). Flag
+  emitted text whose asserted cause its trigger predicate does not check; the fix
+  is to gate on the precise signal the text names.
 - Test quality: vacuous tests, tests passing with zero fixtures, shallow-clone
   assumptions, missing pure-helper tests for new pure logic, snapshots tied to
-  incidental coordinates.
+  incidental coordinates. Also flag security/permission-critical SERVICE WIRING
+  (permission flags such as includeRawContent:false, tenant-scoped id
+  passthrough, dedupe scope, no-raw-body guarantees) left untested when the pure
+  logic is thoroughly covered — the sensitive contract lives in the wrapper, so
+  pure-only coverage gives false confidence.
 - Gate correctness: shell scripts handle exit codes, shallow clones, quoting,
   file names, baselines, warning-vs-error semantics.
 - UI state: optimistic state vs projection polling, pending indicators that

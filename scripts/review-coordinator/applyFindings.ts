@@ -25,7 +25,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, sep, relative, isAbsolute } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import type { Finding, ReviewResult } from '../chatgpt-reviewPure.js';
 import type { SuppressionEntry } from './applyFindingsPure.js';
 import {
@@ -33,6 +33,7 @@ import {
   detectOverlaps,
   applyBatchLimit,
   matchProductionDsn,
+  classifyAcceptanceCheckCommand,
   isInlineApplied,
   DEFAULT_BATCH_LIMIT,
 } from './applyFindingsPure.js';
@@ -77,31 +78,51 @@ export interface GitAdapter {
 // Default Git adapter (real I/O)
 // ---------------------------------------------------------------------------
 
+/**
+ * Run git with array-form args via spawnSync — no shell interpretation, so
+ * reviewer-supplied file paths or commit messages containing quotes/shell
+ * metacharacters cannot break out of their argument (same rationale as
+ * sync.js getSubmoduleCommit). Optional `input` is fed to stdin.
+ * Throws on non-zero exit to preserve the execSync error semantics the
+ * callers were written against.
+ */
+function runGitChecked(args: string[], input?: string): string {
+  const result = spawnSync('git', args, {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    ...(input !== undefined ? { input } : {}),
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `git ${args[0]} failed (exit ${result.status}): ${(result.stderr ?? '').trim()}`,
+    );
+  }
+  return result.stdout ?? '';
+}
+
 export function createGitAdapter(): GitAdapter {
   return {
     stashPush(files: string[]) {
-      const pathspec = files.join('\n');
-      execSync(
-        `echo "${pathspec.replace(/"/g, '\\"')}" | git stash push --keep-index --include-untracked --pathspec-from-file=-`,
-        { stdio: 'pipe' },
+      // Pathspecs go through stdin (--pathspec-from-file=-), not a shell
+      // string, so no quoting/escaping of file names is needed.
+      runGitChecked(
+        ['stash', 'push', '--keep-index', '--include-untracked', '--pathspec-from-file=-'],
+        files.join('\n'),
       );
     },
     stashPop() {
-      try {
-        execSync('git stash pop', { stdio: 'pipe' });
-      } catch {
-        // Stash may be empty if nothing was stashed
-      }
+      // spawnSync does not throw on non-zero exit — stash may be empty if
+      // nothing was stashed, which is fine.
+      spawnSync('git', ['stash', 'pop'], { stdio: 'pipe' });
     },
     revertFiles(files: string[]) {
-      const quoted = files.map((f) => `"${f.replace(/"/g, '\\"')}"`).join(' ');
-      execSync(`git checkout HEAD -- ${quoted}`, { stdio: 'pipe' });
+      runGitChecked(['checkout', 'HEAD', '--', ...files]);
     },
     commit(message: string): string {
-      execSync('git add -A', { stdio: 'pipe' });
-      execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { stdio: 'pipe' });
-      const sha = execSync('git rev-parse HEAD', { encoding: 'utf-8', stdio: 'pipe' }).trim();
-      return sha;
+      runGitChecked(['add', '-A']);
+      runGitChecked(['commit', '-m', message]);
+      return runGitChecked(['rev-parse', 'HEAD']).trim();
     },
     runVerify(projectRoot: string): { success: boolean; output: string } {
       try {
@@ -120,20 +141,46 @@ export function createGitAdapter(): GitAdapter {
       }
     },
     runAcceptanceCheck(check: string, projectRoot: string): { success: boolean; output: string } {
-      try {
-        const output = execSync(check, {
-          cwd: projectRoot,
-          encoding: 'utf-8',
-          stdio: 'pipe',
-        });
-        return { success: true, output };
-      } catch (err: unknown) {
-        const e = err as { stdout?: string; stderr?: string; message?: string };
+      // Allowlist gate BEFORE execution: acceptance_check is untrusted
+      // reviewer (model) output. The leading binary must be allowlisted and
+      // the string must be free of shell metacharacters, quotes, and control
+      // characters (see classifyAcceptanceCheckCommand). The caller's
+      // production-DSN denylist remains in place as defence-in-depth.
+      const gate = classifyAcceptanceCheckCommand(check);
+      if (!gate.allowed) {
         return {
           success: false,
-          output: [e.stdout, e.stderr, e.message].filter(Boolean).join('\n'),
+          output: `acceptance_check rejected by execution allowlist: ${gate.reason}`,
         };
       }
+      // Execute WITHOUT a shell: tokenise on whitespace and spawn the binary
+      // directly. The classifier guarantees space-only separators and no
+      // quoting, so naive tokenisation is exact — and with no shell in the
+      // path, separators/substitution have nothing to exploit even if a
+      // string slipped the classifier.
+      //
+      // Windows exception: npm/npx/tsx/vitest are .cmd shims there, and Node
+      // (post CVE-2024-27980) refuses to spawn .cmd files without a shell.
+      // On win32 we use shell: true — the classifier has already rejected
+      // every separator, substitution, quote, and control character, so the
+      // string that reaches the shell is a single space-separated command.
+      const [binary, ...args] = check.trim().split(/\s+/);
+      const result = spawnSync(binary, args, {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        shell: process.platform === 'win32',
+        timeout: 600_000,
+      });
+      if (result.error || result.status !== 0) {
+        return {
+          success: false,
+          output: [result.stdout, result.stderr, result.error?.message]
+            .filter(Boolean)
+            .join('\n'),
+        };
+      }
+      return { success: true, output: result.stdout ?? '' };
     },
   };
 }

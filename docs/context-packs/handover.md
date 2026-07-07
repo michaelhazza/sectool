@@ -2,7 +2,7 @@
 
 For: onboarding a new session to in-flight work, or writing a handoff document.
 
-Status: scaffold (2026-05-03).
+Status: template — anchors must be mapped at adoption.
 
 ## Sources
 
@@ -13,8 +13,10 @@ Status: scaffold (2026-05-03).
 - `tasks/builds/<slug>/handoff.md` if it exists (Phase 1 → 2 or 2 → 3 handoff)
 - The most recent 3 review logs in `tasks/review-logs/` matching the active slug
 - `architecture.md`:
-  - `#architecture-rules` (so a fresh session knows the constraints)
-  - `#key-files-per-domain` (the index)
+  - `{{ARCHITECTURE_ANCHOR:architecture-rules}}` (so a fresh session knows the constraints)
+  - `{{ARCHITECTURE_ANCHOR:key-files-index}}` (the index)
+
+  (`{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens are placeholders — ADAPT.md Phase 3b / the adopting operator maps them to real anchors in the consuming repo's `architecture.md`.)
 - `docs/decisions/` — any open ADRs in the active domain
 
 ## Skip

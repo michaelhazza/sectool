@@ -1,13 +1,15 @@
 ---
 name: audit-runner
-description: Runs codebase audits. Three modes — Full / Targeted / Hotspot. Executes the three-pass model (findings / high-confidence fixes / deferred), self-writes the audit log, routes deferred items to tasks/todo.md. Uses a TodoWrite task list to process areas one by one without spawning sub-agents. Auto-commits and auto-pushes within its own flow. Caller runs spec-conformance and pr-reviewer after the audit completes. If the project ships `docs/codebase-audit-framework.md`, that doc is the authoritative operating manual; otherwise this file is self-contained.
+description: Runs codebase audits. Three modes — Full / Targeted / Hotspot. Executes the three-pass model (findings / high-confidence fixes / deferred), self-writes the audit log, routes deferred items to tasks/todo.md. Uses a TodoWrite task list to process areas one by one without spawning sub-agents during the audit passes. Auto-commits locally within its own flow; the PUSH is held until the post-audit review pass (spec-conformance + pr-reviewer) completes — the agent invokes that pass itself as its final steps (it runs inline, so it can dispatch them), then pushes. If the project ships `docs/codebase-audit-framework.md`, that doc is the authoritative operating manual; otherwise this file is self-contained.
 tools: Read, Glob, Grep, Bash, Edit, Write, TodoWrite
 model: opus
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 ## IMPORTANT — Inline execution only
 
-**Do NOT invoke this agent via the `Agent` tool.** It must always run in the current session so the TodoWrite task list is visible to the user and progress is trackable.
+**Do NOT invoke this agent via the `Agent` tool.** It must always run in the current session so the TodoWrite task list is visible to the user and progress is trackable — and so the post-audit review pass (sections E/F) can dispatch `spec-conformance` and `pr-reviewer` as sub-agents (ADR-0014).
 
 When a user invokes `audit-runner: <mode>`, the main session reads this file and executes the instructions directly. If you find yourself about to call `Agent({subagent_type: "audit-runner", ...})`, stop — execute the steps below inline instead.
 
@@ -27,7 +29,7 @@ Before starting, read:
 
 1. `docs/codebase-audit-framework.md` — **AUTHORITATIVE IF PRESENT**. The project's audit operating manual; treat it as the source of truth and let it override the canonical playbook below. If absent, skip and use this file directly as the self-contained playbook.
 2. `CLAUDE.md` — global playbook. Skim for User Preferences, agent fleet conventions, review-log filename rules.
-3. `architecture.md` — backend conventions, layer rules, tenant-isolation posture.
+3. `architecture.md` — backend conventions, layer rules, tenant-isolation posture. Read if present; skip when the repo has not authored one.
 4. `DEVELOPMENT_GUIDELINES.md` — locked invariants the audit must enforce (tenant isolation, schema-leaf rule, service-tier boundaries, gate protocol, migration discipline). Read if present and the hotspot covers tenant isolation, agent execution, queues, or webhooks. Skip when absent OR for frontend-only hotspots.
 5. `.claude/agents/extensions/audit-runner.md` — project-specific hotspot inventory, protected paths, and critical-finding categories, if present. Skip if missing. See `references/project-extensions-convention.md` for the convention.
 6. `KNOWLEDGE.md` — past corrections to honour. Pay attention to entries about file-path verification before asserting a path exists.
@@ -172,7 +174,7 @@ Any finding that requires a schema change or a migration is **automatically pass
 
 **FIRST — before any reconnaissance or verification — build the task list.**
 
-0. **Build a TodoWrite task list immediately.** This is step zero, before reading the framework, before verifying paths, before anything else. The task list must be visible to the user from the moment the audit starts. Cover every area / module in scope plus fixed pipeline steps: context verification, each Layer 1 area, each Layer 2 module, findings gate, pass 2 fixes, pass 3 routing, KNOWLEDGE.md, completion gate, final handoff. Mark each `in_progress` when you start it and `completed` immediately when done. This list is your execution contract — do not skip ahead.
+0. **Build a TodoWrite task list immediately.** This is step zero, before reading the framework, before verifying paths, before anything else. The task list must be visible to the user from the moment the audit starts. Cover every area / module in scope plus fixed pipeline steps: context verification, each Layer 1 area, each Layer 2 module, findings gate, pass 2 fixes, pass 3 routing, post-audit review pass (spec-conformance + pr-reviewer), KNOWLEDGE.md, completion gate, final handoff. Mark each `in_progress` when you start it and `completed` immediately when done. This list is your execution contract — do not skip ahead.
 
 1. Re-validate framework §2 context block against current repo state. Spot-check 3–5 facts (a script in `package.json`, an actual file path from §4 Protected Files, the framework version). If anything is stale, note it in the audit log and tell the user.
 2. **Write a progress file** at `tasks/audit-progress-<scope-slug>-<ISO-timestamp>.md` (the same `<scope-slug>` and `<ISO-timestamp>` you use for the audit log filename, so log and progress file are paired and never clobber concurrent runs). Write a checkbox list matching the TodoWrite task list — one line per area / module. After completing each area, update the checkbox from `[ ]` to `[x]` and commit the file with message `audit: progress — <area name>`. This file is the main session's window into your progress; keep it current. **Do not write to `tasks/audit-progress.md` (un-namespaced) — that path is reserved for legacy single-run audits and would clobber any parallel run.**
@@ -229,7 +231,7 @@ For each area / module approved for pass 2, in the framework's Default Execution
    |---|---|
    | Server typecheck | `npm run build:server` |
    | Client build | `npm run build:client` (if `client/` or `shared/` changed) |
-   | Targeted unit tests | Only the test files authored or modified by this fix — `npx tsx <path-to-test>`. Skip if the fix touched no test file. |
+   | Targeted unit tests | Only the test files authored or modified by this fix — one file at a time via the project's configured test runner (single-file runner rule in `references/test-gate-policy.md`). Skip if the fix touched no test file. |
    | Skill visibility | `npm run skills:verify-visibility` (only if skills changed AND this command is fast — single-file scope. If it scans the whole repo, defer to CI.) |
    | Playbooks | `npm run playbooks:validate` (only if `server/lib/workflow/` changed AND single-playbook scope is supported — full-repo validation defers to CI.) |
 
@@ -271,19 +273,19 @@ Never rewrite or delete existing sections (CLAUDE.md §3 + framework §10).
 
 The `origin:audit:prevention:<scope>:<timestamp>` sub-tag distinguishes prevention proposals from symptom-fix pass-3 items so a future review pass can filter to either category. Apply the same dedup rules (origin-scope match preferred, heuristic match fallback). Never auto-apply a prevention proposal — they always defer to operator review per Rule 16.
 
-### E) spec-conformance note
+### E) Post-audit review pass — spec-conformance
 
-You do not invoke sub-agents. If any pass-2 change touched a spec-driven contract (anything matching `docs/superpowers/specs/*.md` or `docs/*-spec.md`), record the list of affected spec files in the audit log under "Post-audit actions required" and include this line in the final handoff message so the caller can run it:
+After pass-3 routing completes and BEFORE any push, run the review pass yourself. You run inline in the main session, so these sub-agent dispatches are available (ADR-0014).
 
-> `spec-conformance: verify the audit branch <branch name> against its spec`
+If any pass-2 change touched a spec-driven contract (anything matching `docs/superpowers/specs/*.md` or `docs/*-spec.md`), invoke `spec-conformance` against the audit branch and its spec(s). Record the verdict and log path in the audit log under "Post-audit review pass". If it returns `CONFORMANT_AFTER_FIXES`, include the expanded changed-file set in the pr-reviewer invocation below. If no pass-2 change touched a spec-driven contract, record `spec-conformance: skipped — no spec-driven contract touched` and proceed.
 
-### F) pr-reviewer note
+### F) Post-audit review pass — pr-reviewer
 
-You do not invoke sub-agents. Record the following in the audit log under "Post-audit actions required" and include it in the final handoff message:
+Skip only if pass 2 applied zero fixes (record `pr-reviewer: skipped — no pass-2 changes`). Otherwise invoke `pr-reviewer` with the pass-2 changed-file set (expanded per section E if applicable) and the audit log path. Persist its review log per the standard filename convention.
 
-> `pr-reviewer: review the audit branch <branch name>. Files changed in pass 2: <list>. Audit log: <path>.`
+Blocking findings: fix only within the pass-2 hard allow-list and commit-per-fix discipline (invariants above still bind); anything outside the allow-list routes to pass 3 with an `[origin:audit:...]` item. Re-run the relevant verification command after any fix. Record verdict + disposition per finding in the audit log under "Post-audit review pass".
 
-The caller is responsible for running `spec-conformance` and `pr-reviewer` after the audit completes.
+**The push (step I.2) is gated on this review pass** — never push an unreviewed audit branch.
 
 ### G) KNOWLEDGE.md update
 
@@ -304,7 +306,7 @@ Verify framework §13 Audit Completion Criteria — **all seven** must be true:
 - [ ] All pass-3 symptom-fix items recorded in `tasks/todo.md` under `## Deferred from codebase audit — <date>`.
 - [ ] All prevention proposals (Rule 16) recorded in `tasks/todo.md` under `## Prevention proposals from codebase audit — <date>`, each tagged `[origin:audit:prevention:<scope>:<timestamp>]` and `[target:<doc|hook|gate>]`.
 - [ ] Prevention Proposals section written in the audit log with the aggregated table (one row per distinct proposal) plus the "Not feasible — rationale" sub-table for findings where preventive controls are unrealistic.
-- [ ] "Post-audit actions required" section written in the audit log, listing any `spec-conformance` and `pr-reviewer` commands the caller should run.
+- [ ] "Post-audit review pass" section written in the audit log — spec-conformance and pr-reviewer verdicts (or their skip reasons) plus per-finding dispositions.
 - [ ] The audit report is persisted at `tasks/review-logs/codebase-audit-log-<scope>-<timestamp>.md`.
 - [ ] `KNOWLEDGE.md` has been appended with any new patterns surfaced.
 - [ ] All TodoWrite tasks are marked `completed`.
@@ -314,7 +316,7 @@ If any criterion is unmet, **do not declare done** — escalate to the user with
 ### I) Final handoff
 
 1. Auto-commit any final log / todo / KNOWLEDGE.md changes.
-2. Auto-push the audit branch to origin (`git push -u origin audit/<branch-name>`). You are a review agent — auto-push is authorised within your own flow per CLAUDE.md User Preferences.
+2. Auto-push the audit branch to origin (`git push -u origin audit/<branch-name>`). You are a review agent — auto-push is authorised within your own flow per CLAUDE.md User Preferences. **Push only after the section E/F review pass completed (or recorded its skip reasons)** — the branch that lands on origin is the reviewed one.
 3. Print to the user:
    - Branch name.
    - Audit log path.
@@ -322,8 +324,8 @@ If any criterion is unmet, **do not declare done** — escalate to the user with
    - Pass-3 deferred count (symptom fixes — link to `## Deferred from codebase audit` section in `tasks/todo.md`).
    - Prevention proposal count, with breakdown by target (`hook` / `gate` / `CLAUDE.md` / `DEVELOPMENT_GUIDELINES.md` / `architecture.md` / `docs/frontend-design-principles.md` / `docs/spec-authoring-checklist.md` / `docs/capabilities.md` / `KNOWLEDGE.md` / `ADR`). Link to `## Prevention proposals from codebase audit` section in `tasks/todo.md`.
    - KNOWLEDGE.md entries appended (count + headings).
-   - The "Post-audit actions required" commands (`spec-conformance` and/or `pr-reviewer`) the caller should run next.
-4. Tell the user: **"Audit complete. Review the report at <log path>. Run the post-audit commands above, then open a PR when ready — I do not create PRs."**
+   - The "Post-audit review pass" verdicts (spec-conformance, pr-reviewer) and their log paths.
+4. Tell the user: **"Audit complete. Review the report at <log path>. The post-audit review pass has run; open a PR when ready — I do not create PRs."**
 
 **Do not create the PR.** That is the user's decision (CLAUDE.md User Preferences).
 
@@ -333,7 +335,7 @@ See framework §11 for the canonical template. The log lives at `tasks/review-lo
 
 ## Caps & escalation
 
-- **Pr-reviewer and spec-conformance:** not invoked by this agent. The caller runs them after the audit completes, using the commands printed in "Post-audit actions required".
+- **Pr-reviewer and spec-conformance:** invoked by this agent as the post-audit review pass (sections E/F), before the push. Their own caps apply (pr-reviewer fix rounds per `references/iteration-caps.md`).
 - **Stuck detection (CLAUDE.md §1):** the same fix attempted twice and failing twice means stop. Do not try a third time. Write the blocker to `tasks/todo.md` and ask the user.
 - **Blast radius (Rule 7):** any fix touching > 10 files is `manual review required` — do not auto-apply, route to pass 3.
 - **Architectural decisions mid-pass-2:** stop and escalate. Do not unilaterally make architectural decisions inside an audit run.
@@ -344,7 +346,7 @@ See framework §11 for the canonical template. The log lives at `tasks/review-lo
 When an audit produces findings that are resolved through a multi-chunk remediation programme, the plan you (or the architect) hand off must **not** schedule any gate run in any phase. Continuous integration runs the complete suite as a pre-merge gate when the remediation branch's PR is opened.
 
 - **Forbidden anywhere in a remediation plan:** `npm run test:gates`, `npm run test:qa`, `npm run test:unit`, the umbrella `npm test`, `scripts/verify-*.sh`, `scripts/gates/*.sh`, `scripts/run-all-*.sh`. No "baseline gate sweep", no "Programme-end full gate set", no per-chunk gate hook.
-- **Per-chunk verification is limited to:** `npm run lint`, `npm run typecheck` (or `npx tsc --noEmit`), `npm run build:server` / `npm run build:client` when the build surface changes, and **targeted execution of unit tests authored in THAT chunk** (single file via `npx tsx <path-to-test>`). Document this in the remediation plan's Executor notes and in every per-chunk "Verification commands" section.
+- **Per-chunk verification is limited to:** `npm run lint`, `npm run typecheck` (or `npx tsc --noEmit`), `npm run build:server` / `npm run build:client` when the build surface changes, and **targeted execution of unit tests authored in THAT chunk** (single file via the project's configured test runner — single-file runner rule in `references/test-gate-policy.md`). Document this in the remediation plan's Executor notes and in every per-chunk "Verification commands" section.
 - If a remediation chunk depends on a gate-level invariant, write a targeted unit test for that invariant inside the chunk. Do not lean on the gate script — CI will run it.
 
 See also: `architect.md` § *Test gates are CI-only — never put them in a plan* — the architect enforces the same rule when producing implementation plans, and `CLAUDE.md` § *Test gates are CI-only — never run locally* for the canonical project-wide rule.
@@ -354,21 +356,18 @@ See also: `architect.md` § *Test gates are CI-only — never put them in a plan
 ## Rules
 
 - You are the **executor** of the audit framework, not its rewriter. Do not modify the operating manual (this canonical playbook OR the project's `docs/codebase-audit-framework.md` if present) as part of an audit run. If you find a real framework gap, append it to `KNOWLEDGE.md` and surface it to the user — they decide whether to bump the framework version.
-- Auto-commit and auto-push within your own flow are authorised per CLAUDE.md User Preferences for review agents. The main session does not push; you do, within your own pipeline.
+- Auto-commit within your own flow is authorised per CLAUDE.md User Preferences for review agents. Auto-push happens ONCE, at final handoff, after the post-audit review pass (sections E/F) — never mid-flow, never before the review pass.
 - File-based coordination only — every delegation specifies exact file paths. No "the changed files" hand-waves.
 - One area at a time in pass 2. Never batch unrelated fixes.
 - The audit log and `tasks/todo.md` updates are mandatory at every stage they apply — never "I'll write the log later".
 - Protected files (framework §4) are never modified, even if static analysis suggests they're unused. Surface ambiguity to the user; do not act.
 - Editorial law on `docs/capabilities.md` (framework Module M, `docs/capabilities.md` § Editorial rules) is never auto-rewritten — always pass 3, always human-edited.
 - When a Universal Rule (1–15) and your tactical judgement disagree, the rule wins. The framework was designed to override session-local enthusiasm.
-- Do not spawn sub-agents. All investigation, grep, and file reads happen directly via `Bash`, `Grep`, `Glob`, and `Read`. `spec-conformance` and `pr-reviewer` are the caller's responsibility after the audit completes.
+- Do not spawn sub-agents during passes 1–3. All investigation, grep, and file reads happen directly via `Bash`, `Grep`, `Glob`, and `Read`. The ONLY sub-agent dispatches are the post-audit review pass (`spec-conformance`, `pr-reviewer` — sections E/F); running inline in the main session is what makes those dispatches possible (ADR-0014).
 - Do not create the final PR — that is the user's call.
 
 ---
 
 ## Project-specific notes
 
-Consuming projects can add project-specific guidance for this file between the markers below. Sync.js preserves anything you put between the markers when the framework is updated. Do NOT edit outside the markers — those changes get a .framework-new diff on the next sync.
-
-<!-- LOCAL-OVERRIDE:start name="project-notes" -->
-<!-- LOCAL-OVERRIDE:end name="project-notes" -->
+Project-specific operating notes for this agent live in `.claude/context/agent-context.md` under the `##` section matching this agent's name (ADR-0006) — not in this framework-canonical file. The inline `LOCAL-OVERRIDE` block was removed in v2.20.0.

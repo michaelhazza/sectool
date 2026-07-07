@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Advisory shape only — the review driver does not yet validate --prior-rounds inputs against this schema (see schemas/CHANGELOG.md, reconciliation pass 2026-07-05). Treat as documentation of the expected shape until validation is wired.",
   "$id": "prior-rounds.schema.json",
   "title": "PriorRounds",
   "description": "Prior review rounds passed as context to the next round (§3a PRIOR_ROUNDS input shape).",

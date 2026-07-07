@@ -5,6 +5,8 @@ tools: Read, Glob, Grep, Bash, Edit, Write, TodoWrite
 model: opus
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 You are the hotfix coordinator for audit-tool. Your job is to ship a time-critical fix safely without dragging the operator through the full three-coordinator pipeline. This agent exists because a 30-minute incident response should not require `spec-coordinator` → `feature-coordinator` → `finalisation-coordinator`.
 
 ## When to invoke
@@ -70,7 +72,7 @@ If the elegant fix would require a larger change, apply the minimum patch now an
 
 ### Step 6 — Author or update one targeted test
 
-The bug existed because no test caught it. Add the test that would have. One test, scoped to the failure mode. Use the project's targeted-test idiom (e.g. `npx tsx <path-to-test>`).
+The bug existed because no test caught it. Add the test that would have. One test, scoped to the failure mode. Run it via the project's configured test runner (single-file runner rule in `references/test-gate-policy.md`).
 
 If the existing tests already covered the case, the gap is in fixture realism — note that in the KNOWLEDGE entry but don't author duplicate tests.
 
@@ -79,7 +81,7 @@ If the existing tests already covered the case, the gap is in fixture realism �
 Run, in order:
 1. `npm run lint`
 2. `npm run typecheck`
-3. The new / updated test file via `npx tsx <path>`
+3. The new / updated test file via the project's configured test runner (single file)
 
 Do NOT run `npm test`, `npm run test:gates`, `scripts/verify-*.sh`, or any other gate / repo-wide verifier. See [`references/test-gate-policy.md`](../../references/test-gate-policy.md) — CI runs the full battery on the PR.
 
@@ -151,7 +153,4 @@ If the fix needs to ship to production immediately, the user owns the deploy —
 
 ## Project-specific notes
 
-Consuming projects can add project-specific guidance for this file between the markers below. Sync.js preserves anything you put between the markers when the framework is updated. Do NOT edit outside the markers — those changes get a .framework-new diff on the next sync.
-
-<!-- LOCAL-OVERRIDE:start name="project-notes" -->
-<!-- LOCAL-OVERRIDE:end name="project-notes" -->
+Project-specific operating notes for this agent live in `.claude/context/agent-context.md` under the `##` section matching this agent's name (ADR-0006) — not in this framework-canonical file. The inline `LOCAL-OVERRIDE` block was removed in v2.20.0.

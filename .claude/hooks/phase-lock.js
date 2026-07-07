@@ -145,7 +145,10 @@ function hasDotDot(p) {
  */
 export function toRelative(absPath) {
   const normed = normalisePath(absPath);
-  const projectDir = process.env.CLAUDE_PROJECT_DIR;
+  // Fall back to process.cwd() when CLAUDE_PROJECT_DIR is unset — the same
+  // fallback main() uses. Without it, absolute paths inside the repo could
+  // not be made relative and spec/plan phases would block legitimate edits.
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   if (projectDir) {
     const normedDir = normalisePath(projectDir).replace(/\/$/, '');
     // On Windows the same physical path can be presented with mixed drive-letter
@@ -171,8 +174,10 @@ export function toRelative(absPath) {
   if (!normed.startsWith('/') && !/^[A-Za-z]:/.test(normed)) {
     return normed;
   }
-  // Absolute path with no project dir context — return as-is (hook will
-  // likely allow it; absolute paths outside project root are uncommon)
+  // Absolute path outside the project dir — return as-is. It stays absolute,
+  // so it will NOT match any repo-relative allow-glob and spec/plan phases
+  // will block it. That is deliberate: writes outside the repo root during a
+  // restricted phase are suspect and should be surfaced, not waved through.
   return normed;
 }
 
@@ -199,11 +204,6 @@ export function decidePhaseLock({ toolName, targetPath, currentPhase, buildSlug 
   // Normalise path for matching
   const normedPath = normalisePath(targetPath);
 
-  // Reject .. traversal regardless of phase (path traversal safety — always block)
-  if (hasDotDot(normedPath)) {
-    return { disposition: 'block', reason: `phase-lock: path contains '..' segment, blocked for safety` };
-  }
-
   // No active phase — no-op
   if (currentPhase === null) {
     return { disposition: 'allow', reason: 'no .phase enforcement (missing/empty/invalid)' };
@@ -212,6 +212,14 @@ export function decidePhaseLock({ toolName, targetPath, currentPhase, buildSlug 
   // Build / review / finalise — unrestricted
   if (currentPhase === 'build' || currentPhase === 'review' || currentPhase === 'finalise') {
     return { disposition: 'allow', reason: `phase-lock: ${currentPhase} phase, unrestricted` };
+  }
+
+  // Reject .. traversal in the restricted phases only. Unrestricted phases
+  // and null-phase must never block (header contract: build/review/finalise
+  // are "always allow" and missing phase is a no-op), so this check runs
+  // after those short-circuits.
+  if (hasDotDot(normedPath)) {
+    return { disposition: 'block', reason: `phase-lock: path contains '..' segment, blocked for safety` };
   }
 
   // Spec / plan — check against allowed globs

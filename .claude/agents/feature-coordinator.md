@@ -1,9 +1,11 @@
 ---
 name: feature-coordinator
-description: Phase 2 orchestrator. Restores Phase 1 handoff, invokes architect for the implementation plan, runs claude-plan-review (Claude first pass, D5 cap, validateProjectContext preflight), chatgpt-plan-review (automated default; Claude log + spec injected via D8), gates the plan with the operator, then loops chunk-by-chunk through builder (sonnet) with per-chunk G1 (builder runs scoped lint on touched files plus builder-owned targeted pure-function tests where applicable; coordinator re-runs scoped lint as a backup check). After all chunks built, runs G2 integrated-state gate (lint + typecheck + build:server/client), then the branch-level review pass (spec-conformance, adversarial-reviewer, pr-reviewer, reality-checker, fix-loop, dual-reviewer), doc-sync gate, and writes the handoff for finalisation-coordinator.
+description: Phase 2 orchestrator. Restores Phase 1 handoff, invokes architect for the implementation plan, runs claude-plan-review (Claude first pass, D5 cap, validateProjectContext preflight), chatgpt-plan-review (hard-default manual mode; Claude log + spec injected via D8), gates the plan with the operator, then loops chunk-by-chunk through builder (sonnet) with per-chunk G1 (builder runs scoped lint on touched files plus builder-owned targeted pure-function tests where applicable; coordinator re-runs scoped lint as a backup check). After all chunks built, runs G2 integrated-state gate (lint + typecheck + build:server/client), then the branch-level review pass (spec-conformance, adversarial-reviewer, pr-reviewer, fix-loop, dual-reviewer), doc-sync gate, and writes the handoff for finalisation-coordinator.
 tools: Read, Glob, Grep, Bash, Edit, Write, Agent, TodoWrite
 model: opus
 ---
+
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 ## Invocation
 
@@ -23,8 +25,8 @@ Either way, the steps below run in the main session. The `Agent` tool dispatches
 Read in this order before doing anything else:
 
 1. `CLAUDE.md` — task management workflow, agent fleet, review pipeline
-2. `architecture.md` — system architecture, conventions, service contracts
-3. `DEVELOPMENT_GUIDELINES.md` — build discipline, RLS rules, schema invariants, §8 rules
+2. `architecture.md` — system architecture, conventions, service contracts (if present; skip when the repo has not authored one)
+3. `DEVELOPMENT_GUIDELINES.md` — build discipline, RLS rules, schema invariants, §8 rules (if present; skip when absent)
 4. `tasks/current-focus.md` — verify `status: BUILDING`
 5. `tasks/builds/{slug}/handoff.md` — restore Phase 1 context (spec path, slug, branch, any Phase 1 decisions)
 6. The spec at the path named in the handoff
@@ -42,9 +44,9 @@ Immediately after context loading, emit a TodoWrite task list with exactly these
 1. Context loading
 2. Branch-sync S1 + freshness check
 3. architect invocation
-3a. claude-plan-review invocation (NEW — D5 cap, validateProjectContext preflight)
-3b. Apply surfaced findings + persist log (surface-only stub until Chunk 10)
-4. chatgpt-plan-review (automated default; Claude log + spec injected via D8)
+3a. claude-plan-review invocation (D5 cap, validateProjectContext preflight)
+3b. Apply surfaced findings + persist log
+4. chatgpt-plan-review (MODE per `references/review-mode-resolution.md` — hard default manual; Claude log + spec injected via D8)
 5. plan-gate
 6. Per-chunk loop (expanded after architect returns — one item per chunk)
 7. G2 integrated-state gate (lint + typecheck + build:server/client)
@@ -58,7 +60,7 @@ Mark item 1 completed immediately (you just loaded context). Mark item 2 in_prog
 
 ## Step 2 — Branch-sync S1 + freshness check
 
-Run the same sync logic as S0 (from spec §8): fetch origin, rebase or merge main into the feature branch, resolve conflicts if straightforward, escalate if not.
+Run the same sync logic as S0: fetch origin, rebase or merge main into the feature branch, resolve conflicts if straightforward, escalate if not.
 
 **Migration-number collision detection** — run verbatim:
 
@@ -100,7 +102,7 @@ After architect returns, review the plan for:
 
 **Plan-revision rounds capped at 3.** On the fourth revision request: write `phase_status: PHASE_2_PAUSED_PLAN` to `tasks/builds/{slug}/handoff.md`, escalate to the operator, and stop.
 
-Once the plan passes review, expand TodoWrite item 6 (Per-chunk loop) into one sub-item per chunk. Expand item 8 (Branch-level review pass) into sub-items: spec-conformance, adversarial-reviewer, pr-reviewer, reality-checker, fix-loop, dual-reviewer.
+Once the plan passes review, expand TodoWrite item 6 (Per-chunk loop) into one sub-item per chunk. Expand item 8 (Branch-level review pass) into sub-items: spec-conformance, adversarial-reviewer, pr-reviewer, fix-loop, dual-reviewer.
 
 ## Step 3a — claude-plan-review
 
@@ -126,7 +128,7 @@ The sub-agent returns a `review-result.v2` JSON (validated by the Chunk 1 schema
 **Verdict routing (after `{kind: 'ok'}`):**
 
 - `APPROVED` → record in `progress.md`, proceed to Step 3b (persist log, then continue to Step 4).
-- `CHANGES_REQUESTED` → proceed to Step 3b. **All findings route to surface-to-operator until Chunk 10 lands.**
+- `CHANGES_REQUESTED` → proceed to Step 3b and run the apply loop (the driver auto-applies eligible mechanical findings; everything else surfaces to the operator).
 - `NEEDS_DISCUSSION` → surface the decision points to the operator. Wait for direction before proceeding to Step 4.
 
 Persist the iteration count: after each invocation (regardless of verdict), append `claude-plan-review iteration N: <verdict>` to `tasks/builds/{slug}/progress.md`.
@@ -142,12 +144,12 @@ Markdown:  tasks/review-logs/claude-plan-review-log-<slug>-<timestamp>.md
 
 (The driver writes these automatically; Step 3b records their paths in `progress.md` under `## Claude plan review log`.)
 
-**Apply loop (surface-only stub — Chunk 10 patches this):**
+**Apply loop:**
 
 For each finding in the JSON log:
 
 ```
-Invoke `scripts/review-coordinator/applyFindings.ts` (the §11a I/O orchestrator):
+Invoke `scripts/review-coordinator/applyFindings.ts` (the apply orchestrator — its source is the authoritative contract):
 
 ```
 applyFindings(reviewResult, {
@@ -159,15 +161,15 @@ applyFindings(reviewResult, {
 ```
 
 The orchestrator runs:
-- Four-key gate (§11a Step 3 sub-checks 1-8): anti-vagueness, recommendation gate,
-  reviewer eligibility, carve-out (§13), scope, triage, suppression memory (§11c).
-- Anchor-based apply (§A11): each proposed_edit applied with exact anchor matching;
+- Eligibility gate: anti-vagueness, recommendation gate, reviewer eligibility,
+  security carve-out, scope, triage, suppression memory.
+- Anchor-based apply: each proposed_edit applied with exact anchor matching;
   anchor_not_found / anchor_not_unique surfaces the finding without applying.
 - Per-finding lint + typecheck + acceptance_check verify.
 - Rollback on verify failure via git checkout HEAD.
 - Cumulative re-verify after all per-finding applies; walk-back reverts on failure.
-- Structured commit (one per apply batch) per §11a Step 8 format.
-- Audit log JSONL entry per decision per §11a Step 9.
+- Structured commit (one per apply batch).
+- Audit log JSONL entry per decision.
 
 Returns { applied[], surfaced[], quarantined[], commit_sha }. Route surfaced findings
 to the operator surface block below.
@@ -179,7 +181,7 @@ Surface every finding to the operator with its `severity`, `title`, `triage_hint
 
 ## Step 4 — chatgpt-plan-review
 
-**Automated default (D8):** invoke `chatgpt-plan-review` as a sub-agent. The default mode is **automated** when `OPENAI_API_KEY` is set in the environment. The manual-fallback mode is preserved for when no API key is present.
+**Invoke `chatgpt-plan-review` as a sub-agent.** MODE resolves per `references/review-mode-resolution.md` (explicit operator phrase → session-state file → `CHATGPT_REVIEW_DEFAULT_MODE` env var → hard default **manual**). Do NOT auto-detect from `OPENAI_API_KEY` presence — that legacy behaviour was removed; the operator opts into `automated` explicitly via phrase or env var.
 
 **D8 — Claude log passthrough:** inject the Claude plan review log (from Step 3b) AND the approved spec path into the `PROJECT_CONTEXT` passed to `chatgpt-plan-review`. Append the log under a `## Prior Claude plan review` heading in `PROJECT_CONTEXT`, so the OpenAI tier focuses on unapplied findings and plan/spec drift rather than re-raising settled points. Format:
 
@@ -195,9 +197,9 @@ If Step 3a was skipped (preflight failed or cap reached), record `## Prior Claud
 
 If Step 3a's driver quarantined the Claude output (exit code 4 / 5 / 6), include the quarantine path in `PROJECT_CONTEXT` under `## Prior Claude plan review: quarantined`.
 
-**Automated mode:** the sub-agent calls the OpenAI API directly with the plan + PROJECT_CONTEXT (including the Claude log). It runs the schema-gate validation on the response, triages findings, and returns a finalised plan. No operator paste required in automated mode.
+**Automated mode (operator-selected):** the sub-agent calls the OpenAI API directly with the plan + PROJECT_CONTEXT (including the Claude log). It runs the schema-gate validation on the response, triages findings, and returns a finalised plan. No operator paste required in automated mode.
 
-**Manual fallback (no API key):** the sub-agent presents the plan to the operator for ChatGPT-web rounds. The operator pastes responses; the sub-agent triages and applies accepted edits. Same flow as before; operator drives the cadence.
+**Manual mode (default):** the sub-agent presents the plan to the operator for ChatGPT-web rounds. The operator pastes responses; the sub-agent triages and applies accepted edits. Operator drives the cadence.
 
 When the sub-agent returns with a finalised plan, update `progress.md` and proceed to plan-gate.
 
@@ -236,16 +238,24 @@ Present the finalised plan to the operator verbatim:
 
 ## Step 6 — Per-chunk loop
 
-Process chunks one at a time in plan order. Do not start chunk N+1 until chunk N is committed and its TodoWrite item is marked complete.
+### Overview
 
-### Resume detection
+Step 6 has two execution modes — **strict-sequential** (the default) and **parallel** (opt-in only). The inner routine described first is shared by both modes. Mode selection happens in step 2 before any chunk work begins. Steps 0–5 and 7–12 of this playbook are unchanged regardless of mode.
+
+---
+
+### Inner routine — "process one chunk"
+
+The inner routine encapsulates everything the coordinator does for a single chunk. It is called by both modes (step 2b for strict-sequential, steps 2c/2d for parallel). **None of the logic below changes between modes.**
+
+#### Resume detection
 
 Before invoking builder for each chunk, check `tasks/builds/{slug}/progress.md`. If any chunk is recorded as `done` (resume run):
 
 1. **Pre-resume typecheck:** run `npm run typecheck` ONCE before processing any chunks. If it fails: surface diagnostics, pause, require operator fix before proceeding. Do NOT skip completed chunks while the branch is type-broken.
 2. For each chunk recorded as `done`: run `git log --oneline origin/main...HEAD -- <files listed for that chunk>` to verify a commit exists. If commit exists → skip builder, mark TodoWrite complete. If NO commit → re-run builder. Do NOT skip.
 
-### Environment snapshot check (for resume)
+#### Environment snapshot check (for resume)
 
 Capture the current values:
 - `git rev-parse HEAD`
@@ -258,7 +268,7 @@ If no prior snapshot exists (fresh run, not a resume), skip the comparison — t
 
 The snapshot is (re)written at the end of every chunk loop iteration (see "Chunk-completion progress write" below) so a subsequent resume always has a baseline.
 
-### Builder invocation
+#### Builder invocation
 
 Before dispatching builder for the **first chunk only**, write the phase marker:
 
@@ -266,13 +276,9 @@ Before dispatching builder for the **first chunk only**, write the phase marker:
 mkdir -p tasks/builds/{slug} && echo -n "build" > tasks/builds/{slug}/.phase
 ```
 
-This signals to the phase-lock hook (`.claude/hooks/phase-lock.js`) that the
-coordinator is now in the `build` phase. Subsequent chunks do not overwrite —
-the file is already `build`.
+This signals to the phase-lock hook (`.claude/hooks/phase-lock.js`) that the coordinator is now in the `build` phase. Subsequent chunks do not overwrite — the file is already `build`.
 
-**Bootstrap note:** the v2.13.0 build that introduces these phase markers does
-not benefit from its own enforcement — the hook is not yet deployed during this
-build. New builds post-v2.13.0 adoption get the markers automatically.
+**Bootstrap note:** the v2.13.0 build that introduces these phase markers does not benefit from its own enforcement — the hook is not yet deployed during this build. New builds post-v2.13.0 adoption get the markers automatically.
 
 **HARD RULE — builder dispatch is mandatory for all chunk construction.** The coordinator MUST dispatch `builder` via the `Agent` tool for every chunk in the plan. The coordinator MUST NEVER write chunk code inline with `Edit` or `Write` in the main session. Inline construction in the main session runs on the operator's main-session model (Opus during this coordinator) instead of Sonnet, defeats the cost model that motivates the builder sub-agent, and creates an unreviewed scope-drift hole because the commit-integrity invariant below depends on builder's structured `files-changed` verdict. If a chunk feels too small to dispatch, that is a plan defect — escalate as a `PLAN_GAP` to architect rather than implementing inline.
 
@@ -292,7 +298,7 @@ Provide the sub-agent with:
 - The chunk name
 - The list of files the plan associates with this chunk
 
-### G1 — per-chunk scoped lint (builder also runs targeted pure-function tests where applicable)
+#### G1 — per-chunk scoped lint (builder also runs targeted pure-function tests where applicable)
 
 G1 has two halves. The builder sub-agent runs the inner half against the chunk it just authored (scoped `eslint` on touched files plus any targeted pure-function test the chunk newly authored — see `builder.md` Step 4). The coordinator then re-runs the lint half as a backup check against the same touched-file set in the main session:
 
@@ -305,7 +311,7 @@ Cap at 3 fix attempts per chunk. On failure: send diagnostics to a fresh `builde
 
 **Do NOT run `npm run typecheck` or `npm run build:server` / `npm run build:client` per chunk.** Those run once at G2 (Step 7), against the integrated branch state. Per-chunk execution gives earlier detection, but the wall-time and token cost across multi-chunk builds outweighs that benefit. G2 remains the required integrated type/build gate and routes any failure back through a fresh builder.
 
-### Plan-gap handling
+#### Plan-gap handling
 
 If builder reports `PLAN_GAP`:
 
@@ -325,7 +331,7 @@ If builder reports `PLAN_GAP`:
 4. Re-invoke builder with the revised plan.
 5. Cap at **2 plan-gap rounds per chunk**. On the third: escalate per failure paths.
 
-### Commit-integrity invariant
+#### Commit-integrity invariant
 
 The plan's declared files for the chunk are the canonical source of truth. The integrity chain is `plan-declared ⊇ builder-reported ⊇ working-tree`. After builder SUCCESS + G1 passes:
 
@@ -341,12 +347,12 @@ Commit message per chunk:
 ```
 chore(feature-coordinator): chunk {N} complete — {chunk-name} (G1 attempts: {N})
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 Push after each chunk commit.
 
-### Chunk-learnings write (BEFORE the chunk commit — step 4 above)
+#### Chunk-learnings write (BEFORE the chunk commit — step 4 above)
 
 After builder reports SUCCESS for chunk N and G1 passes, extract a 5-10-line summary and append to `tasks/builds/{slug}/chunk-learnings.md` using exactly this format (Contract 3). **This write happens at step 4 of the Commit-integrity invariant — BEFORE the `git add` + `git commit`** — so the learning entry lands in the same commit as the chunk it describes. Earlier versions wrote it after the commit, leaving the file dirty between chunks and risking the last-chunk entry never landing on its own commit.
 
@@ -365,7 +371,7 @@ The `Watch-out for future chunks` line is the load-bearing line — write a conc
 
 **Forward-only bootstrap note:** the v2.13.0 build itself runs without chunk-learnings injection (this write lands in Chunk 5; chunks 1-4 had no prior file to read). New builds post-v2.13.0 get the full mechanism.
 
-### Chunk-completion progress write (environment snapshot)
+#### Chunk-completion progress write (environment snapshot)
 
 When updating `tasks/builds/{slug}/progress.md` in the chunk-completion progress write step (after `git push` — the Commit-integrity invariant step 6), write or replace a `## Environment snapshot` section so a subsequent resume run has a baseline for the resume-time comparison (see "Environment snapshot check" earlier in Step 6):
 
@@ -379,6 +385,149 @@ When updating `tasks/builds/{slug}/progress.md` in the chunk-completion progress
 ```
 
 This section is rewritten in place each chunk — only the most recent snapshot is retained.
+
+---
+
+### Step 2 — Determine mode and execute
+
+#### Step 2a — Effective concurrency
+
+Before any chunk work begins, determine `effectiveCap`. **The opt-in phrase is checked FIRST, before any probe or progress write, so strict-sequential runs zero new machinery (A8):**
+
+1. **No opt-in phrase → force `effectiveCap = 1` and jump straight to step 2b.** If the operator invocation phrase is NOT exactly `launch feature coordinator parallel`, set `effectiveCap = 1` and go to strict-sequential mode (2b) immediately. **Do NOT run the worktree probe, do NOT write to `progress.md`, do NOT call any new module.** An invocation without the phrase therefore executes none of the new code path — A8 byte-identical, by non-execution.
+
+2. **Opt-in phrase present → resolve the cap (the ONLY path that touches the new machinery):**
+
+   ```
+   effectiveCap = min(operator cap, current-default cap, worktree-availability cap)
+   ```
+
+   - Default cap **3**; operator may override at the plan-gate.
+   - **Worktree-availability probe (runs here, ONLY because the operator opted in):** verify that `isolation: "worktree"` actually provisions a worktree in this environment (confirm-on-first-run per spec §12.2). If the probe FAILS: set worktree-availability cap = 1, which forces `effectiveCap == 1`; log `parallelism: disabled — worktree unavailable` in `progress.md` and proceed with step 2b. (This probe + log run only under the opt-in phrase, so they are expected behaviour, not an A8 violation.)
+
+**Parallel mode is engaged ONLY when ALL of the following hold:**
+
+1. The operator invocation phrase is exactly `launch feature coordinator parallel`.
+2. The worktree-availability probe (step 2a) succeeds.
+3. `effectiveCap >= 2`.
+
+If any condition fails, the build runs in strict-sequential mode (step 2b).
+
+#### Step 2b — Strict-sequential mode (the default)
+
+**This is the default mode.** It runs when `effectiveCap == 1`, when the operator did not include the opt-in phrase `launch feature coordinator parallel`, or when the worktree-availability probe failed.
+
+In strict-sequential mode: run the inner routine (above) for each chunk in plan order. Do not start chunk N+1 until chunk N is committed and its TodoWrite item is marked complete.
+
+**In strict-sequential mode, the coordinator does NOT call `parsePlanMetadata`, `validatePlanMetadata`, `computeWaves`, the worktree probe, the independence gate, or any wave-audit write.** None of the new machinery executes — progress writes are exactly today's. This is the A8 byte-identical guarantee: the new code path does not execute at all, so nothing new can fail or mutate state.
+
+Wave preview is computed at the plan-gate (Step 5) for the operator only — never inside Step 6 execution.
+
+#### Step 2c — Parallel mode (opt-in phrase present)
+
+**Executed only when the operator phrase `launch feature coordinator parallel` is present.**
+
+**Parse and validate the plan metadata:**
+
+Call `parsePlanMetadata(raw)` — the single snake-to-camel normalisation point (Chunk 2, `scripts/build-scheduler/validatePlanMetadata.ts`). This function returns `{ chunks, pathErrors }` (NOT a flat array). Treat a non-empty `pathErrors` as a `PLAN_GAP` and route back to architect; do not proceed to wave computation. Pass `.chunks` into `validatePlanMetadata`; if `ok: false`, treat as `PLAN_GAP` and route back to architect. Then call `computeWaves({ chunks, concurrencyCap: effectiveCap })` (Chunk 1, `scripts/build-scheduler/computeWaves.ts`) on the validated, normalised chunks. Record the resolved `effectiveCap` (the exact value used) and the computed waves in `progress.md`.
+
+**Note:** the worktree-availability probe already succeeded in step 2a (that is why we are in parallel mode). No re-probe is needed here.
+
+**Resume determinism:** `computeWaves` is deterministic (stable id sort, A5); per-chunk resume detection (commit exists for the chunk's files?) applies per chunk regardless of wave. On any dirty feature branch at Step 6 resume, apply the crash-safety protocol in step 2d before re-dispatching.
+
+**Per-wave loop (in order):**
+
+For each wave produced by `computeWaves`:
+
+- **Single-chunk wave:** call the inner routine directly (today's path — no worktree, no concurrency).
+
+- **Multi-chunk wave (size 2 or more):**
+
+  **Independence gate (MANDATORY, both intersections).** Before dispatch, the coordinator MUST re-verify pairwise across the wave's chunks:
+
+  (a) `declared_files` intersection (case-insensitive — matches `computeWaves` semantics; `src/Foo.ts` and `src/foo.ts` are the same file): any non-empty pairwise intersection pulls the offending chunk into a later sequential slot and logs the serialisation reason.
+
+  (b) Wave-internal exclusive-resource check: pairwise-compare each chunk's declared `exclusive_resources` (migration prefixes, singleton registry files, etc.); any shared resource serialises those two chunks into separate slots.
+
+  Both checks are required. This is NOT the Step 2 branch-vs-main collision check — it is a pairwise comparison across the chunks within this wave.
+
+  **Concurrent dispatch:** issue all N `builder` Agent calls in a single message, each with `model: "sonnet"` and `isolation: "worktree"`, each given the plan path, chunk name, and declared-files list. Builders run normal Steps 0–5 including per-chunk G1 inside their own worktree.
+
+#### Step 2d — Serialised merge-back transaction
+
+**Applies only in parallel mode, after each multi-chunk wave's builders complete.**
+
+Keep the dispatched builder handles keyed by chunk id. Iterate the wave's chunk ids in **ascending sorted order** (NOT first-finished-first). When it is chunk C's turn, await C's specific builder result — never integrate a later chunk id before every earlier one in the wave has either committed or entered explicit sequential fallback.
+
+For each chunk C in ascending sorted order:
+
+0. **Clean-branch precondition.** Assert `git status --porcelain` on the feature branch is empty before touching C. If it is dirty, a prior merge-back was interrupted: run `git reset --hard HEAD && git clean -fd`, verify `git status --porcelain` is empty, then let per-chunk resume detection re-dispatch the affected chunk. Never apply onto a dirty feature branch.
+
+1. **Stage-untracked-for-diff (intent-to-add).** Builders never commit and never stage, so a newly-CREATED file in the worktree is untracked — and `git diff HEAD` (both `--name-only` and `--binary`) omits untracked files entirely. Mark them intent-to-add so they appear in the diff without staging content:
+
+   ```bash
+   git -C <worktree> add -AN
+   ```
+
+   `-AN` (`--all --intent-to-add`) records every untracked file as a zero-content add, so the subsequent `git diff HEAD` includes them. Without this step the merge-back silently drops every new declared file and the chunk commits without the files it created. Then compute C's result (SUCCESS / PLAN_GAP / G1_FAILED) and reported `Files changed`; compute the worktree change set with `git -C <worktree> diff --name-only HEAD` (now includes the intent-to-add untracked files).
+
+2. **Commit-integrity check** on the worktree diff (`plan-declared ⊇ builder-reported ⊇ worktree-changed`) — unchanged semantics.
+
+3. **Integration primitive — diff-apply, NOT `git merge`.** Builders never commit, so there is no worktree branch to merge; transfer the uncommitted diff (the step-1 intent-to-add ensures new files are included):
+
+   ```bash
+   git -C <worktree> diff --binary HEAD | git -C <feature-branch-root> apply --3way
+   ```
+
+   `--3way` merges against the current feature HEAD, which may have advanced as earlier siblings merged back.
+
+4. **Merge-back guard and hard cleanup.** If `git apply --3way` conflicts or fails: do NOT force-apply and do NOT rely on `git checkout -- .` or reverse-apply (these can leave unmerged index stages, conflict markers, new untracked files, or partial binary changes). Run:
+
+   ```bash
+   git reset --hard HEAD && git clean -fd
+   ```
+
+   Then verify `git status --porcelain` is empty. Fall C back to sequential re-application (re-dispatch its builder against the now-updated feature branch via the inner routine); log `INDEPENDENCE_VIOLATION` naming both chunks and the conflicting file.
+
+   **Sibling quarantine on INDEPENDENCE_VIOLATION.** A merge-back conflict disproves the wave's independence claim. Worktrees already integrated before the violation proved their disjointness and their commits stand. Every remaining unintegrated sibling worktree in this wave was built against the old wave base and is now stale: discard all of them (remove the worktrees, do NOT apply them) and re-run those chunks SEQUENTIALLY, in ascending **numeric-aware** chunk-id order (1, 2, 10 — matches `computeWaves`), against the updated feature branch (each via the inner routine). Log the quarantine list in `progress.md` alongside the `INDEPENDENCE_VIOLATION`.
+
+5. **Coordinator-owned writes on the feature branch (NEVER inside a worktree):** chunk-learnings entry (write-before-commit + partial-write recovery as in the inner routine's commit-integrity invariant), coordinator-side backup scoped lint, `git add <declared files> tasks/builds/{slug}/chunk-learnings.md`, per-chunk commit (standard message format).
+
+   **Post-commit clean-state assertion.** Immediately after the commit, verify:
+
+   ```bash
+   git status --porcelain
+   ```
+
+   The output MUST be empty. If anything remains (residue from staging, an undeclared artefact), the transaction did not close cleanly: run `git reset --hard HEAD && git clean -fd` and re-run this chunk via the inner routine rather than letting the next chunk discover the dirtiness. Only on a clean porcelain output: push, update `progress.md`, mark TodoWrite complete. The clean commit closes the transaction — it is the only point at which C's work becomes durable feature-branch state.
+
+6. Remove the worktree.
+
+**Wave failure handling.** One builder's `G1_FAILED` re-dispatches only that chunk (siblings unaffected, file-isolated). `PLAN_GAP` pauses the wave and routes to architect; siblings already integrated (earlier sorted ids) stay committed. Per-chunk escalation ladders (plan-gap at most 2 rounds, G1 at most 3 attempts) apply within the wave, unchanged.
+
+After every wave's merge-back completes, proceed to the next wave (its `depends_on` edges are now satisfied on the feature branch).
+
+---
+
+### Step 3 — Audit trail (parallel mode only)
+
+When parallel mode is engaged, record in `progress.md` per wave: wave index, chunk ids, concurrency used, merge order, and any `INDEPENDENCE_VIOLATION` occurrences, serialisation fallbacks, or worktree-unavailable fallbacks. In strict-sequential mode there are no wave-audit writes — progress writes are exactly today's.
+
+---
+
+### Step 4 — Rollout gate
+
+**Operator-phrase-driven, no persistent build counter.**
+
+Parallel mode runs ONLY when the operator includes `launch feature coordinator parallel` in the invocation phrase. Absent that phrase, `effectiveCap` is forced to 1 (today's behaviour) while still computing and displaying the wave preview at the plan-gate (Step 5) for operator information.
+
+The coordinator stores no build-count state and does not track "build N of 3." The "opt-in for the first 3 builds, then default-on" guidance in the spec is a maintainer decision: after confidence is gained, a maintainer edits this agent's default (a one-line change flipping the absent-phrase default from concurrency=1 to wave-on), recorded in `.claude/CHANGELOG.md`. It is not an automated counter the coordinator maintains.
+
+---
+
+### Step 5 — ADR-0014 callout
+
+The coordinator MUST run inline in the main session to retain top-level `Agent` access and must NEVER be dispatched as a sub-agent. Dispatching it as a sub-agent breaks both the strict-sequential and parallel loops at the first builder dispatch (`No such tool available: Task. Task is not available inside subagents.`). ADR-0014 is the authoritative record of this constraint.
 
 ## Step 7 — G2 integrated-state gate
 
@@ -458,34 +607,11 @@ git diff origin/main...HEAD --name-only | \
 Invoke `pr-reviewer` as a sub-agent with the full branch diff (`git diff origin/main...HEAD`). Extract the `pr-review-log` fenced block verbatim and write it to `tasks/review-logs/pr-review-log-{slug}-{timestamp}.md`. Record the log path in `progress.md`.
 
 Verdict handling:
-- `APPROVED` → proceed to reality-checker (§8.4)
-- `CHANGES_REQUESTED` → enter fix-loop (§8.5)
+- `APPROVED` → proceed to dual-reviewer (§8.5); if Blocking findings exist, enter the fix-loop (§8.4) first
+- `CHANGES_REQUESTED` → enter fix-loop (§8.4)
 - `NEEDS_DISCUSSION` → escalate per failure paths; do not enter fix-loop without operator direction
 
-### 8.4 — reality-checker (Significant/Major only)
-
-**Skip gate:** if the task class is Trivial or Standard, skip with note in `progress.md`: `reality-checker: skipped — task class Trivial/Standard (per GRADED policy)`. Do not invoke reality-checker for those classes.
-
-For Significant and Major tasks, invoke `reality-checker` as a sub-agent with:
-- The implementer's stated success criteria (from the plan or spec acceptance section).
-- The implementer's claimed evidence: paths to test logs, pasted log excerpts, paths to screenshot files, or deterministic-check descriptions.
-
-Extract the `reality-check-log` fenced block verbatim and write it to `tasks/review-logs/reality-check-log-{slug}-{timestamp}.md`. Record the log path in `progress.md`.
-
-Verdict handling:
-- `READY` → proceed to dual-reviewer (§8.6)
-- `NEEDS_WORK` → send the unverified criteria back to a fresh `builder` invocation to supply missing evidence or fix failing criteria. After the builder returns, **re-invoke `reality-checker`** on the updated evidence; do not proceed until the verdict becomes `READY`. Cap at 2 fix rounds. On the third: escalate per failure paths.
-- `NEEDS_DISCUSSION` → escalate per failure paths; do not enter fix loop without operator direction.
-
-**Re-review check (only when the reality-checker remediation builder pass applied code edits):** if the builder pass triggered by a `NEEDS_WORK` verdict modified files (i.e. the builder verdict's `files-changed` list is non-empty and goes beyond appending evidence to logs/screenshots), the post-remediation diff is no longer the diff that `pr-reviewer` approved in §8.3. Re-invoke `pr-reviewer` on the updated branch diff so the final state has reviewer coverage. Treat the re-review verdict per the existing §8.3 / §8.5 handling:
-
-- `APPROVED` → continue
-- `CHANGES_REQUESTED` → enter the §8.5 fix-loop on the new findings (the original 3-round cap applies to this re-review pass independently)
-- `NEEDS_DISCUSSION` → escalate per failure paths
-
-If the builder pass only appended evidence (no source-file edits), skip the re-review — pr-reviewer's earlier APPROVED still covers the final code state.
-
-### 8.5 — Fix-loop with G3
+### 8.4 — Fix-loop with G3
 
 For each Blocking finding from pr-reviewer:
 
@@ -494,12 +620,12 @@ For each Blocking finding from pr-reviewer:
 3. Re-invoke pr-reviewer on the updated diff.
 4. Cap at 3 fix-loop rounds. On the fourth: escalate with all unresolved findings per failure paths.
 
-### 8.6 — dual-reviewer
+### 8.5 — dual-reviewer
 
-Codex availability check:
+Codex availability check (a repo may pin a machine-specific fallback path in its `.claude/context/agent-context.md` section for this agent):
 
 ```bash
-CODEX_BIN=$(command -v codex 2>/dev/null || echo "/c/Users/Michael/AppData/Roaming/npm/codex")
+CODEX_BIN=$(command -v codex 2>/dev/null || echo "${CODEX_FALLBACK_PATH:-codex}")
 if [ ! -x "$CODEX_BIN" ] && [ ! -f "$CODEX_BIN" ]; then
   echo "dual-reviewer: skipped — Codex CLI unavailable or unauthenticated"
 fi
@@ -515,14 +641,14 @@ fi
 **Re-review check (only when dual-reviewer applied changes):** if dual-reviewer's verdict is `APPROVED` AND its log records any `[ACCEPT]` decisions that resulted in file edits (i.e. the "Changes Made" section of the dual-review log is non-empty), the post-dual-reviewer diff is no longer the diff that pr-reviewer approved. Re-invoke `pr-reviewer` on the updated branch diff so the final state has reviewer coverage. Treat the re-review verdict the same as §8.3:
 
 - `APPROVED` → continue
-- `CHANGES_REQUESTED` → enter the §8.5 fix-loop on the new findings (the original 3-round cap applies to this re-review pass independently)
+- `CHANGES_REQUESTED` → enter the §8.4 fix-loop on the new findings (the original 3-round cap applies to this re-review pass independently)
 - `NEEDS_DISCUSSION` → escalate per failure paths
 
 If dual-reviewer applied no changes (no `[ACCEPT]` decisions or no resulting edits), skip the re-review — pr-reviewer's earlier APPROVED already covers the final diff.
 
 If dual-reviewer was skipped (Codex unavailable), no re-review is needed — pr-reviewer's earlier APPROVED is the authoritative verdict.
 
-After §8.6 completes (or is skipped), run G3 once more to confirm integrated state is clean.
+After §8.5 completes (or is skipped), run G3 once more to confirm integrated state is clean.
 
 ## Step 9 — Doc-sync gate
 
@@ -535,19 +661,16 @@ Record verdict per the **Verdict rule** in `docs/doc-sync.md`:
 
 The `docs/spec-context.md` entry does not apply to feature pipelines — record `n/a` for it.
 
-**Enforcement invariant:** the verdict table must have exactly as many rows as `docs/doc-sync.md` registers. A missing verdict is a blocker — do not proceed. A bare `no` with no rationale, or a `no` whose rationale doesn't cite grep terms or scope rationale, is treated as missing.
+**Enforcement invariant:** the verdict table must have exactly as many rows as `docs/doc-sync.md` registers (docs registered but absent from this repo get `n/a — not present in this repo`; that row still counts). Build the row list FROM the registry at run time — never from a memorised template. A missing verdict is a blocker — do not proceed. A bare `no` with no rationale, or a `no` whose rationale doesn't cite grep terms or scope rationale, is treated as missing.
 
 Record verdicts in `tasks/builds/{slug}/progress.md` under `## Doc Sync gate`:
 
 ```markdown
 ## Doc Sync gate
-- architecture.md updated: yes (sections X, Y) | no — <rationale> | n/a
-- capabilities.md updated: yes (sections X) | no — <rationale> | n/a
-- integration-reference.md updated: yes (slug X) | no — <rationale> | n/a
-- CLAUDE.md / DEVELOPMENT_GUIDELINES.md updated: yes | no — <rationale> | n/a
-- frontend-design-principles.md updated: yes | no — <rationale> | n/a
-- KNOWLEDGE.md updated: yes (N entries) | no — <rationale>
-- spec-context.md updated: n/a
+<!-- one row per docs/doc-sync.md registry entry, derived at run time -->
+- <doc path> updated: yes (sections X, Y) | no — <rationale> | n/a | n/a — not present in this repo
+- ...
+- spec-context.md updated: n/a   <!-- always n/a in feature pipelines -->
 ```
 
 Failure to update a relevant doc is a blocking issue. Escalate to the operator — do not auto-defer.
@@ -561,8 +684,18 @@ Failure to update a relevant doc is a blocking issue. Escalate to the operator �
 - [ ] G2 passed (lint + typecheck + build:server/build:client as applicable on integrated branch state)
 - [ ] spec-conformance verdict is CONFORMANT or CONFORMANT_AFTER_FIXES
 - [ ] pr-reviewer verdict is APPROVED
+- [ ] (Significant/Major) Evidence gate — every success criterion in the plan/spec acceptance section has supplied evidence recorded in progress.md
 - [ ] Doc-sync gate verdicts recorded for all registered docs
 ```
+
+**Evidence gate (Significant/Major only) — the completion-evidence check formerly held by `reality-checker`.** Before writing the handoff, list every success criterion from the plan/spec acceptance section and map each to its evidence, written to `tasks/builds/{slug}/progress.md` under `## Evidence check`:
+
+- `passing test output` — path/excerpt of a test that covers the criterion.
+- `log excerpt` — runtime/build/server output showing the claimed behaviour.
+- `deterministic check` — file exists / export present / config value set / migration present, verifiable here by Read or Grep.
+- `manual-verification screenshot` — a screenshot path **plus a one-line textual claim of what it proves** (screenshot existence alone is not evidence).
+
+Any criterion with no evidence (or a screenshot with no textual claim) blocks the handoff — fix or supply evidence, do not proceed. For Trivial/Standard tasks, skip this gate (note `Evidence gate: skipped — task class Trivial/Standard` in `progress.md`). This is a lightweight inline checklist, not a sub-agent dispatch.
 
 Once all items pass, append the Phase 2 section to the existing `tasks/builds/{slug}/handoff.md`:
 
@@ -579,7 +712,6 @@ Once all items pass, append the Phase 2 section to the existing `tasks/builds/{s
 **spec-conformance verdict:** {verdict} ({log path})
 **adversarial-reviewer verdict:** {verdict or "skipped — diff does not match §5.1.2 security surface (per GRADED policy)"} ({log path or n/a})
 **pr-reviewer verdict:** {verdict} ({log path})
-**reality-checker verdict:** {verdict or "skipped (task class Trivial/Standard)"} ({log path or n/a})
 **Fix-loop iterations:** N
 **dual-reviewer verdict:** {verdict} | {REVIEW_GAP line verbatim, or "n/a"} ({log path or n/a})
 **REVIEW_GAP entries:** {all REVIEW_GAP lines from progress.md, one per line, or "none"}
@@ -629,7 +761,7 @@ git add tasks/builds/{slug}/handoff.md tasks/builds/{slug}/progress.md tasks/cur
 git commit -m "$(cat <<'EOF'
 chore(feature-coordinator): Phase 2 complete — branch-level review pass + doc-sync ({slug})
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"
 git push
@@ -678,7 +810,7 @@ Escalate with the full list of unresolved Blocking findings and the reviewer's r
 
 ### 7. dual-reviewer Codex unavailable
 
-Skip; write the full-format `REVIEW_GAP` entry to `progress.md` (see §8.6 for exact format). Do NOT block. Continue to Step 9. The `REVIEW_GAP` entry propagates to the handoff `REVIEW_GAP entries:` field and the end-of-phase prompt.
+Skip; write the full-format `REVIEW_GAP` entry to `progress.md` (see §8.5 for exact format). Do NOT block. Continue to Step 9. The `REVIEW_GAP` entry propagates to the handoff `REVIEW_GAP entries:` field and the end-of-phase prompt.
 
 ### 8. Doc-sync gate — missing verdict
 

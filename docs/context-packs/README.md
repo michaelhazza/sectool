@@ -1,8 +1,8 @@
 # Context Packs
 
-Mode-scoped context packs reduce per-session token cost by loading only the architecture/guidelines sections relevant to the active mode, instead of the full `CLAUDE.md` + `architecture.md` + `KNOWLEDGE.md` + `DEVELOPMENT_GUIDELINES.md` (~5,956 lines today).
+Mode-scoped context packs reduce per-session token cost by loading only the architecture/guidelines sections relevant to the active mode, instead of the full `CLAUDE.md` + `architecture.md` + `KNOWLEDGE.md` + `DEVELOPMENT_GUIDELINES.md` (often thousands of lines).
 
-> **Status: convention introduced 2026-05-03. Migration in progress.** The packs below are scaffolds — sections are referenced from `architecture.md` and `DEVELOPMENT_GUIDELINES.md` rather than duplicating content. Until each pack is filled, fall back to loading the full reference docs.
+> **Status: templates — anchors must be mapped at adoption.** The packs below reference sections of `architecture.md` and `DEVELOPMENT_GUIDELINES.md` rather than duplicating content, using `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder tokens. ADAPT.md Phase 3b (or the adopting operator) maps each token to a real heading anchor in the consuming repo's `architecture.md`. Until mapped, fall back to loading the full reference docs.
 
 ## Why
 
@@ -32,12 +32,12 @@ load context pack: review
 
 The session reads `docs/context-packs/review.md`, follows its `## Sources` block to load the named sections, and skips the rest.
 
-### Automated mode (future)
+### Loader (shipped)
 
-A thin `context-pack-loader` skill (see `references/context-pack-loader.md` once written) will:
-1. Detect the active mode from `tasks/current-focus.md` status (`PLANNING` → `implement`, `REVIEWING` → `review`, etc.) or from an explicit operator hint.
-2. Load only the sections named in the pack.
-3. Skip the always-loaded full files.
+The loader exists: `.claude/agents/context-pack-loader.md` (shipped in framework v2.2.0). It is an inline playbook — invoked via "load context pack: <mode>" in the main session — that:
+1. Detects the active mode from `tasks/current-focus.md` status (`PLANNING` → `implement`, `REVIEWING` → `review`, etc.) or from an explicit operator hint.
+2. Loads only the sections named in the pack.
+3. Skips the always-loaded full files.
 
 ## Authoring a pack
 
@@ -71,12 +71,10 @@ Skip: § 4 LLM routing (unless the diff touches LLM code), § 7 Testing posture 
 
 ## Tracking the migration
 
-This is a multi-step refactor:
+Remaining steps of the refactor:
 
-1. **Create scaffolds** ✅ (this commit) — pack files exist, list intended sources, fall back to full files until populated.
-2. **Section-anchor architecture.md** — add HTML anchors so packs can reference `#service-layer` etc. and the loader can splice precisely.
-3. **Build the loader skill** — a small `context-pack-loader.md` skill that takes a pack name and emits the sliced content.
+1. **Create pack templates** ✅ — pack files exist and list intended sources via `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens; fall back to full files until anchors are mapped.
+2. **Map anchors at adoption** — the consuming repo section-anchors its `architecture.md` and replaces each token with a real anchor (ADAPT.md Phase 3b).
+3. **Loader** ✅ — `.claude/agents/context-pack-loader.md` (shipped v2.2.0) takes a pack name and loads the sliced content.
 4. **Wire packs to agents** — `pr-reviewer` loads `review.md`, `architect` loads `implement.md`, etc.
 5. **Measure** — token count per session before/after; cut packs that don't pay back.
-
-Steps 1–2 are this week. Step 3 is a small skill. Step 4 is a per-agent edit. Step 5 closes the loop.

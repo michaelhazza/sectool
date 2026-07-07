@@ -1,5 +1,7 @@
 # LOCAL-OVERRIDE convention (framework v2.10.0+)
 
+> **DEPRECATED for agent files (v2.20.0, ADR-0006).** `LOCAL-OVERRIDE` blocks MUST NOT be used in `.claude/agents/*.md`. Agent files are framework-canonical; all project-specific operating notes live in the consuming repo's `.claude/context/agent-context.md` under a `## <agent-name>` section, which every framework agent reads at the start of every run. `validate-setup` fails the build if any agent file carries a `LOCAL-OVERRIDE` block — populated or empty; agents declare no slots at all. The mechanism below remains valid for **non-agent** managed files (docs, references) where a small in-file slot still makes sense. See `docs/decisions/0006-no-inline-agent-overrides.md`.
+
 Framework files can declare named slots where the consumer can insert app-specific content. `sync.js` extracts the consumer's content from those slots before deploying a framework update, then re-injects it. The consumer's customisations survive across framework updates without manual merging.
 
 ## Syntax

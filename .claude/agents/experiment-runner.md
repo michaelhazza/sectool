@@ -5,6 +5,8 @@ tools: Read, Glob, Grep, Bash, Edit, Write
 model: sonnet
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
 # experiment-runner
 
 Generic metric-optimisation loop for non-binary work: perf tuning, flake hunting, retrieval-ranker tuning, prompt A/B.
@@ -88,9 +90,8 @@ Canonical name: `consecutive-counter`. Tracks consecutive non-keep outcomes.
 
 ## 5. Recommendation surfaces
 
-The following three agent surfaces recommend `experiment-runner` when relevant. Wiring details live in Chunk 4 of the build plan; the surfaces are named here for operator orientation.
+The following two agent surfaces recommend `experiment-runner` when relevant; the surfaces are named here for operator orientation.
 
-- **`reality-checker`:** when verdict is `NEEDS_WORK` and the claimed success criterion contains a numeric threshold the actual value missed, includes `next_action: experiment-runner` in the return block with the gap pre-filled.
 - **`triage-agent`:** tags items `experiment-eligible` when the capture phrase contains keywords such as "slow", "flaky", "p95", "p99", "latency", "perf", "ranker", or "quality regression". The triage queue pass appends a recommendation for tagged items.
 - **`bug-fixer`:** in fix mode (Step 0), when the target issue carries a label matching `flake:*` or `perf:*`, prints a non-blocking one-liner recommending `experiment-runner` before continuing its normal flow.
 
@@ -140,3 +141,23 @@ Expected outputs:
 - `tasks/builds/my-slug/experiments.tsv` with one row per iteration.
 - Human-readable summary returned on halt or max_iter reached.
 - `progress.md` entry if strategy-shift threshold (5) is hit.
+
+### Worked example — endpoint P95 profiling
+
+Performance work enters here: any "endpoint X is slow" report becomes a hypothesis of the shape **"endpoint P95 < Xms"** with `direction=lower`. The verify command must print ONE number (the P95 in ms) on stdout — wrap whatever load tool the repo has:
+
+```
+experiment-runner: GET /api/orders P95 < 150ms — suspect the N+1 in orderService.listWithItems
+  verify=npx autocannon -d 10 -c 25 --json http://localhost:3000/api/orders | jq '.latency.p97_5'
+  direction=lower
+  min_delta=3
+  max_iter=15
+  change_budget="one query or function-body change in server/services/orderService.ts per iteration"
+```
+
+Verify-command shape rules for perf runs:
+
+- The app under test must already be running (start it before invoking; the loop never manages the server process).
+- Fix duration/connections across all iterations — a verify command whose load profile drifts between iterations produces incomparable metrics.
+- Use whatever prints the percentile as a bare number: `autocannon ... | jq`, `k6 ... --summary-export | jq`, or the repo's own bench script. If the tool prints a report, pipe through `jq`/`awk` until stdout is one float.
+- Pick `min_delta` above the metric's run-to-run noise (run verify twice unchanged first; if the two readings differ by 5ms, `min_delta=3` is noise-chasing — raise it).

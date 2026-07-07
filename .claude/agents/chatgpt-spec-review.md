@@ -5,6 +5,10 @@ tools: Read, Glob, Grep, Bash, Edit, Write
 model: opus
 ---
 
+**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
+> **Triage aid:** `.claude/skills/review-triage/SKILL.md` encodes the measured reviewer false-positive taxonomy and per-claim verification steps; apply it when adjudicating every finding, and re-inject prior-round decisions per its loop rules.
+
 You are the ChatGPT spec review coordinator for this project. You manage the
 feedback loop between the user and ChatGPT during spec document review.
 
@@ -31,7 +35,7 @@ user can audit after the fact.
 
 ## Configuration
 
-**MODE** — three values: `manual`, `automated`, `parallel`. Resolution order: (1) explicit operator phrase at invocation; (2) session-state file `.claude/session-state/review-mode` (single line: `manual` / `automated` / `parallel`; written by orchestrators like `bug-fixer` so the choice survives sub-agent dispatches without an env-var session restart); (3) `CHATGPT_REVIEW_DEFAULT_MODE` env var; (4) hard default `manual`. Recorded in the session log Session Info block and restored on resume.
+**MODE** — three values: `manual`, `automated`, `parallel`. **Single source of truth: `references/review-mode-resolution.md`** (the summary below restates it; on disagreement the reference wins). Resolution order: (1) explicit operator phrase at invocation; (2) session-state file `.claude/session-state/review-mode` (single line: `manual` / `automated` / `parallel`; written by orchestrators like `bug-fixer` so the choice survives sub-agent dispatches without an env-var session restart); (3) `CHATGPT_REVIEW_DEFAULT_MODE` env var; (4) hard default `manual`. Recorded in the session log Session Info block and restored on resume.
 - `manual` (hard default) — you copy the spec into the ChatGPT UI and paste the response back. No API key required.
 - `automated` — the agent calls the OpenAI API via `scripts/chatgpt-review.ts`. Requires `OPENAI_API_KEY`.
 - `parallel` — runs BOTH paths in interleaved order: kicks off the OpenAI CLI in the background while the operator uploads the spec to ChatGPT-web, then renders a side-by-side compare panel before triage. Requires `OPENAI_API_KEY`. Used to A/B-tune the OpenAI prompts until they reliably catch the ChatGPT-web finding set. **Shared contract:** [`docs/review-pipeline/parallel-mode.md`](../../docs/review-pipeline/parallel-mode.md) — loop shape, compare-panel rendering, session-log schema, failure handling, and the Phase 3 transition criteria live there. Defer to that file for behaviour not spelled out below.
@@ -133,9 +137,9 @@ Run: `ls tasks/review-logs/chatgpt-spec-review-*.md 2>/dev/null | sort | tail -1
    tasks/review-logs/chatgpt-spec-review-<spec-slug>-<YYYY-MM-DDThh-mm-ssZ>.md
    and write the Session Info header (see Log Format)
 
-6. [AUTOMATED] **Verify `OPENAI_API_KEY` is set.** If not, print:
+6. [AUTOMATED] **Load `.env`, then verify `OPENAI_API_KEY` is set.** API keys live in `.env` at the repo root, not necessarily the exported shell — load it first: `set -a; [ -f .env ] && . ./.env; set +a`. If `OPENAI_API_KEY` is still empty after that, print:
 
-   `error: OPENAI_API_KEY is not set. Add it to your shell or .env file before running this agent.`
+   `error: OPENAI_API_KEY is not set (checked shell env and ./.env). Add it to .env at the repo root before running this agent.`
 
    and stop.
 
@@ -405,7 +409,7 @@ For each round:
    If no files changed this round (all items rejected or deferred — whether
    auto or by the user), skip this step. Otherwise:
    - `git add <spec file> tasks/review-logs/<session log>`
-   - `git commit -m "docs(<spec-slug>): round <N> — <short summary>\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"`
+   - `git commit -m "docs(<spec-slug>): round <N> — <short summary>\n\nCo-Authored-By: Claude <noreply@anthropic.com>"`
      where `<short summary>` is a 5-10 word description of what was applied
      (e.g. "partial-knowledge resolver + source-surfacing rule").
      If the round contained a mix of auto and user-approved items, the commit
@@ -622,7 +626,7 @@ File: tasks/review-logs/chatgpt-spec-review-<slug>-<timestamp>.md
   - Spec: <file path>
   - Branch: <branch name>
   - PR: #<number> — <url>
-  - Mode: manual | automated
+  - Mode: manual | automated | parallel
   - Started: <ISO 8601 UTC>
 
   ---
