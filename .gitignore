@@ -1,11 +1,13 @@
-node_modules/
-dist/
-coverage/
-*.log
-.env
-.env.*
-.DS_Store
-*.framework-new
 
 # ChatGPT PR review transient diff bundles (session-local)
+*.framework-new
+*.log
+.DS_Store
 .chatgpt-diffs/
+.dispatch-token
+.dispatch-token.local
+.env
+.env.*
+coverage/
+dist/
+node_modules/

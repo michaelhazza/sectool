@@ -7,7 +7,7 @@
 **Spec:** —
 
 > No active build. The concurrency lock is released — a new sprint/spec/build may
-> start. All prior builds have landed on the default branch (`claude/lucid-albattani-kczh64`).
+> start. All prior builds have landed on the default branch (`main`).
 
 > Update this file when starting a new sprint, spec, or active feature branch. Status field is read by `context-pack-loader` to auto-pick a context pack.
 >
