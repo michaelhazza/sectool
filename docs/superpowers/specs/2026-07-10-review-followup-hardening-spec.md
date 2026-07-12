@@ -1,23 +1,29 @@
 # Spec — audit-tool review-follow-up hardening (2026-07-10)
 
-**Status:** accepted
+**Status:** accepted — build-ready (rev 3 clears all review rounds)
 **Spec date:** 2026-07-10
-**Last updated:** 2026-07-10 (rev 2 — applied operator review: redirect origin/method semantics, GET+POST test split, brand-forgery ban)
+**Last updated:** 2026-07-10 (rev 3 — no committed lint-violating fixture; HARD-3 reframed as defense-in-depth; classifyRedirect scope clarified to GET-only)
 **Author:** claude (fable) — from the 2026-07-10 fable diff-review, verified against shipped `main`
 **Build slug:** review-followup-hardening
 
-> **Revision log.** rev 2 folds in an operator gate-check that returned NEEDS
-> REVISION on rev 1: HARD-1 now pins the redirect boundary to **exact origin**
-> (not `hostname`, which ignored scheme/port), defines **status-specific method
-> semantics** and **malformed-`Location`** handling via a shared, unit-tested
-> `classifyRedirect` helper, and requires **distinct GET and POST** acceptance
-> cases (the POST is the credential-bearing path). HARD-3's goal is narrowed
-> from "cannot be forged" to a concrete, enforceable ban: since the branded
-> types are constructible only via an unsafe assertion, and `src/` (non-test)
-> contains exactly two such assertions — both the authorized mint sites — the
-> rule **bans `as any` / `as unknown as` in production `src/`** outside the two
-> mint files, which closes the forge path syntactically (verified: 0 other
-> occurrences). Acceptance tests now load the real `eslint.config.js`.
+> **Revision log.**
+> - **rev 3** (second operator gate-check → build-ready): (1) the HARD-3
+>   acceptance test no longer commits `src/__fixtures__/forge.ts` — a committed
+>   violation would fail the repo's own `npm run lint`; it now uses
+>   `ESLint.lintText(code, { filePath })` with inline code + synthetic paths.
+>   (2) HARD-3 is reframed from "removes the only forge path" to explicit
+>   **defense-in-depth**: TS lets an `any` value reach a brand with no `as` at
+>   all, so the claim was false; the honest layering is unexported mints + the
+>   already-active `no-unsafe-assignment` (catches `JSON.parse`-style flows,
+>   verified) + new Rules A/B for explicit assertions + an accepted code-review
+>   residual for laundering/aliases. (3) Editorial: `classifyRedirect` governs
+>   the follow-eligible **GET** path only; the POST never follows, so its
+>   `Location` is ignored and malformed-`Location` tests are GET-only.
+> - **rev 2** (first operator gate-check): HARD-1 pinned the redirect boundary to
+>   **exact origin** (not `hostname`, which ignored scheme/port), added
+>   status-specific method semantics + malformed-`Location` handling via the
+>   shared `classifyRedirect` helper, and split the acceptance suite into distinct
+>   GET and POST cases (the POST is the credential-bearing path).
 
 ## Lifecycle Declaration
 
@@ -64,10 +70,11 @@ test.
    not just the seed request and the probes/scanners (HARD-1).
 2. Prevent accidental commit of sensitive scan output by gitignoring the
    report output directory (HARD-2).
-3. Remove the syntactic forge path for the allowlist/target brand by banning
-   unsafe assertions (`as any` / `as unknown as`) in production `src/` outside
-   the two authorized mint modules, plus a named tripwire for the brands
-   themselves (HARD-3).
+3. Harden the allowlist/target brand against accidental forgery (defense-in-
+   depth): ban the common explicit-assertion bridge (`as any` / `as unknown as`)
+   in production `src/` outside the two authorized mint modules, plus a named
+   tripwire — on top of the already-active `no-unsafe-assignment` typed rule.
+   Not claimed as complete unforgeability (HARD-3).
 
 ## 3. Non-goals
 
@@ -117,8 +124,10 @@ credential leak. Confirmed still open on `main`; the 2026-07-02 audit closed the
 URL-**concatenation** vector (`RootRelativePathSchema`) but not redirect-follow.
 
 **Redirect contract — shared `classifyRedirect` helper (`src/live/redirect.ts`, new).**
-A single pure function classifies every hop *before* any transport, so GET and
-POST share one audited boundary:
+A single pure function classifies **every follow-eligible GET response** *before*
+any transport. The credential **POST is never follow-eligible** (step 3): its
+`Location` is ignored and the 3xx is evaluated in place, so `classifyRedirect`
+governs the GET pre-fetch path only.
 
 ```
 classifyRedirect(currentUrl: string, status: number,
@@ -179,9 +188,12 @@ ordered request log**; each must fail before the change and pass after:
 | d | GET | same-origin `/login → /login?step=2` (302) | followed as GET; reaches form |
 | e | **POST** | same-origin 302 **with Set-Cookie** | session established; request log is **exactly** `[GET /login, POST /login]` — **no third request** |
 | f | **POST** | 302 → `https://evil.example/` | **no request to `evil.example`**; result is login-failure (or session iff the 3xx itself carried the cookie); assert the redirect URL was never fetched |
-| g | either | 3xx with **no** `Location` | terminal `redirect-missing-location`; nothing fetched |
-| h | either | 3xx `Location: javascript:alert(1)` (and a malformed value) | terminal `redirect-invalid-location`; nothing fetched |
+| g | GET | 3xx with **no** `Location` | terminal `redirect-missing-location`; nothing fetched |
+| h | GET | 3xx `Location: javascript:alert(1)` (and a malformed value) | terminal `redirect-invalid-location`; nothing fetched |
 
+Rows a–d and g–h exercise the GET pre-fetch (the only follow-eligible stage);
+e–f exercise the credential POST, which never follows and never consults
+`classifyRedirect` — its `Location` is ignored and the 3xx is evaluated in place.
 Test (e) is the crux: it proves the **credential-bearing POST** path is guarded
 by asserting the exact pre-redirect request set and the absence of any request to
 the redirect target — not merely the final result.
@@ -236,19 +248,33 @@ exits 0. Fails before, passes after.
 the brand being unforgeable; a stray cast in a new module would type-check and
 bypass provenance with no signal in lint or CI.
 
-**Scope of the guarantee (honest framing).** A name-matching lint rule alone is
-*not* an unforgeability proof — import aliases (`import { AllowedTarget as AT }`),
-local `type` aliases, and bare `as any` all evade a rule keyed on the literal
-type name. The durable invariant instead comes from two facts working together:
-(1) the branded types are constructible only through an **unsafe assertion** — a
-plain object is not assignable to `Brand & {...}`, so TypeScript forces
-`as unknown as X` or `as any`; and (2) production `src/` (non-test) contains
-**exactly two** such assertions today, both the authorized mint sites
-(`src/config/load.ts:30`, `src/live/gate.ts:17`) — verified: zero others. So
-banning `as any` / `as unknown as` in production `src/` outside those two files
-removes the *only syntactic bridge* an arbitrary value could use to reach the
-brand. A determined author editing a mint file or adding an exemption can still
-forge — that residual is a code-review boundary, not a lint one, and is accepted.
+**Scope of the guarantee (defense-in-depth, not a proof).** This item is
+**defense-in-depth**, not a complete removal of the forge path — TypeScript's
+structural typing means an `any` value can reach a branded type without any `as`
+expression at all (e.g. `const x: AllowedTarget = JSON.parse(s)`), and assertion
+*laundering* through an intermediate concrete type (`v as object as AllowedTarget`,
+`v as never as AT`) or an aliased brand name evades a syntax rule keyed on
+`unknown`/`any`/the literal type name. The layered posture is:
+
+1. **Unexported mints** — `mintAllowedTarget`/`mintAllowlist` are the only
+   sanctioned constructors; nothing else can produce the brand without an unsafe
+   step. (Existing — RESOLVED.)
+2. **Existing typed lint already blocks plain `any`-flows** — the repo runs
+   `@typescript-eslint` `recommendedTypeChecked`, so `no-unsafe-assignment` /
+   `no-unsafe-argument` are **already active** and already error on
+   `const x: Brand = JSON.parse(...)` or an untyped library return assigned into
+   the brand (verified against the real config during authoring). The reviewer's
+   `JSON.parse` / `legacyValue()` vectors are therefore already caught today —
+   this item does **not** need to re-cover them.
+3. **New Rules A + B (this item)** close the most common *explicit-assertion*
+   bridge (`as any`, `as unknown as …`) in production `src/` and name the brand
+   for a friendly diagnostic.
+4. **Accepted residual (code-review boundary, not lint):** assertion laundering
+   via an intermediate concrete type (`as object as X`, `as never as X`), aliased
+   brand names, and edits inside the exempt mint files or to the eslint config
+   itself. These are **not** claimed as lint-blocked. Do not call the brand
+   "unforgeable"; call it "hard to forge by accident, with the trusted boundary
+   being the two mint modules + the eslint config under code review."
 
 **Required change.** In `eslint.config.js` add a `files: ['src/**/*.ts']` /
 `ignores: ['**/*.test.ts', 'src/config/load.ts', 'src/live/gate.ts']` block with
@@ -268,14 +294,22 @@ current tree (the two mint sites and all `*.test.ts` casts are exempt).
 
 **Acceptance test** (`benchmark/brand-guard.test.ts`): drive the **real**
 `eslint.config.js` via the `ESLint` class (`new ESLint({ cwd: repoRoot })` +
-`lintText(code, { filePath })`, or `lintFiles` over temp fixtures) — not an inline
-`Linter.verify()`, so the test proves the shipped flat-config `files`/`ignores`
-selection actually applies. Assert:
-- `const t = x as unknown as AllowedTarget` at `src/__fixtures__/forge.ts`
-  (non-exempt) → ≥1 error.
-- the same text at `filePath` `src/live/gate.ts` → 0 errors (exempt).
-- the same text at `filePath` `src/foo.test.ts` → 0 errors (exempt).
-- a plain `y as any` at a non-exempt `src/*.ts` path → error (Rule A).
+`lintText(code, { filePath })`). **Supply the offending code as an inline string
+with a synthetic `filePath`; do NOT commit a violating fixture under `src/`** —
+a committed violation would fail the repo's own `npm run lint` gate. `lintText`
+applies the flat-config `files`/`ignores` for the given path without the file
+existing on disk, which is exactly what proves the config selection works. Assert:
+- `const t = x as unknown as AllowedTarget` with `filePath: 'src/__synthetic__/forge.ts'`
+  (non-exempt) → ≥1 error (Rules A+B).
+- the same text with `filePath: 'src/live/gate.ts'` → 0 errors (exempt).
+- the same text with `filePath: 'src/foo.test.ts'` → 0 errors (exempt).
+- `const y = z as any` at a non-exempt `src/*.ts` path → error (Rule A).
+- **Documented residual (asserts the boundary):** `type AT = AllowedTarget; const t = v as object as AT`
+  at a non-exempt path → **0 errors from Rules A/B** (records that laundering +
+  alias is an accepted residual, per point 4), and a separate assertion that
+  `const t: AllowedTarget = JSON.parse(s)` **does** error under the shipped config
+  (no-unsafe-assignment, point 2).
+
 Fails before the rules are added, passes after.
 
 ## 6. Out of scope — resolved / cosmetic (record only)
@@ -307,8 +341,7 @@ Fails before the rules are added, passes after.
 | `.gitignore` | HARD-2 — add `reports/` |
 | `benchmark/gitignore.test.ts` (or `src/report/json.test.ts`) | HARD-2 — assert `reports/` ignored |
 | `eslint.config.js` | HARD-3 — `src/`-scoped block: Rule A (ban `as any` / `as unknown as`) + Rule B (named brand tripwire), exempting the two mint files + `*.test.ts` |
-| `benchmark/brand-guard.test.ts` (new) | HARD-3 — drives the real `eslint.config.js` via the `ESLint` class over fixtures |
-| `src/__fixtures__/forge.ts` (new, test fixture) | HARD-3 — non-exempt file containing a forbidden cast for the acceptance test |
+| `benchmark/brand-guard.test.ts` (new) | HARD-3 — drives the real `eslint.config.js` via `ESLint.lintText(code, { filePath })` with **inline code + synthetic paths** (no committed violating fixture); covers non-exempt error, both exemptions, and the documented alias/laundering residual |
 
 No schema, config-registry, migration, or report-format changes. Additive,
 backward-compatible internal-type changes only: `HttpResponse` gains
@@ -354,10 +387,13 @@ recall/precision runs in the scanner Docker image in CI and is unaffected.)
   the helper contract, the required-change steps, and the test matrix (downgrade
   + port + host cases). The credential POST never follows a redirect; the GET
   follows same-origin only, hop-capped. ✓
-- HARD-3's claim matches its mechanism: the ban removes the only syntactic forge
-  bridge (`as any` / `as unknown as`), verified against 0 non-mint occurrences;
-  the residual (editing a mint/exempt file) is explicitly a code-review boundary,
-  not claimed as lint-enforced. ✓
+- HARD-3's claim matches its mechanism: it is framed as **defense-in-depth**, not
+  complete unforgeability. Rules A/B close the common explicit-assertion bridge
+  (verified 0 non-mint `as any`/`as unknown as` occurrences today); plain
+  `any`-flows are already caught by the active `no-unsafe-assignment`; and the
+  laundering/alias/mint-file residual is explicitly an accepted code-review
+  boundary with a documenting test case. No committed fixture violates the gate
+  (the acceptance test uses inline code + synthetic paths). ✓
 - Every item names a concrete acceptance test that loads the real artifact
   (injected client with a request log for HARD-1; the real `eslint.config.js` for
   HARD-3) with a before/after assertion. ✓
