@@ -77,7 +77,8 @@ For each `docs/context-packs/*.md`:
 
 - Extract every `architecture.md#<anchor>` reference.
 - For each anchor, grep `architecture.md` for `<a id="<anchor>"></a>`.
-- Record any missing anchors.
+- Record any missing anchors — a mapped reference that no longer resolves is a **failure** (packs have drifted from architecture.md).
+- Separately, grep each pack for unmapped `{{ARCHITECTURE_ANCHOR:` placeholder tokens. Tokens present means the packs are installed but never adopted (ADAPT.md Phase 3b) — record a **warning**, not a failure: pack consumers fall back to whole-file reads in that state, so nothing is broken, but the repo pays full-document token cost on every pack-wired agent invocation. Name the fix in the warning: map each purpose via `.claude/.framework-state.json` substitutions (`"ARCHITECTURE_ANCHOR:<purpose>": "#<real-anchor>"`), then rebaseline with `node .claude-framework/sync.js --adopt`.
 
 If `architecture.md` does not exist (target repos that haven't authored one yet), record this as a single warning and skip the anchor checks.
 

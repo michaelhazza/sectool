@@ -49,3 +49,12 @@ authoritative; the entry has been corrected to match it:
 ## review-result.v1 (prior version — read-only parse mode only)
 
 Original shape. No `risk_domain`, no `source_refs`, no versioning quartet. Parser accepts v1 in backward-compat read-only mode; schema validation against v2 schema returns FAIL for v1 inputs.
+
+---
+
+## Consumer-local schema changes
+
+Consuming repos that keep their own schemas in `schemas/` record those changes between the markers below — sync.js preserves slot content on every framework update. The framework schema history above is framework-owned; do not edit it.
+
+<!-- LOCAL-OVERRIDE:start name="consumer-entries" -->
+<!-- LOCAL-OVERRIDE:end name="consumer-entries" -->

@@ -360,6 +360,7 @@ const ACCEPTANCE_CHECK_SHELL_METACHARACTERS = [
  * NUL/escape sequences have no place in a verify command. Space is the only
  * permitted separator (tab is a control char and is rejected with the rest).
  */
+// eslint-disable-next-line no-control-regex
 const ACCEPTANCE_CHECK_CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 export interface AcceptanceCheckCommandResult {

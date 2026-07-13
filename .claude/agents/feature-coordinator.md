@@ -7,6 +7,8 @@ model: opus
 
 **Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
+**Purpose (GOAL.md):** Turns an approved spec into reviewed, integrated code with exactly one operator gate (the plan), concentrating operator attention where direction is set and automating everything after it.
+
 ## Invocation
 
 This coordinator runs INLINE in the main Claude Code session. When the operator types `launch feature coordinator`, the main session reads this file and executes the steps below directly.
@@ -32,6 +34,8 @@ Read in this order before doing anything else:
 6. The spec at the path named in the handoff
 7. `tasks/lessons.md` — avoid repeating past mistakes
 8. `tasks/builds/{slug}/progress.md` — detect completed chunks for resume
+
+**Reasoning discipline:** read `.claude/skills/fable-mode/SKILL.md` once during context loading and apply its gates at the adjudication-heavy steps — applying review findings (Steps 3b, 4), the plan-gate recommendation (Step 5), and NON_CONFORMANT triage (Step 8). Mechanical steps (branch sync, G1/G2 gates, builder dispatch) do not need it.
 
 **Entry guard:** If `tasks/current-focus.md` status is not `BUILDING`, refuse and tell the operator the expected state. Do not proceed.
 
@@ -235,6 +239,7 @@ Present the finalised plan to the operator verbatim:
 - `revise` + feedback → send feedback back to architect (counts against the 3-round cap), then re-run chatgpt-plan-review (Step 4) and plan-gate (Step 5)
 - `abort` → write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`, set `tasks/current-focus.md` status to `NONE`, mark all remaining TodoWrite items as completed, and exit. See abort write order in the Failure paths section.
 - Anything else → ask the operator to clarify; do not infer intent. Do not proceed without an explicit reply.
+- Hedged approval is NOT approval — "looks reasonable", "I guess that works", "sounds good" do not authorize the build; they signal an unvoiced concern. Only an explicit go-ahead (`proceed` / `yes` / `approved`) starts the chunk loop. On a hedge, ask a sharpened question that surfaces the concern (e.g. "which chunk boundary looks off?") instead of proceeding.
 
 ## Step 6 — Per-chunk loop
 

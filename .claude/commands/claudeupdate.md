@@ -80,7 +80,25 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    #     into state are now seen as 'clean' and skipped silently. Files genuinely
    #     diverging from framework get .framework-new siblings.
    node .claude-framework/sync.js
+   ```
 
+   **6c2 — One-time context-pack adoption (auto-mapping).** Completes ADAPT.md Phase 3b automatically so no repo keeps paying whole-file context costs because the mapping was left "for later". The anchor-choosing is judgment work executed by YOU (the session running this playbook), not by a script — and the step self-skips forever once a repo is mapped.
+
+   Trigger (skip 6c2 entirely unless BOTH hold): `architecture.md` exists at the repo root, AND `npx tsx scripts/audit-context-packs.ts` prints one or more `UNMAPPED` lines.
+
+   When triggered:
+
+   1. Anchor the doc (deterministic, idempotent): `npx tsx scripts/generate-architecture-anchors.ts` — inserts `<a id="…">` before every unanchored `## ` heading, using the same slug algorithm the audit validates.
+   2. List both sides: the `UNMAPPED` purposes from the audit, and the available anchors via `npx tsx scripts/audit-context-packs.ts --list-anchors`.
+   3. For EACH distinct purpose, choose the anchor whose section actually serves that purpose — read the candidate sections (skim content when the heading alone is ambiguous); do not blind string-match names. Nearest enclosing section when no exact counterpart exists; every purpose MUST map to some existing anchor; never fabricate an anchor id.
+   4. Write the mapping into `.claude/.framework-state.json` → `substitutions`, one entry per purpose, keeping the leading `#`: `"ARCHITECTURE_ANCHOR:<purpose>": "#<real-anchor>"`.
+   5. Rebaseline: `node .claude-framework/sync.js --adopt` (the INFO line should read rebaseline mode).
+   6. Verify: `npx tsx scripts/audit-context-packs.ts --strict-unmapped` exits 0 with zero `UNMAPPED` lines.
+   7. Record the purpose→anchor table in the step-9 report, and add one line to the 6f commit message: `context-packs: mapped <N> anchor purposes`.
+
+   **Fail-safe — mapping trouble never blocks the version bump.** If verification fails or a mapping is genuinely undecidable, revert the substitution entries you added, continue the update WITHOUT the mapping, and mark the repo `mapping incomplete — <reason>` in the final report. The audit's `UNMAPPED` advisories keep the incomplete state visible, and this step re-arms on the repo's next `/claudeupdate`.
+
+   ```bash
    # 6d. Detect unresolved .framework-new conflicts across the WHOLE consumer tree
    #     (excluding .git and the submodule's own .git). sync.js can write
    #     .framework-new under .claude/, scripts/, schemas/, docs/, references/, etc.
@@ -89,6 +107,32 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
      CONFLICT_COUNT=$(echo "$CONFLICTS" | wc -l)
      echo "PAUSE: $CONFLICT_COUNT .framework-new conflict(s) need manual merge before continuing."
      echo "$CONFLICTS"
+     exit 1
+   fi
+
+   # 6d2. Behavioural-file divergence guard. Agents, skills, hooks, and commands
+   #      must be VERBATIM framework-canonical after every update — a consumer
+   #      copy that still diverges is silently shadowing framework behaviour.
+   #      Repo-specific behaviour belongs in .claude/context/agent-context.md /
+   #      skill-context.md (read first by every canonical agent at runtime),
+   #      never in the canonical files themselves.
+   BEHAVIOURAL_DIVERGENCE=$(node -e "
+     const s = require('./.claude/.framework-state.json');
+     const hits = Object.entries(s.files || {})
+       .filter(([p, e]) => e.customisedLocally
+         && /^\.claude\/(agents|skills|hooks|commands)\//.test(p)
+         && !/^\.claude\/agents\/extensions\//.test(p))
+       .map(([p]) => p);
+     if (hits.length) console.log(hits.join('\n'));
+   ")
+   if [ -n "$BEHAVIOURAL_DIVERGENCE" ]; then
+     echo "PAUSE: behavioural files diverge from framework-canonical:"
+     echo "$BEHAVIOURAL_DIVERGENCE"
+     echo "Resolution is framework-wins, never keep-local: relocate any repo-specific"
+     echo "content into .claude/context/agent-context.md (agents) or"
+     echo ".claude/context/skill-context.md (skills), restore the canonical file,"
+     echo "then re-run /claudeupdate. See /claudemerge § Behavioural files and"
+     echo "SYNC.md § Ownership contract."
      exit 1
    fi
 
@@ -119,13 +163,19 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    - The operator merges (via `/claudemerge` or by hand), deletes any remaining `.framework-new` sibling, then re-runs `/claudeupdate` for that repo.
    - On re-run, any migration that returned `conflict` last time is retried (it is intentionally NOT recorded in `appliedMigrations` until it returns `applied` or `skipped`).
 
+7b. **Behavioural files: framework-canonical always wins.** The entire point of the framework is that every consuming repo runs the SAME agents, skills, hooks, commands, and content triggers — never locally-overridden variants. When a `.framework-new` conflict (or the 6d2 guard) involves `.claude/agents/*.md` (excluding `extensions/`), `.claude/skills/**`, `.claude/hooks/*`, or `.claude/commands/*`:
+   - The resolution is **always** the framework version, verbatim. There is no keep-local option for these paths.
+   - Any repo-specific delta found in them is **relocated**, not preserved in place: agents → the matching `## <agent-name>` section of `.claude/context/agent-context.md`; skills → `.claude/context/skill-context.md`. Both files are adopt-only (never overwritten by sync) and are read FIRST by every canonical agent/skill at runtime (ADR-0006), so the repo-specific behaviour still applies — without ever forking the canonical file.
+   - Hooks and commands have no runtime overlay: a local delta there is proposed upstream (a framework-repo PR) or dropped; the consumer copy still ends byte-identical to canonical.
+   - `/claudemerge` § *Behavioural files* implements this relocation protocol; `validate-setup` flags any residual divergent agent file as a critical finding.
+
 8. **On migration failure (6b throws):**
    - `sync.js` has NOT run yet — the consumer's working tree only has the bumped submodule pointer.
    - Do NOT commit or push.
    - Report `failed — migration v<X> threw <error>`. Surface the error to the operator.
    - The runner persists state after each successfully-completed migration, so re-running `/claudeupdate` resumes from the failed one (operator must fix the root cause first).
 
-9. **Final report.** Single plain table — one row per repo. Columns: Repo, Before, After, Sync, Migrations, Outcome.
+9. **Final report.** Single plain table — one row per repo. Columns: Repo, Before, After, Sync, Migrations, Outcome. When 6c2 ran for a repo, append to its Outcome cell: `packs: mapped <N> purposes` (with the purpose→anchor table below the report) or `packs: mapping incomplete — <reason>`.
 
    Example:
    ```
@@ -158,8 +208,10 @@ Columns: Repo; Current sha/version; Target sha/version; Branch; Dirty (working t
 - **Never `--force` past dirty state.** If a repo isn't on `main` or has uncommitted work, skip and report. Don't try to be clever.
 - **One commit per repo.** Submodule bump + migrations + sync.js results land in a single commit (step 6f). No batching across repos.
 - **No auto-resolution of `.framework-new` conflicts.** Customised files survive only because manual review is the merge point. The one-shot pauses on conflict; the operator resolves and re-runs.
+- **Behavioural files are never merged — framework wins, deltas relocate.** For `.claude/agents/` (excluding `extensions/`), `.claude/skills/`, `.claude/hooks/`, and `.claude/commands/`, the operator decision is WHERE the local delta goes (`agent-context.md` / `skill-context.md` / upstream PR), never WHICH side wins. The update is not complete while any behavioural file diverges from canonical (guard 6d2).
 - **Migrations run BEFORE sync.js, both before commit.** Migrations get the post-bump submodule via `frameworkRoot` and can pre-populate state so `sync.js` skips files the consumer already has at framework-equivalent content. See `migrations/README.md § Lifecycle position` for the rationale.
 - **Conflict-status migrations are retried on the next run.** The runner only records a migration as applied when it returns `applied` or `skipped`. A `conflict` result intentionally leaves the migration unrecorded so it re-runs after the operator merges the related `.framework-new` files.
+- **Context-pack adoption is part of the update, not a separate chore.** Step 6c2 runs automatically, exactly once per repo (its trigger — `UNMAPPED` advisories — disappears once mapped), and never blocks the bump (fail-safe skip with a visible `mapping incomplete` outcome that re-arms next run).
 - **Skip the current working directory** unless the operator passes it explicitly. The session's own repo is usually already in flight; if it's behind, surface it but don't auto-commit there — let the operator decide.
 
 ## Arguments

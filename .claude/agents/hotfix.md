@@ -148,6 +148,7 @@ If the fix needs to ship to production immediately, the user owns the deploy —
 - KNOWLEDGE entry is mandatory — the durable artifact of the fix.
 - Never auto-commit. The user decides when to land it.
 - Never use `--no-verify`. If a pre-commit hook fails, fix the issue and try again.
+- No wargame: hotfix is the speed path. Do not generate a wargame artifact before an incident fix; if the fix reveals a risky follow-up operation, wargame the follow-up.
 
 ---
 

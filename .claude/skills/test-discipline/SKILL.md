@@ -3,6 +3,8 @@ name: test-discipline
 description: Use when writing or modifying tests, mocks, fixtures, or acceptance criteria; when a test passes suspiciously easily; after reordering calls in code under test; or when deciding what KIND of test a requirement needs (pure unit vs DB-integration vs gate).
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## test-discipline` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Test discipline
 
 Rules for tests that actually prove something, distilled from post-mortems of tests that passed while the feature was broken.
@@ -11,6 +13,7 @@ Rules for tests that actually prove something, distilled from post-mortems of te
 
 - Assertions only inside a loop or `if` over possibly-empty data pass vacuously. Every test has at least one assertion that runs unconditionally. `if (cond) return;` at the top of a test reports PASSED with zero assertions — use the runner's skip API (`ctx.skip()`).
 - Never re-implement production logic inline in a test — a re-implemented classifier tests a copy, not the code. Assert semantic contracts (WHERE predicates, call args, one row at the durable layer), never source text or internal call sequences; deliberately verify the test fails pre-fix; canonicalise nondeterministic output before comparing.
+- For bug-fix repro tests, have a fresh-context subagent write the failing repro WITHOUT knowledge of the fix — a test written by the fix's author can be unconsciously shaped to pass the fix rather than to reproduce the bug.
 - Verify every `vi.mock` path exactly matches the production import specifier — a mismatched relative path silently never intercepts and the suite goes false-green. A `vi.fn()` spy never wired to the mocked module can never fail; mocking both sides of a seam lets the mock supply a field the real path never populates.
 - `vi.unmock` after import is a no-op — mock declarations hoist above imports and the system-under-test binds to the mocked dependency. Split integration tests into a file with no top-level mock (or isolate modules and re-import everything), and sanity-assert the rewire happened (`dynamicImport.fn !== topLevelImport.fn`).
 - Integration tests touching FORCE-RLS tables must set the tenant GUC first, or writes affect 0 rows and the assertions never fire.

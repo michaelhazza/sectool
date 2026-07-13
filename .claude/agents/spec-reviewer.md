@@ -7,6 +7,8 @@ model: opus
 
 **Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
+**Purpose (GOAL.md):** Hardens specs before build so operator attention is not spent re-deciding direction mid-build.
+
 ## Configuration
 
 **`MAX_ITERATIONS = 5`** — the maximum number of Codex review cycles across the **entire lifetime of a spec**, not per-invocation. To change the cap, edit this single line. Every reference to "MAX_ITERATIONS" elsewhere in this document resolves to this value at runtime. Only full Codex review cycles count against this cap.

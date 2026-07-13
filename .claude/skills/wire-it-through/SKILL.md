@@ -3,6 +3,8 @@ name: wire-it-through
 description: Use whenever adding a new capability (table, service, route, job, event, component, field, enum value) to verify it is wired end-to-end before calling it done, and when adding fields that cross serialization or client-server boundaries. The single most common build failure across all review history is a component that exists, compiles, and is tested — but is never called.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## wire-it-through` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Wire it through
 
 "Shipped but unwired" is the #1 conformance gap across hundreds of builds: the migration lands, the service exists, tests pass — and the hot path never touches any of it. Existence is not integration.

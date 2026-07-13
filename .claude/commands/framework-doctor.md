@@ -24,7 +24,16 @@ Diagnostic sweep over the framework repo or a consuming repo (auto-detected). Ca
 
 6. **Check 5 — Version drift (consumer only).** Compare: `.claude/.framework-state.json` `frameworkVersion`, the submodule checkout's `.claude/FRAMEWORK_VERSION`, and the submodule remote tip (`git -C .claude-framework fetch origin main --quiet` then `origin/main`'s version). Report current vs mounted vs available, plus `appliedMigrations` count vs migrations shipped. Behind the tip → suggest `/claudeupdate`; state vs mounted mismatch → suggest `node .claude-framework/sync.js --doctor` for the per-file state diagnosis.
 
-7. **Report.** One table per check, in order, each with a one-line verdict (`OK` or `N findings`). Close with a single summary line: `framework-doctor: N checks, M findings, 0 writes`.
+7. **Check 6 — Overlay section validity (skill-context.md).** Agent-mediated, Node-based (this framework runs on Windows — no `grep`/`sed`/`date` pipelines). Extract every `^## ` heading from `.claude/context/skill-context.md` with a Node snippet, and for each test whether `.claude/skills/<name>/SKILL.md` exists. A section naming no existing skill is a finding (a typo or a renamed/removed skill). One row per section: section name, skill exists (bool). Skip gracefully when the overlay file is absent (adopt-only — a consumer may not have populated it). Example:
+   ```
+   node -e "const fs=require('fs');const f='.claude/context/skill-context.md';if(!fs.existsSync(f)){process.exit(0);}const body=fs.readFileSync(f,'utf8').replace(/<!--[\s\S]*?-->/g,'');const secs=body.split(/\r?\n/).filter(l=>/^##\s/.test(l)).map(l=>l.replace(/^##\s+/,'').trim());for(const s of secs){console.log(s, fs.existsSync('.claude/skills/'+s+'/SKILL.md'));}"
+   ```
+
+8. **Check 7 — Stale un-promoted overlay entries.** Agent-mediated, Node-based. For each dated entry (`### YYYY-MM-DD …`) in `.claude/context/skill-context.md` that lacks a `> promoted in` marker, compute the entry age against the current date and flag entries older than one quarter (~90 days). This is an **awareness finding** (a compounding leak — a durable, generalisable lesson that never drained upstream to the canonical skill), not a hard failure. One row per stale entry: skill section, entry date, age (days). Age is computed by the agent against the current date; no persisted state. See `references/skill-overlay-convention.md` for the drain protocol these two checks watch.
+
+9. **Check 8 — Eval suite validity.** Agent-mediated, Node-based (same posture as Checks 6–7). For each `eval/*/` directory: parse `config.json` and confirm it names a `promptModule` and a known `provider`; parse every `cases.jsonl` line and confirm the five required keys (`id`, `input`, `expected`, `notes`, `source`) with `expected` carrying a `verdict` of `issue`/`clean`; parse `baseline.json` if present. One row per suite: suite, config valid (bool), cases valid (bool), baseline present (bool). A suite with `cases.jsonl` but no `baseline.json` is an advisory finding (a normal run would exit non-zero until seeded with `--accept`). Skip gracefully when no `eval/` directory exists (most consumers have none). Format spec: `references/eval-suite-format.md`.
+
+10. **Report.** One table per check, in order, each with a one-line verdict (`OK` or `N findings`). Close with a single summary line: `framework-doctor: N checks, M findings, 0 writes`.
 
 ## Rules
 

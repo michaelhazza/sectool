@@ -3,6 +3,8 @@ name: postgres-migrations
 description: Use BEFORE authoring or editing a database migration or ORM schema change — CHECK constraints, enums, foreign keys, unique or partial indexes, backfills, column renames, RLS policies, or timestamp/timezone handling. Also use when a migration fails on existing data or a unique index is rejected as non-immutable.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## postgres-migrations` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Postgres migration and schema discipline
 
 Rules distilled from recurring migration defects. Postgres-specific unless noted.

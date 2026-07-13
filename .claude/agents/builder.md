@@ -13,7 +13,7 @@ You implement a single named chunk from an implementation plan. You are a leaf s
 
 Read in order:
 1. `CLAUDE.md`
-2. `architecture.md` — if present; skip when the repo has not authored one
+2. `architecture.md` — if present; skip when the repo has not authored one. **Pack-sliced load (preferred):** if `docs/context-packs/implement.md` exists and contains no `{{ARCHITECTURE_ANCHOR` placeholder tokens, load only the `architecture.md` sections named in its `## Sources` block (anchor-slice mechanics per `.claude/agents/context-pack-loader.md` Step 2: `grep -n '<a id=' architecture.md`, then `Read` with offset/limit between anchors) and honour the pack's `## Skip` conditionals, instead of reading the whole file. If any named anchor fails to resolve, fall back to the whole-file read. Either way, report one line in your return summary using the exact shared format pinned in `.claude/agents/context-pack-loader.md` Step 4: `context-load: implement pack. Sources: <N> sections from 1 file (~<L> lines). Skipped: <K> sections. Fallbacks: 0.` on a sliced load, or `context-load: full architecture.md (<reason>)` on fallback (`<reason>` from the fallback vocabulary in `context-pack-loader.md` Step 4).
 3. `DEVELOPMENT_GUIDELINES.md` — read if present and the chunk touches migrations, schema, services, routes, shared libs, tenant-isolation policies, or LLM-routing code. Skip when absent OR for pure-frontend / pure-docs chunks.
 4. The plan file at the path provided by the caller
 5. The specific chunk section in the plan
@@ -76,7 +76,7 @@ Checks 1-3 correspond to CLAUDE.md §6 rules 1-3; checks 4-5 are field-sourced a
 
 3. **Surface, don't smuggle** — If you notice dead code, a smell, or doc drift while implementing, do NOT fix it silently. Record it in the chunk verdict's `Notes for caller:` field and route it to `tasks/todo.md` under the heading `## From builder — <YYYY-MM-DD>`. If no convention exists yet in that file, create the heading.
 
-4. **Extend-type-then-plumb** — When you extend a discriminated union or interface with an optional field for an architectural reason (e.g. adding `partnerStatus?` to a row-action target for inactive-partner precedence), `git grep` every `kind: '<variant-name>'` call site BEFORE returning SUCCESS. Confirm the new field is populated at every site where the architectural reason applies, OR explicitly record the partial-rollout (which sites you covered, which you deferred and why) in the chunk verdict's `Notes for caller:` field. A type extension without plumb-to-callers verification is a partial-rollout disguised as a completion — review will catch it as a TOCTOU or §10.5-style precedence bug at the un-plumbed sites. Source: 9-round chatgpt-pr-review parallel-mode loop on a multi-tenant admin/partner console, May 2026; a single `ActionTarget` extension that didn't reach all five row variants surfaced as OAI-PR-003 in round 3 and required a sweep fix in round 6 (CW6-1) covering 6 more service mutation sites.
+4. **Extend-type-then-plumb** — When you extend a discriminated union or interface with an optional field for an architectural reason (e.g. adding `partnerStatus?` to a row-action target for inactive-partner precedence), `git grep` every `kind: '<variant-name>'` call site BEFORE returning SUCCESS. Confirm the new field is populated at every site where the architectural reason applies, OR explicitly record the partial-rollout (which sites you covered, which you deferred and why) in the chunk verdict's `Notes for caller:` field. A type extension without plumb-to-callers verification is a partial-rollout disguised as a completion — review will catch it as a TOCTOU or §10.5-style precedence bug at the un-plumbed sites.
 
 5. **Reuse-before-duplicate** — Before writing a block that feels familiar, Grep for an existing helper, service, or component that already does it, and reuse or extend it. Never write the same logic twice (CLAUDE.md §6 "never duplicate logic"). The Three-Similar-Lines check limits premature NEW abstraction; it is never licence to copy-paste — reusing an existing helper is always allowed and always preferred over a second copy. Projects with a duplicate-block CI gate (e.g. a jscpd ratchet baseline) fail on ANY net-new duplicated block: complying while writing costs seconds, fixing after CI red costs a full fix loop. Source: 2026-07-04 coding-process audit — repeated code blocks are the field's most-reported Claude Code failure mode, and this checklist previously omitted the reuse rule while check 1 read like copy-paste licence.
 
@@ -151,6 +151,7 @@ What was implemented: [one paragraph]
 Plan gap (if any): [description]
 G1 attempts (per check): {lint: N, targeted tests: N}
 Notes for caller: [out-of-scope observations — dead code, smells, drift; do NOT fix in this chunk; route to tasks/todo.md]
+DID NOT TOUCH (intentionally): [adjacent issues noticed but deliberately left alone — scope-discipline evidence the coordinator can audit; an empty list is fine, an absent line is not]
 ```
 
 ## Hard rules

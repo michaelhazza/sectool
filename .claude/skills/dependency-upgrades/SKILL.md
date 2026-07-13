@@ -1,7 +1,9 @@
 ---
 name: dependency-upgrades
-description: Use when bumping, adding, or removing packages — lockfile changes, npm audit findings, security advisories, peer-dependency conflicts, version overrides, or major-version migrations. Install success proves nothing; the failure arrives at build, test, or runtime.
+description: Use when bumping, adding, or removing packages — lockfile changes, npm audit findings, security advisories, install-script policy, peer-dependency conflicts, version overrides, or major-version migrations. Install success proves nothing; the failure arrives at build, test, or runtime.
 ---
+
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## dependency-upgrades` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
 
 # Dependency upgrades
 
@@ -12,6 +14,15 @@ A dependency bump is a contract change you didn't author. The install succeeding
 - Read the changelog/breaking-changes list before any major bump — never bump a major on version number alone. Enumerate which breaking items touch code this repo actually calls; "we don't use that API" is a grep, not a guess.
 - Multi-major jumps (v2 → v5) go one major at a time, verifying at each step — each major's migration guide assumes you start from the previous one, and a combined jump makes the failing layer unattributable.
 - Before adding a new package, check whether an existing dependency (or the platform) already covers it — every addition is a supply-chain and upgrade-treadmill cost.
+
+## Install scripts and supply chain
+
+- Dependency install scripts (postinstall etc.) are arbitrary code execution at install time — the primary supply-chain payload channel. Default them OFF and fail closed: bootstrap with scripts disabled, list which pending packages want to run scripts, read those scripts' source, approve the minimum set, and commit the policy so CI and every machine enforce the same allowlist.
+- The per-manager enforcement mechanism is version-specific (npm `strict-allow-scripts`, pnpm `approve-builds`/`strictDepBuilds`, Yarn `enableScripts: false` + `dependenciesMeta.built`) — verify against the installed manager's docs before relying on it; a policy the manager silently ignores is worse than none.
+- Determine the installation boundary first: the workspace root that owns the lockfile is where policy lives. Competing lockfiles in one tree (npm + pnpm, nested roots) = stop and resolve ownership before installing anything.
+- New-dependency review includes the name itself: typosquats ride one-keystroke variants of popular packages; verify publisher, repo link, and download history before first install, and prefer provenance/signature-verified registries where available.
+
+> Install-script gate adapted from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) `security-and-hardening` at commit `98967c4` (MIT licensed).
 
 ## Overrides, pins, and peer ranges
 

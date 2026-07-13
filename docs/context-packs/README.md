@@ -2,7 +2,7 @@
 
 Mode-scoped context packs reduce per-session token cost by loading only the architecture/guidelines sections relevant to the active mode, instead of the full `CLAUDE.md` + `architecture.md` + `KNOWLEDGE.md` + `DEVELOPMENT_GUIDELINES.md` (often thousands of lines).
 
-> **Status: templates — anchors must be mapped at adoption.** The packs below reference sections of `architecture.md` and `DEVELOPMENT_GUIDELINES.md` rather than duplicating content, using `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder tokens. ADAPT.md Phase 3b (or the adopting operator) maps each token to a real heading anchor in the consuming repo's `architecture.md`. Until mapped, fall back to loading the full reference docs.
+> **Status: templates — anchors must be mapped at adoption.** The packs below reference sections of `architecture.md` and `DEVELOPMENT_GUIDELINES.md` rather than duplicating content, using `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder tokens. Mapping happens through the sync substitution engine: one `"ARCHITECTURE_ANCHOR:<purpose>": "#<real-anchor>"` entry per token in the consuming repo's `.claude/.framework-state.json` → `substitutions`, then `node .claude-framework/sync.js --adopt` to rebaseline (full steps: ADAPT.md Phase 3b). Never hand-edit the pack files — they are `mode: sync` and hand edits accrue `.framework-new` merge debt on every update. Until mapped, every pack consumer (the loader and the pack-wired agents) falls back to loading the full reference docs, and `scripts/audit-context-packs.ts` prints `UNMAPPED` advisories.
 
 ## Why
 
@@ -74,7 +74,7 @@ Skip: § 4 LLM routing (unless the diff touches LLM code), § 7 Testing posture 
 Remaining steps of the refactor:
 
 1. **Create pack templates** ✅ — pack files exist and list intended sources via `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens; fall back to full files until anchors are mapped.
-2. **Map anchors at adoption** — the consuming repo section-anchors its `architecture.md` and replaces each token with a real anchor (ADAPT.md Phase 3b).
+2. **Map anchors at adoption** — per consuming repo: section-anchor its `architecture.md` (`scripts/generate-architecture-anchors.ts`, idempotent), add one `ARCHITECTURE_ANCHOR:<purpose>` substitution per token, rebaseline with `sync.js --adopt` (ADAPT.md Phase 3b). `scripts/audit-context-packs.ts` reports unmapped tokens as `UNMAPPED` advisories; `--strict-unmapped` turns them into failures once a repo has mapped. **Automated as of v2.36.0:** `/claudeupdate` step 6c2 performs this once per repo on its next update — unmapped repos self-complete without a separate task.
 3. **Loader** ✅ — `.claude/agents/context-pack-loader.md` (shipped v2.2.0) takes a pack name and loads the sliced content.
-4. **Wire packs to agents** — `pr-reviewer` loads `review.md`, `architect` loads `implement.md`, etc.
-5. **Measure** — token count per session before/after; cut packs that don't pay back.
+4. **Wire packs to agents** ✅ (v2.35.0) — `builder` and `architect` slice `architecture.md` via `implement.md`, `pr-reviewer` via `review.md`. Wiring is conditional and fail-safe: an unmapped or drifted pack falls back to the whole-file read, and each agent records which mode it used as a `context-load:` line in its output.
+5. **Measure** — per consuming repo, after mapping: compare the `context-load:` lines (sections + approximate lines loaded) against the pre-mapping whole-file baseline across a few representative builds; cut or trim packs that don't pay back.

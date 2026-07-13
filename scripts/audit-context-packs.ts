@@ -2,12 +2,25 @@
  * audit-context-packs.ts
  *
  * Pure function: validates that every anchor reference in docs/context-packs/*.md
- * resolves to a declared anchor in architecture.md.
+ * resolves to a declared anchor in architecture.md, and detects unmapped
+ * `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder tokens left over when
+ * ADAPT.md Phase 3b (anchor mapping via .claude/.framework-state.json substitutions)
+ * has not been run.
  *
- * Run via: npx tsx scripts/audit-context-packs.ts
+ * Run via: npx tsx scripts/audit-context-packs.ts [--strict-unmapped] [--list-anchors]
  *
- * Exit 0 — all anchors resolved (or no packs present).
- * Exit 1 — one or more anchors missing; prints <pack>:<line> <anchor> per miss.
+ * Exit 0 — all mapped anchors resolve (or no packs present). Unmapped
+ *          placeholder tokens are reported as `UNMAPPED <pack>:<line> <token>`
+ *          lines but do NOT fail the audit by default: they mean the packs are
+ *          installed but not yet adopted, and every pack consumer falls back to
+ *          whole-file reads in that state.
+ * Exit 1 — one or more mapped anchor references are broken; prints
+ *          <pack>:<line> <anchor> per miss. With --strict-unmapped, unmapped
+ *          placeholder tokens also fail (for repos that have completed
+ *          Phase 3b and want regressions caught).
+ *
+ * --list-anchors — prints the explicit <a id="..."></a> anchors declared in
+ *          architecture.md, one per line, to make Phase 3b mapping mechanical.
  *
  * Also importable as a pure module (no side effects on import).
  */
@@ -26,20 +39,28 @@ export interface PackAnchorMiss {
   line: number;
 }
 
+export interface PackUnmappedToken {
+  pack: string;
+  purpose: string;
+  line: number;
+}
+
 export interface AuditContextPacksInput {
   packs: Array<{ path: string; content: string }>;
   architectureMarkdown: string;
 }
 
+// `unmapped` is present only when non-empty, so callers comparing against the
+// historical `{ kind: 'ok' }` / `{ kind: 'fail', missing }` shapes keep working.
 export type AuditContextPacksResult =
-  | { kind: 'ok' }
-  | { kind: 'fail'; missing: PackAnchorMiss[] };
+  | { kind: 'ok'; unmapped?: PackUnmappedToken[] }
+  | { kind: 'fail'; missing: PackAnchorMiss[]; unmapped?: PackUnmappedToken[] };
 
 // ---------------------------------------------------------------------------
 // GFM heading slug algorithm
 // ---------------------------------------------------------------------------
 
-function gfmSlug(heading: string): string {
+export function gfmSlug(heading: string): string {
   // GitHub's heading-anchor slugger preserves underscores in addition to
   // hyphens and alphanumerics — `# State machine (usability_state)` renders
   // to `state-machine-usability_state`, not `state-machine-usabilitystate`.
@@ -126,7 +147,7 @@ function extractDeclaredAnchors(markdown: string): Set<string> {
  * lines inside an indented block do not break it — only a non-blank,
  * less-than-4-space-indent line ends it.
  */
-function buildCodeBlockMask(lines: string[]): boolean[] {
+export function buildCodeBlockMask(lines: string[]): boolean[] {
   const mask: boolean[] = new Array(lines.length).fill(false);
   let inFence = false;
   let fenceChar = '';
@@ -250,6 +271,59 @@ function extractPackAnchors(content: string): Array<{ anchor: string; line: numb
 }
 
 // ---------------------------------------------------------------------------
+// Unmapped placeholder extraction — parse a single pack file
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract unmapped `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens from a pack file.
+ * The purpose charset is deliberately strict ([a-z0-9_-]+) so documentation
+ * mentions of the token *syntax* (e.g. `{{ARCHITECTURE_ANCHOR:<purpose>}}` in
+ * README prose) never register as real unmapped tokens. Tokens inside code
+ * blocks are example markup and are skipped, matching the anchor extractors.
+ */
+function extractUnmappedTokens(content: string): Array<{ purpose: string; line: number }> {
+  const tokens: Array<{ purpose: string; line: number }> = [];
+  const lines = content.split('\n');
+  const masked = buildCodeBlockMask(lines);
+  const tokenRe = /\{\{ARCHITECTURE_ANCHOR:([a-z0-9_-]+)\}\}/g;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (masked[i]) continue;
+    let m: RegExpExecArray | null;
+    tokenRe.lastIndex = 0;
+    while ((m = tokenRe.exec(lines[i])) !== null) {
+      tokens.push({ purpose: m[1], line: i + 1 });
+    }
+  }
+  return tokens;
+}
+
+// ---------------------------------------------------------------------------
+// Explicit declared anchors — for --list-anchors (mapping helper)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract only the explicit <a id="..."></a> anchors (not heading slugs).
+ * These are the intended Phase 3b mapping targets: the anchor-generation pass
+ * inserts explicit tags, and the context-pack-loader slices on them.
+ */
+export function extractExplicitAnchors(markdown: string): string[] {
+  const anchors: string[] = [];
+  const lines = markdown.split('\n');
+  const masked = buildCodeBlockMask(lines);
+  const aIdRe = /<a\s+id="([^"]+)"\s*(?:\/>|><\/a>|>.*?<\/a>)/g;
+  for (let i = 0; i < lines.length; i++) {
+    if (masked[i]) continue;
+    let m: RegExpExecArray | null;
+    aIdRe.lastIndex = 0;
+    while ((m = aIdRe.exec(lines[i])) !== null) {
+      anchors.push(m[1]);
+    }
+  }
+  return anchors;
+}
+
+// ---------------------------------------------------------------------------
 // Pure exported function
 // ---------------------------------------------------------------------------
 
@@ -260,6 +334,7 @@ export function auditContextPacks(input: AuditContextPacksInput): AuditContextPa
 
   const declared = extractDeclaredAnchors(input.architectureMarkdown);
   const missing: PackAnchorMiss[] = [];
+  const unmapped: PackUnmappedToken[] = [];
 
   for (const pack of input.packs) {
     const refs = extractPackAnchors(pack.content);
@@ -268,9 +343,15 @@ export function auditContextPacks(input: AuditContextPacksInput): AuditContextPa
         missing.push({ pack: pack.path, anchor: ref.anchor, line: ref.line });
       }
     }
+    for (const token of extractUnmappedTokens(pack.content)) {
+      unmapped.push({ pack: pack.path, purpose: token.purpose, line: token.line });
+    }
   }
 
-  return missing.length === 0 ? { kind: 'ok' } : { kind: 'fail', missing };
+  if (missing.length === 0) {
+    return unmapped.length === 0 ? { kind: 'ok' } : { kind: 'ok', unmapped };
+  }
+  return unmapped.length === 0 ? { kind: 'fail', missing } : { kind: 'fail', missing, unmapped };
 }
 
 // ---------------------------------------------------------------------------
@@ -280,9 +361,24 @@ export function auditContextPacks(input: AuditContextPacksInput): AuditContextPa
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const ARCH_PATH = join(PROJECT_DIR, 'architecture.md');
+  const argFlags = process.argv.slice(2);
+  const STRICT_UNMAPPED = argFlags.includes('--strict-unmapped');
+  const LIST_ANCHORS = argFlags.includes('--list-anchors');
 
   (async () => {
     try {
+      // --list-anchors: mapping helper for ADAPT.md Phase 3b. Prints the
+      // explicit anchors declared in architecture.md and exits.
+      if (LIST_ANCHORS) {
+        if (!existsSync(ARCH_PATH)) {
+          process.stderr.write(`audit-context-packs: architecture.md not found at ${ARCH_PATH}\n`);
+          process.exit(1);
+        }
+        for (const anchor of extractExplicitAnchors(readFileSync(ARCH_PATH, 'utf8'))) {
+          process.stdout.write(`${anchor}\n`);
+        }
+        process.exit(0);
+      }
       // Read pack files from docs/context-packs/. If the directory is absent
       // OR contains no *.md files, there is nothing to validate — short-circuit
       // to exit 0 to match the pure helper's "empty packs returns ok" contract.
@@ -315,9 +411,35 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }));
 
       const result = auditContextPacks({ packs, architectureMarkdown });
+      const unmapped = result.unmapped ?? [];
+
+      // Unmapped placeholder tokens: always reported, advisory by default.
+      // They mean "packs installed but not adopted" — every pack consumer
+      // falls back to whole-file reads in that state, so nothing is broken;
+      // the repo is just not yet getting the token savings.
+      for (const token of unmapped) {
+        process.stdout.write(
+          `UNMAPPED ${token.pack}:${token.line} {{ARCHITECTURE_ANCHOR:${token.purpose}}}\n`
+        );
+      }
+      if (unmapped.length > 0) {
+        process.stdout.write(
+          `NOTE: ${unmapped.length} unmapped anchor placeholder(s) — context packs are installed but not adopted. ` +
+            `Map each purpose to a real anchor via .claude/.framework-state.json substitutions ` +
+            `(ADAPT.md Phase 3b; run with --list-anchors to see available anchors), then rebaseline with ` +
+            `\`node .claude-framework/sync.js --adopt\`.\n`
+        );
+      }
 
       if (result.kind === 'ok') {
-        process.stdout.write('OK\n');
+        if (unmapped.length > 0 && STRICT_UNMAPPED) {
+          process.exit(1);
+        }
+        process.stdout.write(
+          unmapped.length === 0
+            ? 'OK\n'
+            : `OK — no broken anchor references (adoption incomplete: ${unmapped.length} unmapped placeholder(s))\n`
+        );
         process.exit(0);
       } else {
         for (const miss of result.missing) {

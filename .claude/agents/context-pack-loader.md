@@ -60,11 +60,14 @@ If the conditional applies (diff touches the named area), load the skipped secti
 
 ## Step 4 — Confirm and proceed
 
-Print a one-line confirmation:
+Print a one-line confirmation. This is the measurement record for the pack-vs-full-load comparison, and these two lines are the ONLY allowed formats — the single contract shared by this loader and every pack-wired agent (builder, architect, pr-reviewer), greppable on `^context-load: `:
 
 ```
-Loaded context pack: <mode>. Sources: <N> sections from <M> files. Skipped: <K> sections.
+context-load: <mode> pack. Sources: <N> sections from <M> files (~<L> lines). Skipped: <K> sections. Fallbacks: <F>.
+context-load: full <file> (<reason>)
 ```
+
+The first form reports a successful sliced load — wired agents slicing only `architecture.md` use `1 file` and `Fallbacks: 0`. The second form reports a whole-file fallback, with `<reason>` one of: `no pack`, `unmapped placeholders`, `anchor miss`, `mode unclear`.
 
 Then proceed with the operator's actual task. Do NOT print the loaded sections back at the operator — they're for YOUR context, not theirs.
 
@@ -88,7 +91,7 @@ If a pack references an anchor that doesn't exist in `architecture.md` (heading 
 
 Then load the whole file. Don't fail silently — the operator needs to know packs have drifted.
 
-Likewise, if a pack still contains an unmapped `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder token (the repo skipped ADAPT.md Phase 3b), warn that the pack's anchors were never mapped and fall back to a whole-file read for that source.
+Likewise, if a pack still contains an unmapped `{{ARCHITECTURE_ANCHOR:<purpose>}}` placeholder token (the repo skipped ADAPT.md Phase 3b), warn that the pack's anchors were never mapped and fall back to a whole-file read for that source. Anchor mapping is done via `.claude/.framework-state.json` substitutions — one `"ARCHITECTURE_ANCHOR:<purpose>": "#<real-anchor>"` entry per token, then `node .claude-framework/sync.js --adopt` to rebaseline — never by hand-editing the pack files (hand edits accrue `.framework-new` merge debt on every framework update). Run `npx tsx scripts/audit-context-packs.ts --list-anchors` to list the available anchors.
 
 ## Auto-trigger from current-focus
 

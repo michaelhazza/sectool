@@ -3,6 +3,8 @@ name: fail-loud
 description: Use when writing error handling — catch blocks, fallbacks, defaults for failed lookups, fire-and-forget calls, external-provider failures, safety/permission checks, or anything that could report success without the underlying operation durably happening. Also use when deciding 4xx vs 5xx, retry vs dead-letter, or what a "cannot verify" outcome should do.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## fail-loud` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Fail loud, fail closed
 
 Silent failure is the defect class reviewers catch most often after tenant isolation: no-ops reported as success, errors flattened to empty results, fallbacks that quietly bypass safety checks.

@@ -3,6 +3,8 @@ name: db-concurrency
 description: Use BEFORE writing upserts, idempotency keys, state-machine transitions, queue/webhook handlers, retry logic, locks, or any code where two writers, workers, or retries can race. Also use when designing "check then act" flows, dedupe keys, or crash-recovery sweeps.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## db-concurrency` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Database concurrency and idempotency
 
 Check-then-act races, wrong conflict keys, and retry re-fires are the second-largest real-defect class in review history. Postgres/TypeScript specifics labeled.

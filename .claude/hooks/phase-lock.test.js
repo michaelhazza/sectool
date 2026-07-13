@@ -146,6 +146,31 @@ const CASES = [
     { toolName: 'Write', targetPath: 'tasks/builds/x/handoff.md', currentPhase: 'spec', buildSlug: 'x' },
     'allow',
   ],
+
+  // 19. `..` traversal in build phase → allow. The header contract says
+  // build/review/finalise are unrestricted ("always allow"), so the
+  // traversal check must not run before those short-circuits.
+  [
+    "build phase, Edit, ../escape/foo.ts, slug x → allow (unrestricted phase never blocks)",
+    { toolName: 'Edit', targetPath: '../escape/foo.ts', currentPhase: 'build', buildSlug: 'x' },
+    'allow',
+  ],
+
+  // 20. `..` traversal with null phase → allow. Missing/invalid .phase is a
+  // no-op per the header contract — it must never block anything.
+  [
+    "null phase, Edit, ../escape/foo.ts, slug x → allow (null phase is a no-op)",
+    { toolName: 'Edit', targetPath: '../escape/foo.ts', currentPhase: null, buildSlug: 'x' },
+    'allow',
+  ],
+
+  // 21. `..` traversal in spec phase → block (restricted phases still reject
+  // traversal; case 9 pins the same for plan phase).
+  [
+    "spec phase, Edit, ../escape/foo.ts, slug x → block",
+    { toolName: 'Edit', targetPath: '../escape/foo.ts', currentPhase: 'spec', buildSlug: 'x' },
+    'block',
+  ],
 ];
 
 let pass = 0;
@@ -263,7 +288,59 @@ if (prevProjectDir === undefined) {
   process.env.CLAUDE_PROJECT_DIR = prevProjectDir;
 }
 
-const totalCases = CASES.length + EXTRACT_CASES.length + TO_REL_CASES.length;
+// ── cwd fallback when CLAUDE_PROJECT_DIR is unset ──────────────────────────
+// toRelative previously returned absolute paths unchanged when
+// CLAUDE_PROJECT_DIR was unset, so an absolute path inside the repo never
+// matched the relative allow-globs and spec/plan phases blocked legitimate
+// edits (fail-closed bug). Pin the process.cwd() fallback: an absolute path
+// under the cwd must resolve relative and be allowed in spec phase.
+let cwdFallbackCases = 0;
+{
+  const saved = process.env.CLAUDE_PROJECT_DIR;
+  delete process.env.CLAUDE_PROJECT_DIR;
+  const cwd = process.cwd().replace(/\\/g, '/');
+
+  cwdFallbackCases++;
+  const relActual = toRelative(`${cwd}/tasks/builds/x/spec.md`);
+  if (relActual === 'tasks/builds/x/spec.md') {
+    pass++;
+  } else {
+    fails.push({
+      label: "no CLAUDE_PROJECT_DIR: toRelative(cwd + '/tasks/builds/x/spec.md') → 'tasks/builds/x/spec.md'",
+      input: { projectDir: '(unset)', abs: `${cwd}/tasks/builds/x/spec.md` },
+      expected: 'tasks/builds/x/spec.md',
+      actual: relActual,
+      reason: 'toRelative did not fall back to process.cwd()',
+    });
+  }
+
+  cwdFallbackCases++;
+  const decision = decidePhaseLock({
+    toolName: 'Write',
+    targetPath: `${cwd}/tasks/builds/x/spec.md`,
+    currentPhase: 'spec',
+    buildSlug: 'x',
+  });
+  if (decision.disposition === 'allow') {
+    pass++;
+  } else {
+    fails.push({
+      label: "no CLAUDE_PROJECT_DIR: spec, Write, <cwd>/tasks/builds/x/spec.md → allow",
+      input: { projectDir: '(unset)', abs: `${cwd}/tasks/builds/x/spec.md` },
+      expected: 'allow',
+      actual: decision.disposition,
+      reason: decision.reason,
+    });
+  }
+
+  if (saved === undefined) {
+    delete process.env.CLAUDE_PROJECT_DIR;
+  } else {
+    process.env.CLAUDE_PROJECT_DIR = saved;
+  }
+}
+
+const totalCases = CASES.length + EXTRACT_CASES.length + TO_REL_CASES.length + cwdFallbackCases;
 console.log(`Cases: ${totalCases}, passed: ${pass}, failed: ${fails.length}`);
 if (fails.length) {
   for (const f of fails) {

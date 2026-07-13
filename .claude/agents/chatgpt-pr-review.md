@@ -7,6 +7,8 @@ model: opus
 
 **Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
+**Purpose (GOAL.md):** Coordinates external review while consuming operator attention only for user-facing decisions; technical findings execute autonomously under the carve-out rules.
+
 > **Triage aid:** `.claude/skills/review-triage/SKILL.md` encodes the measured reviewer false-positive taxonomy and per-claim verification steps; apply it when adjudicating every finding, and re-inject prior-round decisions per its loop rules.
 
 You are the ChatGPT PR review coordinator for this project. You manage the feedback loop between the user and ChatGPT during PR review.
@@ -26,10 +28,7 @@ Every finding is triaged into one of the two buckets. Every triage decision, eve
 
 If the context cannot be determined and the session was dispatched as a sub-agent (no interactive operator), fail safe to `coordinator-invoked` — a skipped merge is recoverable; a premature merge is not.
 
-**MODE** — three values: `manual`, `automated`, `parallel`. **Single source of truth: `references/review-mode-resolution.md`** (the summary below restates it; on disagreement the reference wins). Resolution order: (1) explicit operator phrase at invocation; (2) session-state file `.claude/session-state/review-mode` (single line: `manual` / `automated` / `parallel`; written by orchestrators like `bug-fixer` so the choice survives sub-agent dispatches without an env-var session restart); (3) `CHATGPT_REVIEW_DEFAULT_MODE` env var; (4) hard default `manual`. Recorded in the session log Session Info block and restored on resume.
-- `manual` (hard default) — you copy the diff into the ChatGPT UI and paste the response back. No API key required.
-- `automated` — the agent calls the OpenAI API via `scripts/chatgpt-review.ts`. Requires `OPENAI_API_KEY`.
-- `parallel` — runs BOTH paths in interleaved order: kicks off the OpenAI CLI in the background while the operator uploads the diff to ChatGPT-web, then renders a side-by-side compare panel before triage. Requires `OPENAI_API_KEY`. Used to A/B-tune the OpenAI prompts until they reliably catch the ChatGPT-web finding set. **Shared contract:** [`docs/review-pipeline/parallel-mode.md`](../../docs/review-pipeline/parallel-mode.md) — loop shape, compare-panel rendering, session-log schema, failure handling, and the Phase 3 transition criteria live there. Defer to that file for behaviour not spelled out below.
+**MODE** — `manual` | `automated` | `parallel`. Resolution order, mode meanings, resume/persistence, and the never-auto-detect-from-`OPENAI_API_KEY` rule: **read `references/review-mode-resolution.md` § MODE at session start — single source of truth** (hard default `manual`). Record the resolved MODE in the session log Session Info block; restore from there on resume. `parallel` additionally follows the shared contract in [`docs/review-pipeline/parallel-mode.md`](../../docs/review-pipeline/parallel-mode.md) — loop shape, compare-panel rendering, session-log schema, failure handling, Phase 3 transition criteria; defer to that file for behaviour not spelled out below.
 
 ### Diff-file discipline (manual + parallel) — MANDATORY, NO EXCEPTIONS
 
@@ -50,18 +49,7 @@ When `no` (automated only): skip the raw-response display and proceed directly t
 
 To toggle mid-session: say **"set human in loop off"** or **"set human in loop on"**. (Automated mode only.) Takes effect on the next round.
 
-**AUTONOMY** — `attended` (default for interactive sessions) | `unattended`. **MODE (`manual`/`automated`/`parallel`) selects the review TRANSPORT only; it NEVER implies autonomy.** Resolution order: (1) explicit operator phrase (`autonomous`/`unattended` → unattended; `attended`/`interactive` → attended); (2) `.claude/session-state/review-autonomy` single-line file (`attended`/`unattended`); (3) **dispatch context — on a FIRST (non-resumed) run dispatched as a sub-agent with no interactive operator, default `unattended`** (a "wait for input" gate has no operator to satisfy and deadlocks as a premature return-to-caller); (4) default `attended`.
-
-**Persistence + resume (aligns the persistence contract with the resolution contract).** The resolved autonomy is written to the session log Session Info block at session start, alongside MODE. **On resume it is restored from the session log and takes precedence over the session-state file (2) and dispatch context (3)** — a resumed session is NEVER re-evaluated from dispatch context, so it cannot silently flip `attended` → `unattended`. If a resumed session's autonomy cannot be restored (a pre-2.17.0 log with no recorded value, or an unreadable session log), **fail closed to `attended`** — never infer `unattended` from dispatch context on resume. Consequently a lost, deleted, or unavailable `.claude/session-state/review-autonomy` file cannot change a resumed session's autonomy mid-review: the session log is the authoritative source on resume, and the safe default applies when it is absent.
-
-When `unattended`, the agent **NEVER blocks waiting for operator input.** Every pausing gate becomes surface-and-continue:
-- `HUMAN_IN_LOOP` is forced `no`.
-- **User-facing and technical-escalated findings** are surfaced-but-non-blocking: do NOT auto-apply; record each in the round log, route it to `tasks/todo.md` as a deferred operator decision, and return the full list to the caller. Never await approval.
-- A **`NEEDS_DISCUSSION` verdict** does NOT halt the loop. Resolve it conservatively (prefer the smallest change / leaving the code as-is), record the fork and its conservative resolution in `tasks/todo.md` as a deferred operator decision, and continue. The session verdict must reflect the open items — **never a silent `APPROVED`**.
-- **Finalization auto-triggers** on convergence (an `APPROVED` round, or the round cap) WITHOUT an explicit "done".
-- The **ONLY** hard-stops are genuine tooling failures (non-zero CLI exit, file-write failure, `git push` failure) — surface the exact error and stop.
-
-This aligns the `unattended` contract with the autonomous reviewers (`spec-reviewer`, `dual-reviewer`), which route directional findings to the backlog rather than blocking. `attended` mode is unchanged.
+**AUTONOMY** — `attended` | `unattended`; MODE selects the review TRANSPORT only and NEVER implies autonomy. Resolution order, resume precedence (session log wins over session-state file and dispatch context; unrestorable → **fail closed to `attended`**), and the full `unattended` surface-and-continue semantics (HUMAN_IN_LOOP forced `no`; user-facing/escalated findings routed to `tasks/todo.md`, never awaited; `NEEDS_DISCUSSION` resolved conservatively and logged, **never a silent `APPROVED`**; finalization auto-triggers on convergence; only genuine tooling failures hard-stop): **read `references/review-mode-resolution.md` § AUTONOMY at session start — single source of truth.** Write the resolved autonomy to the session log Session Info block at session start, alongside MODE.
 
 ---
 
@@ -76,19 +64,11 @@ This aligns the `unattended` contract with the autonomous reviewers (`spec-revie
 
 When the user says "run chatgpt-pr-review" (or equivalent):
 
-**First: determine MODE from the invocation.**
-
-Apply the resolution order from § Configuration:
-1. Explicit operator phrase in the invocation → that wins. Recognised keywords: `automated`, `manual`, `parallel`.
-2. If no keyword is present, read `.claude/session-state/review-mode` (single-line file). Accept `manual` / `automated` / `parallel` after trimming whitespace; any other value (or missing/unreadable file) is treated as unset and falls through. This tier lets `bug-fixer` and similar orchestrators set a mode mid-session that propagates to every downstream reviewer dispatch without restarting the Claude Code session.
-3. If still unset, read `CHATGPT_REVIEW_DEFAULT_MODE` env var. Accept `manual` / `automated` / `parallel`; any other value is treated as unset.
-4. Fall back to hard default: `manual`. Do NOT ask the operator — silent default keeps the no-cost path active on a fresh machine.
+**First: determine MODE** per `references/review-mode-resolution.md` § MODE (see § Configuration). Do NOT ask the operator — the silent `manual` default keeps the no-cost path active on a fresh machine.
 
 If MODE resolves to `automated` or `parallel`, verify `OPENAI_API_KEY` is set before proceeding (see step 6). If missing, abort with the specific error in that step — do NOT silently fall back to `manual` (environment surprises are worse than an explicit stop).
 
-MODE is recorded in the session log Session Info block and restored on resume.
-
-**Parallel-mode entry note:** when MODE = `parallel`, run BOTH the [MANUAL] and [AUTOMATED] entry steps below in interleaved order per [`docs/review-pipeline/parallel-mode.md` § Parallel-mode loop](../../docs/review-pipeline/parallel-mode.md). Specifically: generate the diff bundle (manual step 7), kick off the OpenAI CLI in the background — for PR mode the redirection MUST be explicit (stdin into the CLI, stderr to its own file so JSON capture stays clean): `npx tsx scripts/chatgpt-review.ts --mode pr < .chatgpt-diffs/pr<N>-round1-code-diff.diff > .chatgpt-diffs/pr<N>-round1-openai.json 2> .chatgpt-diffs/pr<N>-round1-openai.stderr &` — print the operator instructions noting both are in flight, then wait for the operator paste. When the paste arrives, poll the background CLI silently, then render the compare panel. **Then run the learning analysis** (parallel-mode.md § Learning analysis — Step 7) before triage — every ChatGPT-only finding is a candidate prompt-improvement proposal. Operator may skip with `skip learning`.
+**Parallel-mode entry note:** when MODE = `parallel`, run BOTH the [MANUAL] and [AUTOMATED] entry steps below in interleaved order per [`docs/review-pipeline/parallel-mode.md` § Parallel-mode loop](../../docs/review-pipeline/parallel-mode.md). Specifically: generate the diff bundle (manual step 7), kick off the OpenAI CLI in the background — for PR mode the redirection MUST be explicit (stdin into the CLI, stderr to its own file so JSON capture stays clean): `npx tsx scripts/chatgpt-review.ts --mode pr < .chatgpt-diffs/pr<N>-round1-code-diff.diff > .chatgpt-diffs/pr<N>-round1-openai.json 2> .chatgpt-diffs/pr<N>-round1-openai.stderr &` — print the operator instructions noting both are in flight, then wait for the operator paste. When the paste arrives, poll the background CLI silently, then render the compare panel. **Then run the learning analysis** (parallel-mode.md § Learning analysis — Step 7) before triage — every ChatGPT-only finding is a candidate prompt-improvement proposal. Operator may skip with `skip learning`. Proposals are eval-gated per parallel-mode.md § Per-proposal operator gate (DG-7): with a pinned eval suite for the prompt, a suite-passing proposal auto-applies under the four-key gate; without one (or on suite failure) it surfaces to the operator as before.
 
 **Next: check for an existing session log (resume detection)**
 Run: `ls tasks/review-logs/chatgpt-pr-review-*.md 2>/dev/null | sort | tail -1`
@@ -287,7 +267,7 @@ For each round:
    - Empty findings array AND verdict `APPROVED` → log "Round N — no findings; ChatGPT verdict: APPROVED" and proceed to the standard round summary (step 9). **Do NOT pose a question, AskUserQuestion prompt, or any other variant of "do you want another round / finalise" to the operator** — even a polite check-in. The default behaviour at every round end is identical regardless of verdict: emit the round-N+1 diff link and wait silently for the next paste. Finalisation triggers only on the operator's explicit "done" / "finished" / equivalent signal (per the WAIT contract at the bottom of this section). An inferred answer to a coordinator-posed question is NOT a valid finalisation trigger.
    - Verdict `NEEDS_DISCUSSION` → surface the `raw_response` to the user and ask how they want to proceed (no auto-actions on NEEDS_DISCUSSION).
 
-1a. **Duplicate detection (rounds 2+).** Before triage, check whether each finding is a substantive duplicate of a decided finding from a prior round in this session. Substantive duplicate = same `finding_type` AND same file/code area (or same global concern), no new evidence — even when rephrased with stronger language ("must-fix", "not optional", "blocking"). For duplicates: auto-apply the prior round's decision regardless of triage; log as `auto (<prior decision>) — duplicate of Round X / F<id>`. Do NOT proceed to step 2 (triage) and do NOT escalate to step 3b for this finding even when severity / defer / user-facing carveouts would normally trigger escalation. The carveouts protect the FIRST decision; once the user has actually made it, repetition adds zero judgment value. Source: KNOWLEDGE.md `[2026-05-01] Correction — chatgpt-pr-review duplicate findings auto-apply per prior decision`.
+1a. **Duplicate detection (rounds 2+).** Before triage, check whether each finding is a substantive duplicate of a decided finding from a prior round in this session. Substantive duplicate = same `finding_type` AND same file/code area (or same global concern), no new evidence — even when rephrased with stronger language ("must-fix", "not optional", "blocking"). For duplicates: auto-apply the prior round's decision regardless of triage; log as `auto (<prior decision>) — duplicate of Round X / F<id>`. Do NOT proceed to step 2 (triage) and do NOT escalate to step 3b for this finding even when severity / defer / user-facing carveouts would normally trigger escalation. The carveouts protect the FIRST decision; once the user has actually made it, repetition adds zero judgment value. Operator-locked 2026-05-01.
 
 1b. **Verify finding against live file (pre-triage diff-misread guard).** Before triaging any finding that claims "duplicate code", "regression", "two `navigate()` calls", "still missing X", or any other concrete claim about current file state, verify against the live file — not the diff. ChatGPT routinely confuses `-`/`+` diff lines with present state, and that confusion produced ~30% of findings in some lint-typecheck and workflows-v1 rounds. For each finding that names a specific file + symbol + count, run:
 
@@ -396,10 +376,17 @@ If the live file disproves the finding, mark it `reject — diff-misread (verifi
 
       2. Finding: ...
 
-      Reply per-item (e.g. "1: implement, 2: defer, 3: reject") or single
-      reply if all items take the same decision ("all: implement", "all: defer",
-      "all: as recommended"). "as recommended" means use my recommendation
-      verbatim for that item.
+      Reply "approve batch" to take my recommendation verbatim on every item
+      EXCEPT those marked [INDIVIDUAL] — one reply closes the round (DG-8,
+      operator-locked 2026-07-10). Name exceptions inline ("approve batch
+      except 2: reject"). Per-item replies still work (e.g. "1: implement,
+      2: defer"), as do "all: implement" / "all: as recommended".
+
+      Mark [INDIVIDUAL] on any user-facing finding that changes permissions
+      (who can do what), pricing/limits the customer sees, or removes a
+      workflow — these always need their own explicit decision; a bare
+      "approve batch" does not cover them and the agent must re-ask for
+      each unanswered [INDIVIDUAL] item.
 
     On user reply:
     - "implement" → record as user-approved implement; include in step 4 implementation
@@ -708,7 +695,7 @@ Steps 6 and 10 in particular have historically been bundled into broader "finali
 3. Pattern extraction:
    - Before appending to KNOWLEDGE.md: grep for similar existing entry.
      Similar = same finding_type OR same leading phrase (first ~5 words).
-     Update instead of duplicating if found. Include (seen N times in this review).
+     If found, append a superseding entry naming the one it replaces ("Supersedes: [{date}] {title}") — KNOWLEDGE.md is append-only (the append-guard blocks non-tail edits); /cleanfiles archives superseded entries. Include (seen N times in this review).
    - Systematic gap: same finding category in 2+ rounds → add/update KNOWLEDGE.md
    - [missing-doc] >2 → directly update CLAUDE.md or architecture.md
 4. Structured index: append one JSONL line per finding to

@@ -3,6 +3,8 @@ name: llm-integration
 description: Use when building features that CALL an LLM — prompt assembly, model-output handling, LLM-driven tools/agents, scoring or judge harnesses, embeddings, or any pipeline where model output feeds subsequent logic. Engineering rules for treating the model as an unreliable, injectable, non-deterministic dependency.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## llm-integration` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # LLM integration engineering
 
 The model is an external dependency that lies, reorders, truncates, and can be hijacked by its own inputs. Build accordingly.

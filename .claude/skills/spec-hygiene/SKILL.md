@@ -3,6 +3,8 @@ name: spec-hygiene
 description: Use when authoring or editing a spec or implementation plan, when applying review findings to one, and when verifying an implementation against its spec. Covers grounding claims in the real codebase, keeping multi-section documents self-consistent, and the conformance checks that catch the recurring implementation-vs-spec gaps.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## spec-hygiene` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Spec and plan hygiene
 
 Spec/plan/doc integrity is the single largest defect theme in review corpora — bigger than any code-level class, and review loops on specs/plans find more defects than code review does. The two dominant failure modes, in corpus order: documents that contradict themselves after edits (cross-section drift — the biggest single class), and specs that describe a codebase that doesn't exist. Both mislead builders more than no spec would.

@@ -3,6 +3,8 @@ name: review-triage
 description: Use when adjudicating reviewer findings — accept, reject, or defer decisions on external or LLM code/spec/plan review output, duplicate re-raises, stale-context claims, and multi-round review loops. Encodes the measured false-positive taxonomy (posture violations, stateless re-raises, hallucinated premises, altitude/scope errors), the verification steps each claim type requires, and the loop-convergence signals; corpus statistics live in the intro paragraph.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## review-triage` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Review-finding triage
 
 Mined from a full corpus of ~1,900 adjudicated review logs (194 batches, four reviewer families). Calibration: ~80% of findings are accepted by mention volume (5,272 accepted vs 1,305 rejected) — reviewers are worth running, but the rejected fifth is highly patterned and largely mechanically filterable. Four clusters cover roughly two-thirds of FP volume: posture violations ~26%, stateless re-raises ~24%, hallucinated premises ~17%, altitude/scope ~9%. Residuals: convention nits, enforcement-blindness (a guard at a layer the reviewer can't see — over-flagged idempotency was the single largest rejected substantive class), and main-branch debt misattributed to the branch.
@@ -46,6 +48,16 @@ Near-automatic rejects (cite the rule, backlog residual value): production-harde
 - **Bookkeeping noise.** Smoke-test recordings, todo tickoffs, and persisted review-log artifacts are workflow hygiene, not correctness defects — classify separately so a functional branch isn't reported broken.
 - **Out of scope.** Real-but-out-of-scope findings get a backlog entry with the finding text; findings on untracked/local files are rejected outright.
 - **Altitude errors.** "Insufficient detail" against a document that deliberately defers that detail to a later phase is not a defect unless a contract-level ambiguity is shown. Mockup demo numbers are illustrative, not contracts; when an acceptance clause encodes intent via a proxy and the artifact meets the stated purpose, prefer the intent reading and flag the proxy for amendment. Reject scope-expansion redesigns and one-specific-mechanism demands when the chosen mechanism satisfies the invariant.
+
+## Briefing the reviewer (the adjudicator's own failure modes)
+
+The taxonomy above catches the reviewer's errors; these catch yours.
+
+- **Withhold the claim.** Pass the reviewer the artifact plus its contract (what it must satisfy), never your conclusion or the reasoning that produced it — hand over conclusions and you get back validation of your conclusions. Context injection (framing docs, decision ledgers, do-not-raise lists) is fine; "I believe this is correct because…" is not.
+- **Contract-misread precedes classification.** Before triaging any finding, check whether YOUR brief to the reviewer was the bug — a missing constraint, a stale artifact version, an unstated posture. If adding one line to the brief would have prevented the finding, fix the brief and re-run; classifying the finding first buries the brief defect and it recurs every round.
+- **Doubt-theater signal.** Two or more consecutive rounds where the reviewer returns substantive findings and you classify zero as actionable means one of two things: the loop is validating itself (your rejections have stopped engaging with substance), or the reviewer's context is stale. Either way, stop the loop — re-examine your last three rejections against the artifact before running another round.
+
+> Briefing rules adapted from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) `doubt-driven-development` at commit `98967c4` (MIT licensed).
 
 ## Running the loop
 

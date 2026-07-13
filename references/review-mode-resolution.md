@@ -20,7 +20,20 @@ Resolution order — first hit wins:
    env-var session restart. Any other content = unset.
 3. **`CHATGPT_REVIEW_DEFAULT_MODE` env var** — accept `manual` / `automated` /
    `parallel`; any other value is treated as unset.
-4. **Hard default: `manual`.**
+4. **Evidence-flip rung (DORMANT until the DG-4 criterion is met).** If
+   `.claude/review-mode-flip` exists containing the single line `automated`,
+   the default becomes `automated` instead of `manual`. The file lives at
+   `.claude/review-mode-flip` — deliberately NOT under `.claude/session-state/`,
+   which `/cleanfiles` treats as transient and deletes; the flip is a durable
+   default, not a per-session mode. That file may ONLY be created by the
+   operator, after the pinned flip criterion holds:
+   **automated-tier catch-rate ≥ 90% of manual-tier on the repo's pinned eval
+   suite AND ≤ 1 false positive per review, sustained across 3 consecutive
+   measured framework-consuming builds each with a complete harness-metrics
+   report** (`scripts/harness-metrics.ts`; see `references/harness-metrics.md`).
+   An agent never creates or edits this file; absent file = rung skipped.
+   Tiers 1–3 still override it — the operator can always force `manual`.
+5. **Hard default: `manual`.**
 
 **Do NOT auto-detect mode from `OPENAI_API_KEY` presence.** That legacy
 behaviour was removed (PR #441): having a key on the machine is not consent to

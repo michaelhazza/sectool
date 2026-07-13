@@ -9,11 +9,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { auditContextPacks } from '../audit-context-packs.js';
+import { auditContextPacks, extractExplicitAnchors } from '../audit-context-packs.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_PATH = join(dirname(__filename), '..', 'audit-context-packs.ts');
@@ -443,6 +443,175 @@ test('CLI exits 0 when no context packs exist (architecture.md also absent)', ()
     });
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}`);
     assert.match(result.stdout, /^OK\s*$/, 'expected stdout "OK"');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Unmapped-placeholder detection (v2.35.0): {{ARCHITECTURE_ANCHOR:<purpose>}}
+// tokens left in a pack mean adoption Phase 3b was never run. They must be
+// surfaced (previously the audit was blind to them and passed vacuously) but
+// remain advisory by default.
+// ---------------------------------------------------------------------------
+test('unmapped placeholder token is reported with pack, purpose, and line', () => {
+  const arch = '# Overview\n';
+  const pack = [
+    '# Review pack',
+    '',
+    '- `architecture.md`:',
+    '  - `{{ARCHITECTURE_ANCHOR:route-conventions}}`',
+    '',
+  ].join('\n');
+  const result = auditContextPacks({
+    packs: [{ path: 'review.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.equal(result.kind, 'ok', 'unmapped tokens alone must not fail the audit');
+  assert.ok(result.unmapped, 'unmapped array must be present');
+  assert.equal(result.unmapped!.length, 1);
+  assert.deepEqual(result.unmapped![0], { pack: 'review.md', purpose: 'route-conventions', line: 4 });
+});
+
+test('pack with no unmapped tokens returns bare ok shape (back-compat)', () => {
+  const arch = '# Overview\n\n## Key Concepts\n';
+  const pack = '[see section](architecture.md#key-concepts)\n';
+  const result = auditContextPacks({
+    packs: [{ path: 'review.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.deepEqual(result, { kind: 'ok' }, 'unmapped field must be absent when empty');
+});
+
+test('placeholder token inside a fenced code block is example markup, not unmapped', () => {
+  const arch = '# Overview\n';
+  const pack = [
+    '# Docs',
+    '',
+    '```markdown',
+    '  - `{{ARCHITECTURE_ANCHOR:route-conventions}}`',
+    '```',
+    '',
+  ].join('\n');
+  const result = auditContextPacks({
+    packs: [{ path: 'README.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.deepEqual(result, { kind: 'ok' });
+});
+
+test('token-syntax documentation with <purpose> is not an unmapped token', () => {
+  const arch = '# Overview\n';
+  const pack =
+    'Anchor placeholders: `{{ARCHITECTURE_ANCHOR:<purpose>}}` tokens below are placeholders.\n';
+  const result = auditContextPacks({
+    packs: [{ path: 'README.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.deepEqual(result, { kind: 'ok' }, '<purpose> syntax docs must not register');
+});
+
+test('broken mapped anchor and unmapped token surface together as fail + unmapped', () => {
+  const arch = '# Overview\n';
+  const pack = [
+    '- `architecture.md`:',
+    '  - `#no-such-anchor`',
+    '  - `{{ARCHITECTURE_ANCHOR:service-layer}}`',
+    '',
+  ].join('\n');
+  const result = auditContextPacks({
+    packs: [{ path: 'implement.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.equal(result.kind, 'fail');
+  if (result.kind !== 'fail') return;
+  assert.equal(result.missing.length, 1);
+  assert.equal(result.missing[0].anchor, 'no-such-anchor');
+  assert.equal(result.unmapped?.length, 1);
+  assert.equal(result.unmapped![0].purpose, 'service-layer');
+});
+
+// ---------------------------------------------------------------------------
+// extractExplicitAnchors — the --list-anchors mapping helper
+// ---------------------------------------------------------------------------
+test('extractExplicitAnchors returns explicit anchors, skipping code blocks and heading slugs', () => {
+  const arch = [
+    '<a id="route-conventions"></a>',
+    '## Route Conventions',
+    '',
+    '```html',
+    '<a id="fake-in-fence"></a>',
+    '```',
+    '',
+    '<a id="service-layer"></a>',
+    '## Service Layer',
+  ].join('\n');
+  assert.deepEqual(extractExplicitAnchors(arch), ['route-conventions', 'service-layer']);
+});
+
+// ---------------------------------------------------------------------------
+// CLI: unmapped tokens are advisory by default, blocking under --strict-unmapped
+// ---------------------------------------------------------------------------
+function writeUnmappedFixture(): string {
+  const tmp = mkdtempSync(join(tmpdir(), 'audit-cli-unmapped-'));
+  mkdirSync(join(tmp, 'docs', 'context-packs'), { recursive: true });
+  writeFileSync(join(tmp, 'architecture.md'), '<a id="real-anchor"></a>\n## Real Section\n');
+  writeFileSync(
+    join(tmp, 'docs', 'context-packs', 'review.md'),
+    '- `architecture.md`:\n  - `{{ARCHITECTURE_ANCHOR:route-conventions}}`\n'
+  );
+  return tmp;
+}
+
+test('CLI exits 0 with UNMAPPED + NOTE output for unmapped tokens by default', () => {
+  const tmp = writeUnmappedFixture();
+  try {
+    const result = spawnSync('npx', ['tsx', SCRIPT_PATH], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmp },
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}`);
+    assert.match(result.stdout, /UNMAPPED review\.md:2 \{\{ARCHITECTURE_ANCHOR:route-conventions\}\}/);
+    assert.match(result.stdout, /NOTE: 1 unmapped anchor placeholder/);
+    assert.match(result.stdout, /OK — no broken anchor references/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('CLI exits 1 for unmapped tokens under --strict-unmapped', () => {
+  const tmp = writeUnmappedFixture();
+  try {
+    const result = spawnSync('npx', ['tsx', SCRIPT_PATH, '--strict-unmapped'], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmp },
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 1, `expected exit 1, got ${result.status}; stdout=${result.stdout}`);
+    assert.match(result.stdout, /UNMAPPED review\.md:2/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('CLI --list-anchors prints explicit anchors one per line', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'audit-cli-listanchors-'));
+  try {
+    writeFileSync(
+      join(tmp, 'architecture.md'),
+      '<a id="route-conventions"></a>\n## Route Conventions\n\n<a id="service-layer"></a>\n## Service Layer\n'
+    );
+    const result = spawnSync('npx', ['tsx', SCRIPT_PATH, '--list-anchors'], {
+      env: { ...process.env, CLAUDE_PROJECT_DIR: tmp },
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}; stderr=${result.stderr}`);
+    assert.equal(result.stdout, 'route-conventions\nservice-layer\n');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

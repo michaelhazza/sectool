@@ -3,6 +3,8 @@ name: refactor-safely
 description: Use BEFORE moving, splitting, renaming, extracting, or deleting existing code — file splits, helper extraction, lifting code into an orchestrator, mass find-replace edits, resolving merge conflicts, or acting on "unused code" findings. Structural changes have their own defect classes distinct from new-feature bugs.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## refactor-safely` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Refactor safely
 
 Structural changes fail differently from new code: the pieces all compile, the tests stay green, and the regression hides in what the move dropped, duplicated, or left behind.
@@ -24,6 +26,7 @@ Structural changes fail differently from new code: the pieces all compile, the t
 - Renaming any string identifier (queue topic, event name, log code, cache prefix) is a repo-wide sweep: grep before editing, enumerate every hit including tests, comments, agent/config/prompt files, and require a zero-match post-rename grep.
 - Any commit that moves or renames a file greps scripts/, docs/, and CI configs for the old path in the same commit — gate scripts referencing dead paths fail silently for weeks. Path-matching regexes in guards break when files move into subdirectories.
 - When applying the same pattern across sibling call sites, use ONE check style verbatim at every site — subtle divergence behaves identically in prod but breaks differently under mocks and future refactors.
+- Rule of 500: a refactor touching >500 lines by hand is a smell — reach for a codemod/AST transform or split the refactor; hand-editing at that scale produces exactly the transcription drift the rest of this section exists to prevent.
 
 ## Where the fix goes
 

@@ -53,7 +53,7 @@ A Standard plan may compress 6–9 into one item. A Major spec-driven plan typic
 Load these in order in Step 2:
 
 1. `CLAUDE.md` — project principles, task workflow, and conventions
-2. `architecture.md` — backend structure, route conventions, auth model, agent/service/skill patterns, and all key project patterns. Read if present; skip when the repo has not authored one.
+2. `architecture.md` — backend structure, route conventions, auth model, agent/service/skill patterns, and all key project patterns. Read if present; skip when the repo has not authored one. **Pack-sliced load (preferred):** if `docs/context-packs/implement.md` exists and contains no `{{ARCHITECTURE_ANCHOR` placeholder tokens, load only the `architecture.md` sections named in its `## Sources` block (anchor-slice mechanics per `.claude/agents/context-pack-loader.md` Step 2) and honour its `## Skip` conditionals, instead of reading the whole file — plus any additional sections the task's domain clearly requires. If any named anchor fails to resolve, fall back to the whole-file read. Record which mode you used as one line in the plan's Architecture Notes, using the exact shared format pinned in `.claude/agents/context-pack-loader.md` Step 4: `context-load: implement pack. Sources: <N> sections from 1 file (~<L> lines). Skipped: <K> sections. Fallbacks: 0.` on a sliced load, or `context-load: full architecture.md (<reason>)` on fallback.
 3. `docs/spec-authoring-checklist.md` — pre-authoring checklist for Significant/Major plans. Every plan you produce must satisfy its appendix (primitives search, file inventory, contracts, tenant-isolation, execution model, phase sequencing, deferred items, self-consistency, testing posture) or document an explicit deviation.
 4. `DEVELOPMENT_GUIDELINES.md` — read if present and the task touches tenant data, migrations, schema, the service/route/lib tier, LLM routing, or gates. Skip when absent OR when the task is pure frontend, pure docs, or otherwise outside the guidelines' scope.
 5. `KNOWLEDGE.md` — past corrections and recurring patterns. Scan for entries that match the task's domain so the plan inherits prior lessons rather than rediscovering them.
@@ -61,6 +61,8 @@ Load these in order in Step 2:
 7. `.claude/agents/extensions/architect.md` — project-specific extensions to this agent's behaviour, if present. Skip if missing. See `references/project-extensions-convention.md` for the convention.
 
 Do not skip context loading. Architecture decisions made without understanding the existing patterns create inconsistency.
+
+**Reasoning discipline.** Also read `.claude/skills/fable-mode/SKILL.md` during Step 2 and adopt its five gates for the whole invocation — plan production is judgment-heavy work. Its Output contract applies: open with the preamble (goal-as-assertion, non-goals, unknowns, kill criteria, effort tier) before decomposing, and tag load-bearing claims verified/inferred/assumed inline where they appear in the plan (file inventory, contracts, chunk prerequisites, risks) — not only in the risks section.
 
 For architecture-shaped questions (what calls X, what depends on Y, where does the route for Z live), check `references/project-map.md` and the relevant `references/import-graph/<dir>.json` if they exist. If absent, fall back to grep. Trust source over cache when they disagree. (Project-specific commands to rebuild the cache, if any, belong in the project extensions file.)
 
@@ -125,6 +127,11 @@ Split into chunks a developer can implement independently. Each chunk:
 - **Forms a deep module** — split by capability boundary, not by file or layer. A chunk that exposes a small interface and hides substantial implementation behind it is deep; a chunk that is "the route + service + schema for X" is a shallow split across layers and probably wrong. If you cannot name the public interface and what hides behind it (see Per-Chunk Detail § Module shape), the chunk boundary is wrong — re-split.
 
 Name chunks descriptively: "Add subtask wakeup service", not "Step 3".
+
+Split signals — any one of these means the chunk is too big:
+- "and" in a chunk title usually means two chunks — split it.
+- A chunk touching 8+ files is too large to build reliably — refuse and decompose.
+- More than 3 acceptance bullets on one chunk is a split signal.
 
 ### Cross-repo prior art for each approach (added in v2.13.0)
 

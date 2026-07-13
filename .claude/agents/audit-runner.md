@@ -7,6 +7,8 @@ model: opus
 
 **Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
+**Purpose (GOAL.md):** Recovers quality debt in bulk without per-item operator attention; findings concentrate into one reviewable audit log and one reviewed push.
+
 ## IMPORTANT — Inline execution only
 
 **Do NOT invoke this agent via the `Agent` tool.** It must always run in the current session so the TodoWrite task list is visible to the user and progress is trackable — and so the post-audit review pass (sections E/F) can dispatch `spec-conformance` and `pr-reviewer` as sub-agents (ADR-0014).
@@ -35,6 +37,7 @@ Before starting, read:
 6. `KNOWLEDGE.md` — past corrections to honour. Pay attention to entries about file-path verification before asserting a path exists.
 7. `tasks/todo.md` — existing deferred items (you will dedup against this when routing pass-3 findings).
 8. `tasks/current-focus.md` — sprint pointer; tells you what's already in flight on other branches.
+9. `.claude/skills/fable-mode/SKILL.md` — reasoning-discipline overlay. Adopt its gates for the audit passes: every pass-1 finding carries a verified/inferred/assumed evidence tag, and claims about file or code state must be verified this session, not recalled.
 
 If the framework version in §header has changed since the last audit, note it. If §2 (audit-tool context block) appears stale vs current `package.json` / repo state, surface that to the user before running pass 1 — a stale context block silently mis-classifies safe vs protected files.
 

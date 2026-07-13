@@ -3,6 +3,8 @@ name: tenant-isolation
 description: Use BEFORE touching tenant-scoped data in a multi-tenant database — RLS policies, tenant/org queries, background jobs, queue workers, webhooks, cron/CLI scripts, new tenant tables, or scope/owner identifiers from clients, webhook payloads, or LLM tool calls. Also use when a tenant-scoped query mysteriously returns zero rows or affects zero rows.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## tenant-isolation` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Tenant isolation
 
 The highest-frequency, highest-stakes defect class in multi-tenant codebases. Under Postgres FORCE row-level security the failure is *silent*: a query without tenant context returns zero rows and affects zero rows — no error. Jobs become permanent no-ops, UIs render empty, and "0 rows" gets treated as success.

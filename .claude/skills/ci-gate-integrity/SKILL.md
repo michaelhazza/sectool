@@ -3,6 +3,8 @@ name: ci-gate-integrity
 description: Use when authoring or modifying CI gates, GitHub Actions workflows, grep/regex invariant checks, verification scripts, gate baselines, diff-based checks, or required-check configuration — and when consolidating workflows or migrating a check to a new engine. Every rule here is a documented way a green gate lied.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## ci-gate-integrity` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # CI gate integrity
 
 Gates that cannot fail are the norm, not the exception: a gate is only as real as its ability to fail. Every pattern below is a documented way a passing gate concealed a live violation.
@@ -40,6 +42,7 @@ Before trusting a new gate green, seed a violation and watch it go red. Addition
 ## Baselines and consolidation
 
 - Gate baselines ("pass despite N pre-existing violations") are debt instruments: every entry gets an expiry or an ADR-level justification. Blind-regeneration launders drift; a counting-bug fix and its baseline ratchet are one atomic landing unit (a diff touching the verifier should touch the baseline, or neither).
+- When a gate needs exemptions, the allowlist lives in the VALIDATOR (with a reason per entry), never in the checked artifact — a file marking itself exempt must fail loud, or contributors bypass the gate by editing their own file.
 - Consolidating workflows: the absorbed check inherits the host job's triggers/conditionals — the LEAST permissive set. Compare the deleted workflow's `on:` block side-by-side with the absorber's. Never label-gate safety-critical checks.
 - Replacing one required check with N renamed checks: materialise the new names with a run, add as required, REMOVE the old name, re-run, then merge — or a phantom required check blocks every PR.
 - Migrating a check to a new engine that carries a slice of the old logic: the original stays registered until the replacement proves equivalent (equivalence-diff old vs new outputs on first run); a promoted lint rule at `warn` without `--max-warnings=0` silently weakens enforcement.

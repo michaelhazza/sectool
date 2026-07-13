@@ -121,7 +121,12 @@ The agent inspects the compare result and identifies learning opportunities in e
 
 ### Per-proposal operator gate
 
-For each proposal, the agent surfaces in chat:
+**Eval-gated auto-apply (symmetric trust, DG-7).** Before surfacing a proposal, check whether the repo carries a pinned eval suite for the affected prompt (`eval/<suite>/baseline.json` present for the mode's prompt module). If it does: apply the patch provisionally, run the suite (`npx tsx scripts/eval-prompts.ts <suite>`), and
+- **suite passes** (no regression beyond threshold on catch rate or false-alarm rate) → the proposal is auto-apply eligible under the same four-key gate as code findings; apply it, log the eval scores next to the entry in `prompt-evolution-log.md`, and report it in the round summary as `auto-applied (eval-gated)`. No operator interaction consumed.
+- **suite fails or errors** → revert the patch and surface the proposal to the operator as below, with the eval failure attached.
+Repos without a pinned suite for that prompt see no change: every proposal surfaces to the operator as before.
+
+For each proposal that surfaces (no suite, or suite failed), the agent presents in chat:
 - **Channel:** which of the three above
 - **Source finding:** the ChatGPT-web finding (or severity-delta pair, or rejected OpenAI finding)
 - **Diagnosis:** one sentence on what the OpenAI prompt is currently missing
@@ -146,7 +151,7 @@ When the operator approves a proposal, the agent:
 
 If `chatgptOnly.length === 0` AND no overlap row has `|severityDelta| >= 2` AND no operator false-positive flags fired: the agent prints `_Learning analysis: no proposals this round (zero ChatGPT-only findings, severity calibration aligned)._` and continues straight to triage.
 
-Zero proposals across N consecutive rounds is the operational signal that OpenAI has caught up to ChatGPT-web — the cue to consider the Phase 3 flip-to-automated.
+The Phase 3 flip-to-automated is criterion-triggered, not vibe-triggered. The pinned criterion (DG-4, 2026-07-10) lives in `references/review-mode-resolution.md` § MODE rung 4: automated-tier catch-rate ≥ 90% of manual-tier on the pinned eval suite AND ≤ 1 false positive per review, sustained across 3 consecutive measured framework-consuming builds each with a complete harness-metrics report. Zero learning proposals across consecutive rounds is supporting evidence, not the trigger.
 
 ---
 

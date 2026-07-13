@@ -3,6 +3,8 @@ name: performance
 description: Use when investigating or preventing a slow endpoint, query, or page — N+1 patterns, indexing for speed, caching, pagination cost, payload size, bundle size, or memory growth. Measure before optimizing; every change names its metric and baseline.
 ---
 
+> **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## performance` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
+
 # Performance
 
 Optimisation without a measurement is a guess that costs complexity either way. Name the metric, capture the baseline, change one thing, re-measure.
@@ -10,8 +12,11 @@ Optimisation without a measurement is a guess that costs complexity either way. 
 ## Measure first
 
 - Before any optimisation: name the metric (p95 latency, query time, bundle KB, RSS) and record the baseline. A change that can't show its before/after numbers is refactoring, not optimisation.
+- Pick the measurement from the symptom, don't profile everything: first load slow → TTFB decomposition (DNS/TLS/server) + LCP; interaction slow → INP + long tasks; post-navigation slow → route-level code and data fetch; backend slow → endpoint p95 + query plan.
 - Load-test the p95, not the mean — the mean hides the tail that users actually feel, and cache-warm dev runs measure nothing.
 - Profile before attributing: the slow layer is routinely not the suspected one (serialisation and N+1 fan-out outrank the "slow query" more often than not).
+- Never report a number that wasn't measured: an unmeasured scorecard cell says "not measured", estimated impact is labelled "potential", and lab (synthetic) vs field (real-user) numbers are never interchanged — treating one as the other is fabrication.
+- Performance budgets belong in CI (bundle-size gate, endpoint-p95 gate) — a budget that isn't gated regresses silently.
 
 ## Database
 
@@ -34,6 +39,7 @@ Optimisation without a measurement is a guess that costs complexity either way. 
 
 ## Client and bundle
 
+- Client-facing surfaces carry named Core Web Vitals budgets: LCP ≤ 2.5s, INP ≤ 200ms, CLS ≤ 0.1 — budget numbers to gate against, not aspirations.
 - Lazy-load routes and heavy components; the initial bundle carries only the first screen's code.
 - Watch dependency weight at add time — one convenience import of a moment/lodash-class library outweighs months of micro-optimisation; prefer platform APIs or per-function imports.
 - Per-row fetch fan-out in the UI is the client-side N+1: one batched fetch + client-side join (render-storm specifics: see the frontend-correctness skill).
