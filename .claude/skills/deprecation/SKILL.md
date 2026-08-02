@@ -44,4 +44,4 @@ Answer all five before deprecating anything:
 - Trigger: no commits in ~6 months + active consumers + no owner. Limbo is forbidden — assign an owner and maintain it, or deprecate it with a concrete migration plan. There is no third state.
 - New features landing on a deprecated system are a red flag: that investment belongs in the replacement.
 
-Agent/skill/doc retirement in this framework follows the same discipline: never delete, move to `_retired/` with a `superseded_by` pointer, and sweep callers (see CONTRIBUTING § agent lifecycle).
+Agent/skill/doc retirement in this framework follows the same discipline: never delete — move to `_retired/` with a `superseded_by` pointer, rename the file to `<name>.md.retired`, and sweep callers (see CONTRIBUTING § Retiring an agent). The extension rename is load-bearing, not cosmetic: Claude Code registers `.claude/agents/**` recursively, so a retired agent left as `.md` inside `_retired/` stays live in the session router despite its banner (found and fixed for reality-checker, 2026-07-16).

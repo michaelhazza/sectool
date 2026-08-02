@@ -1,6 +1,6 @@
 ---
 name: fable-mode
-description: Use when starting judgment-heavy work — authoring a brief, spec, implementation plan, or audit; making an architecture, adjudication, or incident-triage decision; or any task where a wrong conclusion is expensive and the executing model is not the strongest tier available. Also use when a caller (agent, coordinator, or operator) says "fable mode".
+description: Use when starting judgment-heavy work — authoring a brief, spec, implementation plan, or audit; making an architecture, adjudication, or incident-triage decision; or any task where a wrong conclusion is expensive, on any model tier (the gates are the discipline, not a substitute for capability). Also use when a caller (agent, coordinator, or operator) says "fable mode".
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## fable-mode` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.
@@ -16,7 +16,7 @@ A reasoning-discipline overlay distilled from frontier-model (Fable-class) worki
 - Authoring: briefs, specs, implementation plans, architecture decisions, ADRs.
 - Auditing and reviewing: codebase audits, adjudicating reviewer findings, post-mortems.
 - Deciding: incident triage, build/no-build calls, approach selection between real alternatives.
-- Any "decide then commit" work executed on a model below the strongest available tier.
+- Any "decide then commit" work, whatever tier is executing — the gates matter most below the strongest available tier, but a strongest-tier session still runs them (its failure mode is confident scope creep, not weak reasoning).
 
 **When NOT to use:** mechanical chunk execution against an already-reviewed plan, trivial single-file edits, and work whose correctness a deterministic gate already enforces. The overlay sharpens judgment; it adds nothing to mechanics.
 

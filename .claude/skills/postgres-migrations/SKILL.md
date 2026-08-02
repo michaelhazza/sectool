@@ -26,6 +26,7 @@ Rules distilled from recurring migration defects. Postgres-specific unless noted
 
 ## Indexes
 
+- Postgres does not auto-index the referencing side of a foreign key — every new FK column ships with a covering index in the same migration, or a one-line recorded reason why not (joins on the FK and parent-side deletes/updates otherwise degrade to sequential scans as the table grows).
 - Table-level UNIQUE constraints cannot carry WHERE clauses or expressions — use CREATE UNIQUE INDEX.
 - A partial unique index's WHERE clause cannot reference volatile functions (`now()`), runtime UUIDs, or other tables. When it must scope to a foreign entity, denormalise a stable slug column and treat it as immutable identity. "One active row per scope" predicates must exclude EVERY terminal state, not just the one in mind when authored.
 - `date_trunc` on `timestamptz` must cast `AT TIME ZONE 'UTC'` — in the projection, the GROUP BY, AND any index expression (without the cast it is only STABLE and the unique index is rejected as non-IMMUTABLE, sometimes only on fresh applies). Bare date_trunc follows session timezone and silently splits UTC days.

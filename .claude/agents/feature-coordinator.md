@@ -29,7 +29,7 @@ Read in this order before doing anything else:
 1. `CLAUDE.md` — task management workflow, agent fleet, review pipeline
 2. `architecture.md` — system architecture, conventions, service contracts (if present; skip when the repo has not authored one)
 3. `DEVELOPMENT_GUIDELINES.md` — build discipline, RLS rules, schema invariants, §8 rules (if present; skip when absent)
-4. `tasks/current-focus.md` — verify `status: BUILDING`
+4. `tasks/current-focus.md` — verify `status: PLANNING` (v2: Phase 2 now ENTERS at plan authoring; BUILDING is set by this coordinator at the plan gate, Step 5)
 5. `tasks/builds/{slug}/handoff.md` — restore Phase 1 context (spec path, slug, branch, any Phase 1 decisions)
 6. The spec at the path named in the handoff
 7. `tasks/lessons.md` — avoid repeating past mistakes
@@ -37,9 +37,65 @@ Read in this order before doing anything else:
 
 **Reasoning discipline:** read `.claude/skills/fable-mode/SKILL.md` once during context loading and apply its gates at the adjudication-heavy steps — applying review findings (Steps 3b, 4), the plan-gate recommendation (Step 5), and NON_CONFORMANT triage (Step 8). Mechanical steps (branch sync, G1/G2 gates, builder dispatch) do not need it.
 
-**Entry guard:** If `tasks/current-focus.md` status is not `BUILDING`, refuse and tell the operator the expected state. Do not proceed.
+**Entry guard:** If `tasks/current-focus.md` status is not `PLANNING`, refuse and tell the operator the expected state. Do not proceed. (v2 change: this was `BUILDING`. Phase 1 now hands over at `PLANNING` because plan authoring is Phase 2 work, and `BUILDING` is written here at Step 5 once the operator approves the plan.)
 
 **Time-source invariant:** every timestamp written by this coordinator (snapshots, logs, commit summaries, progress writes) must be UTC ISO 8601 generated from `date -u` at execution time. Never substitute git commit time, DB time, or client-side time. Never mix sources within a run.
+
+## Status contract (status.json)
+
+At every phase transition — the same moments this coordinator writes `.phase` or a phase-transition progress/current-focus entry — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run:
+
+```bash
+node scripts/status/generate-current-focus.mjs
+node scripts/status/board-sync.mjs
+```
+
+The generator and `board-sync.mjs` run together at every such write.
+
+**Precedence.** `status.json` is **authoritative** for build state. `.phase` is a **derived projection** — its content equals `status.phase` — written in the **same coordinator step** as the `status.json` write. On disagreement, `status.json` wins and the coordinator **rewrites `.phase`** to match.
+
+**Transition matrix (binding playbook rule — v1 enforcement is coordinator discipline; JSON Schema cannot enforce cross-field transition legality, spec §8.1).**
+
+Forward chain (`build-status.v2`, widened 2026-07-29):
+
+```
+SPECIFYING → PLANNING → BUILDING → REVIEWING → TESTING → FINALISING → MERGE_READY → MERGED
+```
+
+Who owns each edge:
+
+| Edge | Written by | At |
+|---|---|---|
+| `→ SPECIFYING` | spec-coordinator | Phase 1 entry |
+| `SPECIFYING → PLANNING` | spec-coordinator | Step 10, handing off to Phase 2 |
+| `PLANNING → BUILDING` | feature-coordinator | Step 5, **after the operator approves the plan** |
+| `BUILDING → REVIEWING` | feature-coordinator | Step 11, after G2 |
+| `REVIEWING → TESTING` | finalisation-coordinator | Step 4a, verify phase begins |
+| `TESTING → FINALISING` | finalisation-coordinator | Step 5, suite green |
+| `FINALISING → MERGE_READY` | finalisation-coordinator | Step 9 |
+| `MERGE_READY → MERGED` | finalisation-coordinator | Step 12.4 |
+
+Back-edges, each **REQUIRING a blocker entry recorded in the same write**: `MERGE_READY → FINALISING`, `FINALISING → TESTING` (a late failure sends work back to the suite), `REVIEWING → BUILDING`. `ABANDONED` is reachable from any non-`MERGED` state. `MERGED` and `ABANDONED` are **terminal** — any further transition is a contract violation.
+
+> **Why `SPECIFYING` and `TESTING` exist (v2).** `PLANNING` previously covered both "working out what to build" and "sizing the build" — different activities with a mandatory operator gate between them, which made the board unable to answer the operator's most common question. `TESTING` was previously invisible inside the Phase 3 span, so "Codex is writing and running the suite" looked identical to "everything is green, final checks running". Both splits exist to make the board describe the work truthfully.
+
+**Activity log (`log[]`) — the operator's board-visible history (additive, schema-optional).** Every stage-boundary `status.json` upsert ALSO appends to the record's `log[]` array. Append-only: never edit or remove an existing entry. Rules:
+
+- Forward transition → append TWO entries in the same write: `kind: "done"` closing the stage just finished, then `kind: "start"` opening the next stage. One write moment, both views.
+- Back-edge → one `kind: "info"` entry saying in plain language why work went back, in the same write as the required blocker entry.
+- Notable mid-stage moment that already carries a status write (first chunk built, review findings in, fix loop opened or closed, gate result, abort) → one `kind: "info"` entry.
+- Entry shape (`log[]` in `schemas/build-status.schema.json`): `{ "at": "<ISO 8601 UTC now>", "stage": "<Spec|Plan|Build|Review|Testing|Finalisation|Merge>", "kind": "start|done|info", "note": ["<dot point>", ...] }`.
+- **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was built, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"Review found 6 issues, all fixed"` · `"Build done: 12 of 12 chunks, checks green"`. Bad: `"pr-reviewer NON_CONFORMANT on server/services/x.ts"`.
+- `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
+
+**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next `generate-current-focus.mjs` run overwrites it by design. The historical prose below the markers is untouched by the generator and remains this coordinator's to edit (Step 11).
+
+**Board-sync is non-blocking.** A `board-sync.mjs` failure is recorded in `progress.md` and never blocks a build — the board is a view, not a gate.
+
+**Error handling.**
+- Board-sync failure → record, continue. Never a build stop.
+- Generator hard error (duplicate `STATUS:GENERATED` markers) → **stop the transition and surface.** Do not proceed on a phase transition whose status projection failed to write.
+- A status write rejected by `.claude/hooks/phase-lock.js` means the `status.json` write-allowlist did not land, or `.phase` disagrees with the write path — **fail loudly** rather than silently skipping the status write.
 
 ## Step 1 — Top-level TodoWrite list
 
@@ -50,6 +106,7 @@ Immediately after context loading, emit a TodoWrite task list with exactly these
 3. architect invocation
 3a. claude-plan-review invocation (D5 cap, validateProjectContext preflight)
 3b. Apply surfaced findings + persist log
+3c. plan-reviewer invocation (Codex, cap 5 per plan lifetime; verdict READY_FOR_BUILD | NEEDS_REVISION)
 4. chatgpt-plan-review (MODE per `references/review-mode-resolution.md` — hard default manual; Claude log + spec injected via D8)
 5. plan-gate
 6. Per-chunk loop (expanded after architect returns — one item per chunk)
@@ -183,6 +240,24 @@ Surface every finding to the operator with its `severity`, `title`, `triage_hint
 
 **Re-run logic (CHANGES_REQUESTED):** if the operator applies findings and requests a re-run, increment the iteration count and return to Step 3a — subject to the D5 cap of 3. A plan that hits the cap with open `CHANGES_REQUESTED` surfaces the remaining findings to the operator with a note that Step 4 (OpenAI) will see them as unapplied, then proceeds to Step 4.
 
+## Step 3c — plan-reviewer
+
+Invoke `plan-reviewer` as a sub-agent with the plan path (`tasks/builds/{slug}/plan.md`) and the governing spec path from the handoff. The sub-agent runs its own autonomous Codex ↔ Claude adjudication loop (structurally cloned from `spec-reviewer`):
+
+- Reads the spec to hunt for plan/spec drift — a primary hunt target for this tier
+- Runs Codex against the plan, classifies findings as mechanical / directional / ambiguous
+- Auto-applies mechanical fixes and autonomously resolves directional findings using its baked-in framing assumptions — it never blocks for human input
+- Routes AUTO-DECIDED items to `tasks/todo.md` for later human review — never a gate on the loop
+- Returns a verdict: `READY_FOR_BUILD` | `NEEDS_REVISION`
+
+Cap is `MAX_ITERATIONS = 5` per plan lifetime (registered in `references/iteration-caps.md`) — the existing `plan-reviewer` enforces this; `feature-coordinator` does not override.
+
+**Verdict routing:**
+- `READY_FOR_BUILD` → record in `progress.md`, proceed to Step 4.
+- `NEEDS_REVISION` → record in `progress.md` (cap-exit with open findings, or a framing-mismatch HITL pause, per `plan-reviewer`'s own contract), proceed to Step 4 with a note that the remaining directional review is operator-owned — mirrors the `spec-reviewer` cap-exit convention in `spec-coordinator.md` Step 7. Do not block.
+
+Step 4's ChatGPT pass reviews the plan file this step already updated — no separate log passthrough is required here (`plan-reviewer` does not leave findings open for the operator the way `claude-plan-review` does).
+
 ## Step 4 — chatgpt-plan-review
 
 **Invoke `chatgpt-plan-review` as a sub-agent.** MODE resolves per `references/review-mode-resolution.md` (explicit operator phrase → session-state file → `CHATGPT_REVIEW_DEFAULT_MODE` env var → hard default **manual**). Do NOT auto-detect from `OPENAI_API_KEY` presence — that legacy behaviour was removed; the operator opts into `automated` explicitly via phrase or env var.
@@ -220,6 +295,11 @@ coordinator is now in the `plan` phase. Any operator revise loop runs under
 plan-phase enforcement. Write this before presenting the plan to the operator
 so the transition is recorded even if the operator replies `abort`.
 
+Also upsert `status.json` in this same step (`phase: plan`; `status`
+unchanged, still `PLANNING` — `BUILDING` is written only on operator
+approval below) — per § Status contract — then run the generator and
+`board-sync.mjs`.
+
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does
 not benefit from its own enforcement — the hook is not yet deployed during this
 build. New builds post-v2.13.0 adoption get the markers automatically.
@@ -235,7 +315,7 @@ Present the finalised plan to the operator verbatim:
 
 **Operator reply handling:**
 
-- `proceed` / `execute` / `go` → mark plan-gate complete, continue to Step 6 (per-chunk loop)
+- `proceed` / `execute` / `go` → mark plan-gate complete, then **write the `PLANNING → BUILDING` transition this step owns** (transition table above): update the `**Status:**` line in the `tasks/current-focus.md` prose body to `BUILDING`, upsert `status.json` (`status: BUILDING`; `phase` stays `plan` until the first chunk writes `build`) with the forward-transition `log[]` pair (`kind: "done"` closing `Plan`, `kind: "start"` opening `Build`) — per § Status contract — then run the generator and `board-sync.mjs`. Continue to Step 6 (per-chunk loop). Without this write the board sits on `PLANNING` through the entire construction phase and the `BUILDING` column never shows a live build.
 - `revise` + feedback → send feedback back to architect (counts against the 3-round cap), then re-run chatgpt-plan-review (Step 4) and plan-gate (Step 5)
 - `abort` → write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`, set `tasks/current-focus.md` status to `NONE`, mark all remaining TodoWrite items as completed, and exit. See abort write order in the Failure paths section.
 - Anything else → ask the operator to clarify; do not infer intent. Do not proceed without an explicit reply.
@@ -246,6 +326,22 @@ Present the finalised plan to the operator verbatim:
 ### Overview
 
 Step 6 has two execution modes — **strict-sequential** (the default) and **parallel** (opt-in only). The inner routine described first is shared by both modes. Mode selection happens in step 2 before any chunk work begins. Steps 0–5 and 7–12 of this playbook are unchanged regardless of mode.
+
+---
+
+### Turn discipline (MANDATORY) — operator directive, 2026-07-28
+
+**A chunk-completion report is never the last thing in a turn.** After closing a chunk (commit + chunk-learnings entry + progress update, per the Commit-integrity invariant below), the next `builder` dispatch MUST follow **in the same turn**.
+
+**The ONLY legitimate turn endings during the chunk loop are:**
+1. An operator gate (the plan gate at Step 5, the post-G2 spec-validity checkpoint, or an operator-executed chunk such as the runner-install spike).
+2. A `PLAN_GAP` or HITL escalation awaiting a human answer.
+3. Phase completion (the Step 12 end-of-phase prompt).
+4. A genuine blocker recorded in `progress.md` (e.g. an unresolved G1/G2 failure past its fix-attempt cap).
+
+Any other turn ending mid-loop is a process violation: ending a turn with a status summary mid-loop stalls the build until the operator pokes it — this is the exact failure the operator reported on 2026-07-28. Resume by dispatching the next chunk's builder immediately.
+
+**Scope note.** An enforcement-level counterpart — a Stop hook keyed on `.phase = build` plus an incomplete chunk ledger — is a recorded backlog item, not part of this build.
 
 ---
 
@@ -282,6 +378,8 @@ mkdir -p tasks/builds/{slug} && echo -n "build" > tasks/builds/{slug}/.phase
 ```
 
 This signals to the phase-lock hook (`.claude/hooks/phase-lock.js`) that the coordinator is now in the `build` phase. Subsequent chunks do not overwrite — the file is already `build`.
+
+Also upsert `status.json` in this same step, first-chunk-only (`phase: build`; `status` unchanged) — per § Status contract — then run the generator and `board-sync.mjs`. Subsequent chunks do not re-trigger this write — same first-chunk-only guard as the `.phase` marker.
 
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does not benefit from its own enforcement — the hook is not yet deployed during this build. New builds post-v2.13.0 adoption get the markers automatically.
 
@@ -562,6 +660,10 @@ coordinator is now in the `review` phase. Review is **unrestricted** in the
 phase-lock matrix (the hook is a silent no-op) — review fixes are inherently
 cross-cutting and a path restriction would block legitimate fix patches.
 
+Also upsert `status.json` in this same step (`phase: review`; `status`
+unchanged, still `BUILDING` until Step 11) — per § Status contract — then
+run the generator and `board-sync.mjs`.
+
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does
 not benefit from its own enforcement — the hook is not yet deployed during this
 build. New builds post-v2.13.0 adoption get the markers automatically.
@@ -630,7 +732,15 @@ For each Blocking finding from pr-reviewer:
 Codex availability check (a repo may pin a machine-specific fallback path in its `.claude/context/agent-context.md` section for this agent):
 
 ```bash
-CODEX_BIN=$(command -v codex 2>/dev/null || echo "${CODEX_FALLBACK_PATH:-codex}")
+# Newer-of-PATH-vs-npm-shim resolution, per references/codex-invocation-contract.md.
+# Do NOT substitute `command -v codex`: on machines with two installs that
+# silently selects the PATH one, which may be older and hard-error against the
+# provisioned model. The script fails closed (exit 1, no stdout) when no
+# runnable binary exists.
+CODEX_BIN=$(bash scripts/codex/resolve-codex-bin.sh) || {
+  echo "No runnable Codex binary found — record a REVIEW_GAP and stop; do not proceed unsandboxed." >&2
+  exit 1
+}
 if [ ! -x "$CODEX_BIN" ] && [ ! -f "$CODEX_BIN" ]; then
   echo "dual-reviewer: skipped — Codex CLI unavailable or unauthenticated"
 fi
@@ -733,6 +843,8 @@ Update the prose body of `tasks/current-focus.md`:
 
 Leave **Active spec**, **Active plan**, **Active build slug**, and **Branch** unchanged. Status enum transitions `BUILDING → REVIEWING`.
 
+Also upsert `status.json` in this same step (`status: REVIEWING`; `phase: review` — now consistent with the phase written at Step 7) — per § Status contract — then run the generator and `board-sync.mjs`.
+
 ## Step 12 — End-of-phase prompt
 
 If the handoff `REVIEW_GAP entries:` field is non-empty (i.e. contains one or more `REVIEW_GAP:` lines), prepend this warning before the end-of-phase message, listing each gap:
@@ -782,7 +894,7 @@ Write `phase_status: PHASE_2_PAUSED_PLAN` to `tasks/builds/{slug}/handoff.md`. E
 
 ### 2. plan-gate "abort"
 
-Write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`. **Clear the phase lock** by writing `build` (an unrestricted phase) to `tasks/builds/{slug}/.phase` — this prevents the phase-lock hook from leaving the repo in a stuck plan-phase edit lock if `tasks/current-focus.md` still references the slug for any reason. Set `tasks/current-focus.md` status to `NONE`. See abort write order below. Mark all remaining TodoWrite items completed. Exit.
+Write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`. **Clear the phase lock** by writing `build` (an unrestricted phase) to `tasks/builds/{slug}/.phase` — this prevents the phase-lock hook from leaving the repo in a stuck plan-phase edit lock if `tasks/current-focus.md` still references the slug for any reason. Set `tasks/current-focus.md` status to `NONE`. Also set `status.json.status = ABANDONED` (with a blocker entry recording the abort) in this same step — per § Status contract — then run the generator and `board-sync.mjs`. See abort write order below. Mark all remaining TodoWrite items completed. Exit.
 
 ```bash
 # Required pre-exit sequence for plan-gate abort:

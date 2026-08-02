@@ -6,6 +6,22 @@
  * Reads tasks/builds/{slug}/.phase and blocks Edit/Write/MultiEdit calls
  * that target paths outside the phase's allowed globs.
  *
+ * Slug resolution (per write target, not global):
+ *   - A write under tasks/builds/<slug>/… is governed by ITS OWN slug,
+ *     derived from the path — a build-dir write is always governed by
+ *     its own build's phase, regardless of what current-focus.md names.
+ *   - A write outside any build directory falls back to the build_slug
+ *     named in tasks/current-focus.md. When STATUS:GENERATED markers are
+ *     present, only the marker region is searched (first match = the
+ *     highest-priority in-flight build, generator contract). When no
+ *     markers exist (pre-migration), the whole file is searched — same
+ *     regex, same first-match semantics as before this fix.
+ *   - Accepted v1 residual: all non-build-dir writes share ONE governing
+ *     phase (the top generated entry's), mirroring the pre-fix single-
+ *     pointer behaviour. A write whose slug cannot be derived at all
+ *     (no path match AND no current-focus fallback) is allowed — fail
+ *     OPEN per this hook's contract, scoped to that single write.
+ *
  * Fails OPEN on any internal error — a bug in this hook must never
  * interrupt a legitimate edit.
  *
@@ -14,7 +30,7 @@
  *   2 — block the tool call; stderr is fed back to Claude as feedback
  *
  * Phase matrix:
- *   spec      — only spec/intent/progress/mockup/review-log/phase files + docs + prototypes
+ *   spec      — only spec/intent/progress/mockup/review-log/status/phase files + docs + prototypes
  *   plan      — above + plan.md
  *   build     — unrestricted (always allow)
  *   review    — unrestricted (silent no-op)
@@ -53,6 +69,7 @@ function allowedGlobsForPhase(phase, slug) {
     `tasks/builds/${slug}/handoff.md`,
     `tasks/builds/${slug}/mockup-log.md`,
     `tasks/builds/${slug}/mockup-review-log-*.md`,
+    `tasks/builds/${slug}/status.json`,
     `tasks/builds/${slug}/.phase`,
     'tasks/current-focus.md',
     'docs/superpowers/specs/**',
@@ -135,6 +152,19 @@ function normalisePath(p) {
  */
 function hasDotDot(p) {
   return p.split('/').some((seg) => seg === '..');
+}
+
+/**
+ * Derive the governing build slug from a repo-relative write target, when
+ * the target lives inside a build directory (tasks/builds/<slug>/…). A
+ * build-dir write is always governed by its own build's phase — this is
+ * the natural key, so no current-focus.md fallback applies here.
+ * @param {string} relPath repo-relative path (any separator; normalised internally)
+ * @returns {string|null}
+ */
+export function deriveSlugFromPath(relPath) {
+  const m = normalisePath(relPath).match(/^tasks\/builds\/([a-zA-Z0-9_-]+)\//);
+  return m ? m[1] : null;
 }
 
 /**
@@ -273,6 +303,38 @@ export function extractFilePaths(toolName, toolInput) {
   return [...paths];
 }
 
+// STATUS:GENERATED markers written by scripts/status/generate-current-focus.mjs
+// (inventory row 12). Each active-build entry inside the region emits exactly
+// one `build_slug: <slug>` line, highest-priority build first.
+const STATUS_GENERATED_BEGIN = '<!-- STATUS:GENERATED:BEGIN -->';
+const STATUS_GENERATED_END = '<!-- STATUS:GENERATED:END -->';
+
+/**
+ * Extract the governing build_slug from tasks/current-focus.md content.
+ * When STATUS:GENERATED markers are present, search ONLY inside the marker
+ * region — the generator emits one `build_slug:` line per build,
+ * highest-priority first, so the first match inside the region is the
+ * deterministic top entry. When no markers exist (pre-migration repos),
+ * search the whole file — same regex, same first-match semantics as the
+ * original single-pointer behaviour (byte-identical fallback).
+ * @param {string} content
+ * @returns {string|null}
+ */
+export function extractBuildSlugFromContent(content) {
+  const beginIdx = content.indexOf(STATUS_GENERATED_BEGIN);
+  const endIdx = content.indexOf(STATUS_GENERATED_END);
+  const searchIn =
+    beginIdx !== -1 && endIdx !== -1 && beginIdx < endIdx
+      ? content.slice(beginIdx + STATUS_GENERATED_BEGIN.length, endIdx)
+      : content;
+  // Look for lines like: build_slug: framework-learning-loops
+  // (matches the YAML-style frontmatter and the prose body's `Active build slug:` form
+  // only when the field name uses underscore/hyphen — the literal `build slug` with a
+  // space is intentionally NOT matched to avoid false hits on prose like "the build slug is...")
+  const match = searchIn.match(/build[_-]slug[:\s*`]+([a-zA-Z0-9_-]+)/i);
+  return match ? match[1] : null;
+}
+
 /**
  * Read and return the trimmed build_slug from tasks/current-focus.md.
  * Returns null if the file is missing or the field is absent.
@@ -282,12 +344,7 @@ export function extractFilePaths(toolName, toolInput) {
 function readBuildSlug(projectDir) {
   try {
     const content = readFileSync(`${projectDir}/tasks/current-focus.md`, 'utf8');
-    // Look for lines like: build_slug: framework-learning-loops
-    // (matches the YAML-style frontmatter and the prose body's `Active build slug:` form
-    // only when the field name uses underscore/hyphen — the literal `build slug` with a
-    // space is intentionally NOT matched to avoid false hits on prose like "the build slug is...")
-    const match = content.match(/build[_-]slug[:\s*`]+([a-zA-Z0-9_-]+)/i);
-    return match ? match[1] : null;
+    return extractBuildSlugFromContent(content);
   } catch {
     return null;
   }
@@ -315,6 +372,26 @@ function readPhase(projectDir, slug) {
   }
 }
 
+/**
+ * Resolve the governing {slug, phase} for a single write target.
+ * Build-dir writes (tasks/builds/<slug>/…) are governed by their OWN
+ * build's phase, derived from the path. Writes outside any build
+ * directory fall back to the current-focus.md build_slug (marker-scoped
+ * when STATUS:GENERATED markers exist — see extractBuildSlugFromContent).
+ * Returns { slug: null, phase: null } when no slug can be derived at all
+ * (no path match AND no current-focus fallback) — the caller fails OPEN
+ * for that single write, not for the whole hook invocation.
+ * @param {string} projectDir
+ * @param {string} targetPath
+ * @returns {{ slug: string|null, phase: 'spec'|'plan'|'build'|'review'|'finalise'|null }}
+ */
+export function resolvePhaseLockContext(projectDir, targetPath) {
+  const relPath = normalisePath(toRelative(targetPath));
+  const slug = deriveSlugFromPath(relPath) || readBuildSlug(projectDir);
+  if (!slug) return { slug: null, phase: null };
+  return { slug, phase: readPhase(projectDir, slug) };
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 function main() {
@@ -331,14 +408,6 @@ function main() {
       }
 
       const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-      const slug = readBuildSlug(projectDir);
-
-      if (!slug) {
-        // No build slug — no enforcement context; fail-open
-        process.exit(0);
-      }
-
-      const currentPhase = readPhase(projectDir, slug);
       const filePaths = extractFilePaths(toolName, payload.tool_input || {});
 
       if (filePaths.length === 0) {
@@ -346,7 +415,10 @@ function main() {
       }
 
       for (const fp of filePaths) {
-        const result = decidePhaseLock({ toolName, targetPath: fp, currentPhase, buildSlug: slug });
+        const { slug, phase } = resolvePhaseLockContext(projectDir, fp);
+        if (!slug) continue; // no enforcement context derivable for this write — fail-open
+
+        const result = decidePhaseLock({ toolName, targetPath: fp, currentPhase: phase, buildSlug: slug });
         if (result.disposition === 'block') {
           process.stderr.write(result.reason + '\n');
           process.exit(2);

@@ -916,6 +916,33 @@ Hunt targets:
   final disposition table covering every listed item. Free-text closure
   lets items silently exit the list with no evidence; the enumerated set
   plus a per-item table is what makes "all items addressed" checkable.
+- Invariant-vs-mechanism contradictions. When a spec states an absolute
+  determinism, idempotency, permutation, or replay invariant, verify every
+  runtime mechanism actually preserves it: resource-budget stops (wall-clock /
+  memory), cache expiry / regeneration, partial-failure paths, and ordering /
+  blocking. A mechanism whose committed result depends on where a timer or a
+  memory ceiling expired, or on a later regeneration of state the invariant
+  treats as fixed, silently violates a stated permutation/replay invariant.
+  Flag the invariant plus the undermining mechanism and require a deterministic
+  contract (versioned work-unit budget, retained-evidence rule, or a narrowed
+  invariant claim).
+- Fingerprint / stable-identity completeness. When a spec asserts stable
+  output, item, or record fingerprints in acceptance, shadow-comparison, or
+  replay sections, require the fingerprint DERIVATION to be defined, not just
+  referenced: input canonicalisation (ordered vs sorted arrays), which payload
+  it covers (semantic vs display), version participation (renderer / policy /
+  algorithm), and the excluded fields (DB IDs, timestamps, input order, bounded
+  samples). A fingerprint that acceptance depends on but no section derives is
+  unimplementable-as-specified.
+- Closed-membership completeness under multi-relationship inputs. When a
+  contract requires "exactly one primary membership" (or one disposition per
+  item) and separately defines pairwise conflict / match relationships, audit
+  the multi-relationship cases: an item conflicting with several groups, or
+  equivalent to one while conflicting with another. Require a deterministic
+  primary-assignment precedence, deterministic selection among equally
+  qualifying groups, and an explicit rule for how the extra relationships
+  persist (as references vs memberships) so the reconciliation identities stay
+  one-per-item.
 
 Process:
 Pass 1 Inventory. Pass 2 Evidence. Pass 3 Implementation simulation on the top

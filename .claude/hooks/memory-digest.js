@@ -293,7 +293,7 @@ function buildIndexMatched(dir, knowledgeLines) {
   const sourceCache = new Map();
   function sourceLines(file) {
     if (!sourceCache.has(file)) {
-      let lines = [];
+      let lines;
       try {
         lines = readHead(join(dir, file), MATCHED_SOURCE_MAX_BYTES).split('\n');
       } catch {

@@ -82,11 +82,22 @@ const CASES = [
     2,
   ],
 
-  // 3. Write to package.json → block
+  // 3. Write to biome.json → block. (This case used package.json until
+  // 2026-07-28, when package.json was removed from PROTECTED_BASENAMES by
+  // standing operator pre-approval — see the dated comment in
+  // config-protection.js. Case 3b below asserts the removal.)
   [
-    "Write package.json → exit 2",
-    payload('Write', { file_path: `${PROJ}/package.json`, content: '{}' }),
+    "Write biome.json → exit 2",
+    payload('Write', { file_path: `${PROJ}/biome.json`, content: '{}' }),
     2,
+  ],
+
+  // 3b. package.json is deliberately UNPROTECTED (operator pre-approval,
+  // 2026-07-28). A regression re-adding it to PROTECTED_BASENAMES fails here.
+  [
+    "Write package.json → exit 0 (pre-approved, unprotected)",
+    payload('Write', { file_path: `${PROJ}/package.json`, content: '{}' }),
+    0,
   ],
 
   // 4. (Regression) Real-shaped MultiEdit — top-level file_path, edits[] with
@@ -115,10 +126,11 @@ const CASES = [
   ],
 
   // 6. Legacy per-edit file_path variant still caught by the edits[] fallback
+  // (switched from package.json to biome.json 2026-07-28 — see case 3/3b)
   [
-    "MultiEdit with per-edit file_path package.json → exit 2",
+    "MultiEdit with per-edit file_path biome.json → exit 2",
     payload('MultiEdit', {
-      edits: [{ file_path: `${PROJ}/package.json`, old_string: 'a', new_string: 'b' }],
+      edits: [{ file_path: `${PROJ}/biome.json`, old_string: 'a', new_string: 'b' }],
     }),
     2,
   ],
@@ -226,13 +238,16 @@ for (const [label, input, expectedExit] of CASES) {
 // A sentinel containing the target's repo-relative path authorises exactly
 // one edit, then is deleted; the immediate retry must block again.
 {
-  writeFileSync(SENTINEL, 'package.json\n');
-  const first = runHook(payload('Edit', { file_path: `${PROJ}/package.json`, old_string: 'a', new_string: 'b' }));
-  check('sentinel "package.json": Edit package.json → exit 0 (approval consumed)', first.status, 0, first.stderr && first.stderr.slice(0, 200));
+  // (Exemplar switched from package.json to biome.json 2026-07-28 when
+  // package.json left PROTECTED_BASENAMES — the consume-flow semantics
+  // under test are unchanged.)
+  writeFileSync(SENTINEL, 'biome.json\n');
+  const first = runHook(payload('Edit', { file_path: `${PROJ}/biome.json`, old_string: 'a', new_string: 'b' }));
+  check('sentinel "biome.json": Edit biome.json → exit 0 (approval consumed)', first.status, 0, first.stderr && first.stderr.slice(0, 200));
   check('sentinel consumed message on stderr', /one-shot approval consumed/.test(first.stderr || ''), true, first.stderr);
   check('sentinel deleted after consume (one-shot)', existsSync(SENTINEL), false);
 
-  const second = runHook(payload('Edit', { file_path: `${PROJ}/package.json`, old_string: 'a', new_string: 'b' }));
+  const second = runHook(payload('Edit', { file_path: `${PROJ}/biome.json`, old_string: 'a', new_string: 'b' }));
   check('retry without fresh sentinel → exit 2', second.status, 2);
   check('block message names HITL approval', /HITL-APPROVAL-REQUIRED/.test(second.stderr || ''), true, second.stderr && second.stderr.slice(0, 200));
 }
@@ -241,14 +256,16 @@ for (const [label, input, expectedExit] of CASES) {
 // Approval for the root package.json must NOT authorise worker/package.json —
 // the sentinel binds to the repo-relative path, not the basename.
 {
-  writeFileSync(SENTINEL, 'package.json\n');
-  const wrongTarget = runHook(payload('Edit', { file_path: `${PROJ}/worker/package.json`, old_string: 'a', new_string: 'b' }));
-  check('sentinel "package.json": Edit worker/package.json → exit 2 (path-bound)', wrongTarget.status, 2, wrongTarget.stderr && wrongTarget.stderr.slice(0, 200));
+  // (Exemplar switched from package.json to tsconfig.json 2026-07-28 —
+  // package.json left PROTECTED_BASENAMES; path-binding semantics unchanged.)
+  writeFileSync(SENTINEL, 'tsconfig.json\n');
+  const wrongTarget = runHook(payload('Edit', { file_path: `${PROJ}/worker/tsconfig.json`, old_string: 'a', new_string: 'b' }));
+  check('sentinel "tsconfig.json": Edit worker/tsconfig.json → exit 2 (path-bound)', wrongTarget.status, 2, wrongTarget.stderr && wrongTarget.stderr.slice(0, 200));
   check('mismatched sentinel NOT consumed', existsSync(SENTINEL), true);
 
-  writeFileSync(SENTINEL, 'worker/package.json\n');
-  const rightTarget = runHook(payload('Edit', { file_path: `${PROJ}/worker/package.json`, old_string: 'a', new_string: 'b' }));
-  check('sentinel "worker/package.json": Edit worker/package.json → exit 0', rightTarget.status, 0, rightTarget.stderr && rightTarget.stderr.slice(0, 200));
+  writeFileSync(SENTINEL, 'worker/tsconfig.json\n');
+  const rightTarget = runHook(payload('Edit', { file_path: `${PROJ}/worker/tsconfig.json`, old_string: 'a', new_string: 'b' }));
+  check('sentinel "worker/tsconfig.json": Edit worker/tsconfig.json → exit 0', rightTarget.status, 0, rightTarget.stderr && rightTarget.stderr.slice(0, 200));
   check('matching sentinel consumed', existsSync(SENTINEL), false);
 }
 

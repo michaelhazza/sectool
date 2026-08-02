@@ -1,0 +1,126 @@
+# ci-light.yml — framework-canonical advisory CI lane (dev-pipeline-v2 spec §7.5; plan.md Chunk 12, WEB3-002)
+#
+# This is a RENDER TEMPLATE, not a runnable workflow. `scripts/adopt-ci-templates.mjs`
+# (Chunk 13) substitutes the placeholders below and writes the result to the
+# consumer's `.github/workflows/ci-light.yml`. Do not hand-edit a rendered
+# copy — fix this template and re-render.
+#
+# ci-light is a light CALLER, not an inline job: a scalar substitution cannot
+# carry the multi-step lint/typecheck/static-gate job graph a real repo runs,
+# so — same mechanism as merge-gate.yml — this file only owns triggers,
+# identity resolution, and concurrency; the actual step content lives in the
+# repo's light callee (`on: workflow_call`). The SAME callee is called again,
+# with `strict: '1'`, by merge-gate.yml's `light` job on the gated path — one
+# source file, two callers, zero duplication.
+#
+# ── Placeholders (fail-closed at render; C13 requires exactly what this file
+#    references — see plan.md Chunk 13 §"Requirements are PER TARGET") ──────
+#   {{RUNNER_LABELS}}              array of non-empty strings, e.g. [self-hosted, linux].
+#                                  Required per C13's per-target matrix even though no
+#                                  job IN THIS FILE has a `runs-on:` field to put it in
+#                                  (the one job here is a `uses:` call, and a `uses:` job
+#                                  cannot also declare `runs-on:`). Declared here anyway
+#                                  because the matrix pins it required for BOTH render
+#                                  targets with no per-target carve-out (unlike the two
+#                                  keys named below, which the matrix explicitly scopes
+#                                  to merge-gate only) — and because the value is already
+#                                  authored in the registry at ci-light's render time, so
+#                                  requiring it creates none of the sequencing hazard that
+#                                  motivated WEB3-001. Purely declarative in this file.
+#   {{LIGHT_SUITE_WORKFLOW_PATH}}  repo-relative path to the light suite callee
+#                                  (`on: workflow_call`). required; target must EXIST
+#                                  at render time.
+#
+# This template deliberately does NOT spell out the heavy-suite-path or
+# push-main-full-suite keys anywhere below (not even to say "not used") —
+# per-target scoping (WEB3-001) means a placeholder no template references
+# must not be required for that target's render, and a text-scanning renderer
+# cannot tell "mentioned as unused" apart from "declared". The heavy callee
+# does not exist yet when ci-light is first rendered (it is authored later,
+# at merge-gate render time), and ci-light must render successfully without
+# naming it or the push-trigger conditional key at all.
+#
+# ── Callee contract (binding on every repo's light-suite workflow) ────────────────
+#   `on: workflow_call` declaring `tested_sha` (string, required) and `strict`
+#   (string, default '0'). Four binding requirements on the callee, not this
+#   caller:
+#     1. The callee MUST check out `tested_sha`, not a default ref — otherwise
+#        the suite tests a different commit than the gate certifies.
+#     2. `fetch-depth: 0` AND a resolvable base ref belong to the CALLEE, not
+#        only the caller. Any gate inside the callee that diffs
+#        `origin/<base_ref>` silently degrades to "skipped, still green" on a
+#        bare-SHA shallow checkout — the exact silent-skip hazard this build
+#        restructures into a loud failure.
+#     3. The callee declares NO workflow-level `concurrency`. Concurrency is
+#        caller-owned (this file).
+#     4. Any value the callee's steps would otherwise read from
+#        `needs.resolve-label` (a caller-side job that does not exist for this
+#        template — ci-light has no label gate) must become a declared
+#        `workflow_call` input (`strict`) or a literal — never left to resolve
+#        to null inside the callee.
+#
+# ── Runner trust boundary (spec §7.5, standing condition) ─────────────────────────
+#   A same-repo branch PR that modifies a workflow file DOES run the modified
+#   workflow on the persistent self-hosted runner. Accepted for a single-operator
+#   private account with per-repo runner registration and no fork PRs. This
+#   posture MUST be revisited before any collaborator is added to a repo using
+#   this template.
+
+name: ci-light
+
+# ── Runner trust boundary (spec §7.5, STANDING CONDITION) ────────────────────
+# Deliberately BELOW `name:` so it survives rendering. The renderer strips the
+# leading header comment block, so the copy of this note that lives up there
+# never reaches the workflow an operator actually reads in their repo — which
+# voided the very "recorded as a standing condition in the templates" the spec
+# relies on. Body comments are retained verbatim; this one belongs here.
+#
+#   A same-repo branch PR that modifies a workflow file DOES run the modified
+#   workflow on the persistent self-hosted runner. Accepted for a
+#   single-operator PRIVATE account with per-repo runner registration and no
+#   fork PRs. This posture MUST be revisited before any collaborator is added
+#   to a repo using this workflow, and this lane is NOT label-gated: it runs on
+#   every pull request.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege by default (spec §7.5 pins "read-only default token"). Stated
+# here rather than assumed from a repo settings page, so the guarantee travels
+# with the workflow instead of depending on an unverifiable external default.
+permissions:
+  contents: read
+
+# CSR-007: cancel-in-progress here IS correct — this is the advisory lane, a
+# superseded push should cancel its predecessor's light run. Contrast with
+# merge-gate.yml, which deliberately omits cancel-in-progress because a gate
+# run must complete. Keyed on workflow + ref (not the resolved commit
+# identity — a per-SHA key would defeat cancellation, since every push has a
+# distinct SHA).
+concurrency:
+  group: ci-light-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # No resolve-label equivalent: ci-light is never label-gated, so there is no
+  # caller-owned step content to run here (PLAN-020's "uses: job cannot also
+  # carry steps:" constraint is moot — this file has exactly one job and it is
+  # entirely a `uses:` call). The event-conditional resolved-SHA expression is
+  # the same one merge-gate.yml uses, reused inline rather than re-derived.
+  light:
+    name: light (lint, typecheck, static gates — advisory)
+    uses: ./{{LIGHT_SUITE_WORKFLOW_PATH}}
+    with:
+      tested_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      strict: '0'
+    # NO `secrets: inherit`. This lane is ungated — it runs on every pull
+    # request with no label required — so inheriting the entire repo secret set
+    # here meant a one-line edit to a branch's own callee could exfiltrate every
+    # secret with no operator action and no gate involved. Lint, typecheck and
+    # static gates need none of them. A consumer whose light suite genuinely
+    # requires one (a private registry token, say) declares it explicitly:
+    #   secrets:
+    #     NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    # Explicit beats inherit: it names what crosses the boundary.

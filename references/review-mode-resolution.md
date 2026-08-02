@@ -48,6 +48,72 @@ Mode meanings:
 - `parallel` — both paths, interleaved, with the side-by-side compare panel.
   Requires `OPENAI_API_KEY`. Contract: `docs/review-pipeline/parallel-mode.md`.
 
+## External-review artifact handoff — MANDATORY, ANY artifact, ANY route
+
+**Binding on every artifact produced for a human to hand to an external reviewer**, whichever route produced it: a review agent's round loop, or a bare operator request ("give me a code-only diff", "link the spec", "export the plan for review"). The next section's round-loop rule is a *special case* of this one — it was written first and scoped only to the three ChatGPT agents, so an ad-hoc request bound nothing and the handoff was produced wrong. Hence this section.
+
+### Where this binds — the full surface, not three places
+
+**All three requirements (file in workspace + clickable link + reviewer prompt)** apply to every artifact that leaves for an external reviewer:
+
+| Artifact | Produced by |
+|---|---|
+| **Spec** | `chatgpt-spec-review` (manual / parallel) |
+| **Plan** | `chatgpt-plan-review` (manual / parallel) |
+| **Code diff / PR** | `chatgpt-pr-review` (manual / parallel), or a bare operator request |
+| **Brief** | `brief-reviewer` Round B — the ChatGPT direction pass |
+| **Cross-tool handoff** | any document written FOR another tool to act on (e.g. a Codex handoff), whether or not a review agent produced it |
+
+The brief tier is easy to forget because it has no Claude pre-screen and runs a single round; it is still an external handoff and still binds.
+
+**Requirements 1 and 2 only (in workspace + clickable link; no prompt needed)** apply to *any* file the operator is told about and expected to open themselves — the prompt requirement is what distinguishes "someone else will review this" from "you will read this":
+
+- mockups and prototypes (`prototypes/<slug>.html`) — `mockup-coordinator`, `mockup-designer`
+- audit logs and review logs (`tasks/review-logs/**`) — `audit-runner` and every reviewer
+- incident post-mortems (`docs/incidents/**`) — `regression-scribe`, `incident-commander`
+- research briefs (`tasks/research-briefs/**`), codebase tours (`docs/codebase-tour.md`)
+- generated capability artifacts (`docs/generated/**`)
+
+**The simple test:** if a message tells the operator a file exists, that file is linked. If someone other than the operator will review it, it also ships a prompt.
+
+Three requirements. All three, every time, in the SAME message:
+
+**1. The file lives INSIDE the workspace.** Never outside the repo root, never in a system temp directory, never in a scratchpad. The operator's editor can only link, open and copy files inside the workspace, and copying into the external tool is the entire purpose of the artifact. If the file must not be committed, **gitignore it** — do not exile it. Exiling it to solve a commit-hygiene worry trades the deliverable's only function for a problem `.gitignore` already solves.
+
+- Canonical path for a build's code diff: `tasks/builds/<slug>/code-only.diff`
+- Canonical path for its companion prompt: `tasks/builds/<slug>/code-only-review-prompt.md`
+- Add `tasks/builds/*/code-only.diff` to the consuming repo's `.gitignore` once; it then covers every future build.
+
+**2. Link it clickably, in the editor's own format.** A bare absolute path like `c:\files\...\x.diff` is not a link and cannot be opened. Use a workspace-relative markdown link: `[code-only.diff](tasks/builds/<slug>/code-only.diff)`. Link the prompt the same way. State the size and file count so the operator knows what they are pasting.
+
+**3. Ship a ready-to-paste reviewer prompt with it.** An artifact with no prompt is half a deliverable — the operator should never have to compose the ask. The prompt is a file (linked, per rule 2), not buried in chat, so it survives the scrollback. It must contain:
+   - what the code **is**, and what it is **not** (e.g. "no application runtime code") so the reviewer calibrates;
+   - **how to read the artifact** — multi-repo layout, why apparently-duplicated filenames are not duplicates, and where fixes must land;
+   - **what to prioritise**, informed by where prior passes actually found defects;
+   - an explicit **do-not-re-report** list (known/deferred) and a **verified-clean** list, so review budget is not spent re-deriving settled ground;
+   - the **output format** wanted back.
+
+**Verification before sending the message:** the file is inside the workspace; `git check-ignore` confirms it cannot be committed (when it should not be); the link is workspace-relative; the prompt file exists and is linked too. A message that names a path but does not link it fails this rule.
+
+## Next-round artifact discipline (manual + parallel) — MANDATORY
+
+Binding on `manual` AND `parallel` in all three review agents. `automated`-only
+is the sole exemption (no human upload step).
+
+**Always assume another round is coming.** At the END of every round, BEFORE the
+round summary is printed, the agent produces the round-N+1 bundle — the updated
+artifact, the `PROJECT_CONTEXT` refreshed with this round's applied findings in
+its do-not-re-raise register, the pinned artifact hash, and a ready-to-paste
+prompt — with clickable links in the SAME message. Applies even on a zero-change
+round. Stop only on an explicit `proceed` / `approved` / `done`; silence, a
+question, or a hedge is not a stop signal.
+
+Canonical text and per-agent detail live in each agent's
+`### Next-round artifact discipline` section (`chatgpt-pr-review.md`,
+`chatgpt-spec-review.md`, `chatgpt-plan-review.md`). Recorded here because this
+rule was missed repeatedly when it existed only in one agent, and MODE is the
+first thing every reviewer resolves.
+
 The resolved MODE is recorded in the session log's Session Info block and
 restored from there on resume (log wins over tiers 2–3 on resume).
 

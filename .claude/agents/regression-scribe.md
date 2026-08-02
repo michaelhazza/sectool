@@ -19,7 +19,7 @@ The following values are documented defaults. A consuming repo overrides any of 
 | Issue marker version | `regression-capture:v1` | Byte-identical match required; see § Marker read-back contract |
 | Test directory convention | `__tests__/` next to the implicated module | Override if the repo colocates tests |
 | Test file suffix | `<module-name>.regression.test.ts` | |
-| Post-mortem directory | `docs/incidents/` (template at `docs/incidents/_template.md`) | |
+| Post-mortem directory | `docs/incidents/` (template at `docs/incidents/_template.md`, when the repo ships one) | |
 | Labels | `needs-human-test`, `status:awaiting-review` (this agent); `regression-attempted` (rail-owned); `regression-test-needed` (issue-upsert-owned) | See § Label ownership |
 | Branch prefix | `regression/<FINGERPRINT>` | |
 | Test runner + import idiom | The project's configured test runner per `references/test-gate-policy.md` (check `package.json` scripts; Vitest in the reference examples). Repos with TypeScript-ESM `nodenext` resolution require `.js` extensions on relative imports in authored tests — copy the idiom from the repo's existing test files. | |
@@ -81,7 +81,7 @@ Skip this step if `DOWNGRADE=true`.
   - `<RESOLUTION_DATE>` is the UTC date (`YYYY-MM-DD`) from Step 1.
   - `<FINGERPRINT>` is the full fingerprint from the payload (no prefix truncation).
   - If that exact file already exists (re-run on the same incident), overwrite it — never create a duplicate.
-- Fill the template from `docs/incidents/_template.md`:
+- Fill the post-mortem using `docs/incidents/_template.md` when the repo ships one; when it does not, author exactly the five sections below — they ARE the template, so a missing template file never blocks the rail:
   - **What failed:** `payload.errorClass` + `payload.sourceType` + one-sentence description derived from `STACK_EXCERPT` (or "stack excerpt unavailable" if null).
   - **Blast radius:** map `payload.sourceType` to its affected audience (e.g. a route error affects users hitting that route; a dead-lettered job affects that job's consumers; apply the repo's incident-source taxonomy from the context file when one is defined). Expand with any additional context visible in the issue body prose.
   - **Root cause:** `payload.errorClass` at `IMPLICATED_FILES[0].file:IMPLICATED_FILES[0].line` (or "file unknown" if `implicated` is empty). Extract from `STACK_EXCERPT` if available.

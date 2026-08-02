@@ -210,9 +210,26 @@ Run: `ls tasks/review-logs/chatgpt-pr-review-*.md 2>/dev/null | sort | tail -1`
 
 ---
 
+### Next-round artifact discipline (manual + parallel) — MANDATORY, NO EXCEPTIONS
+
+**Assume another round is coming. Always.** A review round is NOT complete until the operator has everything needed to run the next one, in the same message. Waiting to be asked is the failure this rule exists to prevent — it has been missed repeatedly, and the cost is a stalled round-trip every time.
+
+This **generalises the Diff-file discipline above** from the diff file to the whole next-round bundle. Same scope: **`manual` AND `parallel`**, never inferred from mode; `automated`-only is the sole exemption because it has no human upload step.
+
+At the END of every round, BEFORE printing the round summary, produce the round-N+1 bundle:
+
+1. **The regenerated diff file** — per the Diff-file discipline above, which remains binding verbatim.
+2. **The refreshed `PROJECT_CONTEXT`** — with this round's applied findings appended to the do-not-re-raise register. A reviewer that re-raises what round N already fixed produces duplicate findings and burns a round; that is the coordinator's fault, not the reviewer's.
+3. **The pinned head SHA** the diff was generated against, so the next round identifies the exact version reviewed. State the superseded SHA explicitly when it changed.
+4. **A ready-to-paste prompt** for the next round, listing any decisions settled since the last round so they come back as duplicates rather than findings.
+
+**The round summary is incomplete without clickable links to items 1–2 in the SAME message.** Do not print a round summary until they exist on disk and the links are in the message. This holds **even on a zero-change round**.
+
+**Stop only on an explicit signal.** `proceed`, `approved`, `done`, `no more rounds`, or an equivalent explicit go-ahead ends the loop. Silence, a question, or a hedge ("looks fine") does NOT — produce the next-round bundle anyway. The operator skipping a prepared bundle costs nothing; a missing bundle costs a round-trip.
+
 ## Per-Round Loop
 
-**Round cap: 5.** After Round 5, if no APPROVED verdict has been reached, escalate to the operator: surface unresolved findings + recommend either operator-driven adjudication, a re-spec, or accepting the remaining findings as deferred. Do NOT fire Round 6 automatically. The 5-round cap is a hard ceiling; operator may explicitly authorise additional rounds case-by-case ("continue past cap"), but the default is to stop and surface.
+**Round cap: 5.** After Round 5, if no APPROVED verdict has been reached, escalate to the operator: surface unresolved findings + recommend either operator-driven adjudication, a re-spec, or accepting the remaining findings as deferred. Do NOT fire Round 6 automatically. The 5-round cap is a hard ceiling; operator may explicitly authorise additional rounds case-by-case ("continue past cap"), but the default is to stop and surface. **The cap bounds how many rounds may run — it does NOT license skipping the next-round bundle above. Prepare the bundle every round up to the cap; at the cap, say so explicitly instead of silently withholding it.**
 
 **[AUTOMATED]** Trigger: user says "next round", "another round", "go again", or equivalent — no paste required. Round 1 fires automatically on agent start; subsequent rounds fire on user signal.
 

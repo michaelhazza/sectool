@@ -230,6 +230,7 @@ If the elegant fix would require a larger change, apply the minimum patch now an
 
 Run in order:
 
+0. **Environment parity — if any test in this pass touches the database** (directly, through a service, or via a browser flow): first run the repo's declared migrate command (automation-v1: `npm run migrate`) and require exit 0. It is idempotent at head, so run it rather than reason about whether it is needed. Then state it in the PR body / handoff: `Environment: migrations applied to head via <command> (exit 0).` A schema-shaped failure later (missing table/column) means re-run the migrate command first — never author around it or ship results with a "database was behind" caveat. That caveat already happened once and is the failure this step exists to prevent (`references/codex-invocation-contract.md § Environment parity`).
 1. `npm run lint`
 2. `npm run typecheck`
 3. If a unit test exists in the affected area: `npx vitest run <path-to-test>`. If the fix is amenable to a new targeted unit test AND the affected area is `server/` logic: author one and run it. Do NOT run repo-wide gates (CI handles those — see `references/test-gate-policy.md`).

@@ -1,0 +1,249 @@
+# merge-gate.yml — framework-canonical CI merge gate (dev-pipeline-v2 spec §7.5, §13; plan.md Chunk 12)
+#
+# This is a RENDER TEMPLATE, not a runnable workflow. `scripts/adopt-ci-templates.mjs`
+# (Chunk 13) substitutes the placeholders below and writes the result to the
+# consumer's `.github/workflows/merge-gate.yml`. Do not hand-edit a rendered
+# copy — fix this template and re-render.
+#
+# ── Placeholders (fail-closed at render; C13 requires exactly what this file
+#    references — see plan.md Chunk 13 §"Requirements are PER TARGET") ──────
+#   {{RUNNER_LABELS}}              array of non-empty strings, e.g. [self-hosted, linux]
+#                                  required. Used as `runs-on:` for every job with steps.
+#   {{SUITE_WORKFLOW_PATH}}        repo-relative path to the heavy suite callee
+#                                  (`on: workflow_call`). required; target must EXIST
+#                                  at render time (the consumer/framework repo authors
+#                                  the callee before rendering this caller).
+#   {{LIGHT_SUITE_WORKFLOW_PATH}}  repo-relative path to the light suite callee
+#                                  (`on: workflow_call`). required; target must EXIST
+#                                  at render time.
+#   {{PUSH_MAIN_FULL_SUITE}}       explicitly-present JSON boolean (conditional BLOCK,
+#                                  not a scalar substitution — see marker syntax below).
+#                                  Absence is a fail-closed render refusal, never a
+#                                  silently-omitted trigger.
+#
+# ── Conditional-block marker syntax (defined here; C13's renderer must honour it) ──
+#   An opening marker line of the exact shape "hash-if" + a space + an
+#   upper-snake-case key name, immediately followed (no blank line) by the
+#   conditional content, immediately followed by a closing marker line of the
+#   exact shape "slash-if" — see the live pair around the `push:` trigger
+#   below (keyed on PUSH_MAIN_FULL_SUITE) for the only instance this template
+#   actually uses.
+#   - The key resolves against the per-repo `ci_templates` substitution map.
+#   - The key must be an explicitly-present JSON boolean. Missing key => render
+#     refusal, not a silently-false block.
+#   - true  => the renderer keeps the block's inner content, verbatim, and strips
+#              only the two marker lines themselves; nothing else changes.
+#   - false => the renderer removes both marker lines AND everything between
+#              them, leaving no blank/orphaned lines.
+#   - Blocks do not nest in this template; the renderer is not required to
+#     support nesting beyond what this file uses.
+#   (This explanatory paragraph deliberately avoids repeating the literal
+#   marker syntax with a placeholder key name — doing so would itself look
+#   like a declared placeholder to a text-scanning renderer, per WEB3-001.)
+#
+# ── Callee contract (binding on every repo's suite/light-suite workflow) ──────────
+#   `on: workflow_call` declaring at minimum an input `tested_sha` (string, required).
+#   The light callee additionally declares `strict` (string, default '0'). Four
+#   binding requirements on the callee, not this caller:
+#     1. The callee MUST check out `tested_sha`, not a default ref — otherwise the
+#        suite tests a different commit than the gate certifies.
+#     2. `fetch-depth: 0` AND a resolvable base ref belong to the CALLEE, not only
+#        the caller. Any gate inside the callee that diffs `origin/<base_ref>`
+#        (e.g. a migration-prefix guard, a schemas-vs-CHANGELOG gate) silently
+#        degrades to "skipped, still green" on a bare-SHA shallow checkout — the
+#        exact silent-skip hazard this build restructures into a loud failure.
+#     3. The callee declares NO workflow-level `concurrency`. Concurrency is
+#        caller-owned (this file); a callee-level concurrency block would
+#        reintroduce mid-gate cancellation or collide with the caller's group.
+#     4. Any value the callee's jobs would otherwise read from `needs.resolve-label`
+#        (this caller's job) must become a declared `workflow_call` input or a
+#        literal — never left to resolve to null inside the callee.
+#
+# ── Runner trust boundary (spec §7.5, standing condition) ─────────────────────────
+#   A same-repo branch PR that modifies a workflow file DOES run the modified
+#   workflow on the persistent self-hosted runner. Accepted for a single-operator
+#   private account with per-repo runner registration and no fork PRs. This
+#   posture MUST be revisited before any collaborator is added to a repo using
+#   this template.
+#
+# ── Why the checkout/echo live on `resolve-label`, not on `suite` (PLAN-020) ──────
+#   `suite` and `light` are `uses:` jobs (calls to a reusable workflow) and a
+#   `uses:` job cannot also declare `steps:`. Any step this caller needs to run
+#   itself — the explicit checkout, the provenance echo, the live label
+#   re-query — has to live on `resolve-label`, the one job in this file with an
+#   ordinary `steps:` list.
+
+name: merge-gate
+
+# ── Runner trust boundary (spec §7.5, STANDING CONDITION) ────────────────────
+# Deliberately BELOW `name:` so it survives rendering — the renderer strips the
+# leading header comment block, so the copy up there never reaches the workflow
+# an operator actually reads in their repo.
+#
+#   A same-repo branch PR that modifies a workflow file DOES run the modified
+#   workflow on the persistent self-hosted runner. Accepted for a
+#   single-operator PRIVATE account with per-repo runner registration and no
+#   fork PRs. This posture MUST be revisited before any collaborator is added
+#   to a repo using this workflow.
+#
+#   Note the consequence for THIS file specifically: because a branch's own
+#   version of this workflow is what runs for its PR, the gate cannot by itself
+#   prove which version produced a given run. Treat the coordinator-side
+#   refusal rules as the authority on gate integrity, not this file alone.
+
+on:
+  pull_request:
+    types: [labeled]
+{{#if PUSH_MAIN_FULL_SUITE}}
+  push:
+    branches: [main]
+{{/if}}
+
+# CSR-007: no cancel-in-progress here — a gate run completes; staleness is
+# handled by spec §13's head-SHA refusal table, not by cancellation. Keyed on
+# the same event-conditional resolved commit identity the checkout, provenance
+# echo, and job outputs below all read (WEB-PLAN-003) — never a bare
+# `pull_request.head.sha`, which does not exist on the `push` path.
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.head.sha || github.sha }}
+
+# Least privilege by default (spec §7.5 pins "read-only default token"). Only
+# resolve-label needs more, and it declares its own block. Previously the two
+# `uses:` jobs and merge-guard inherited whatever the repo/org default happened
+# to be — an unverifiable settings-page value the templates depended on and
+# never asserted, on a persistent self-hosted runner.
+permissions:
+  contents: read
+
+jobs:
+  # ── Caller-owned: commit identity, provenance, live label re-query ─────────────
+  resolve-label:
+    name: resolve ready-to-merge (live) + tested commit identity
+    runs-on: {{RUNNER_LABELS}}
+    timeout-minutes: 5
+    # A job-level `permissions:` block REPLACES the workflow-level one — it does
+    # not merge with it. Every scope omitted here is set to `none`, so declaring
+    # only `pull-requests: read` withdrew the workflow-level `contents: read`
+    # from this job and `actions/checkout@v4` below could no longer fetch the
+    # tested commit on a private repo — i.e. the least-privilege floor added
+    # above broke the only job in this file that checks anything out. Both
+    # scopes must be listed together.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+      tested_sha: ${{ steps.identity.outputs.sha }}
+    steps:
+      # Explicit checkout of the resolved commit identity — never the default
+      # synthetic merge ref. fetch-depth: 0 per WEB-PLAN-003 / PLAN-019.
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Event-conditional identity (WEB-PLAN-003): pull_request -> head SHA,
+      # push -> github.sha. One resolved value, echoed for provenance
+      # (tasks/lessons.md:19 — a port answering proves nothing about which
+      # checkout answered) and exposed as the `tested_sha` output every
+      # downstream job/callee consumes.
+      - name: Resolve tested commit identity + provenance echo
+        id: identity
+        run: |
+          sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Provenance: repo=${{ github.repository }} tested_sha=$sha event=${{ github.event_name }}"
+
+      # Live label re-query. github.event.pull_request.labels reflects the
+      # snapshot baked into the triggering event's payload; this re-reads the
+      # CURRENT label state at run time so a stale payload cannot report
+      # ready=true (or skip a run that should have been gated).
+      #
+      # FAILS LOUD, and this is the whole point of the rewrite. The original
+      # was `gh api ... 2>/dev/null || echo ""`, which made three completely
+      # different situations indistinguishable: the label is absent, the API
+      # call failed, and `gh` is not installed. On a fresh self-hosted runner
+      # the third is the common one, and it presented as a labelled PR whose
+      # gated suites were silently skipped and whose merge-guard then failed
+      # with "suite=skipped, light=skipped" — a message that points at the
+      # suites, which never ran, rather than at the resolver that skipped them.
+      # A resolver that cannot read the labels must say so, not answer "no".
+      - name: Query current PR labels
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "::error::gh CLI is not installed on this runner, so the ready-to-merge label cannot be re-queried. Install it (https://github.com/cli/cli#installation) — refusing to report ready=false, which would silently skip the gated suites."
+            exit 1
+          fi
+
+          # Capture stderr and the exit status separately so an API failure is
+          # reported as a failure rather than collapsing into "no labels".
+          if ! labels=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" \
+              --jq '.labels[].name' 2>gh-err.txt); then
+            echo "::error::Failed to query PR labels: $(tr '\n' ' ' < gh-err.txt)"
+            exit 1
+          fi
+
+          if printf '%s\n' "$labels" | grep -qx 'ready-to-merge'; then
+            echo "Label ready-to-merge is present on PR #${{ github.event.pull_request.number }} — gated suites will run."
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Label ready-to-merge is NOT present (labels: ${labels:-none}) — gated suites will be skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Heavy suite, via the repo's callee (workflow_call) ──────────────────────────
+  suite:
+    name: suite (gated full suite)
+    needs: resolve-label
+    # PLAN-016: resolve-label writes ready=false on ANY non-pull_request event.
+    # Gating on `ready` alone would SKIP this job on the push-to-main path and
+    # merge-guard would still need to observe a real result, not a silent skip.
+    if: needs.resolve-label.outputs.ready == 'true' || github.event_name == 'push'
+    uses: ./{{SUITE_WORKFLOW_PATH}}
+    with:
+      tested_sha: ${{ needs.resolve-label.outputs.tested_sha }}
+    secrets: inherit
+
+  # ── Light lane (lint/typecheck/static gates), STRICT on the gated path ──────────
+  # Same callee ci-light.yml calls with strict: '0'. Without this job the merge
+  # gate would lose the static-gate coverage today's `lint_and_typecheck` runs
+  # on every gated run (WEB3-002) — the "weaker than today" failure.
+  light:
+    name: light (lint, typecheck, static gates — strict)
+    needs: resolve-label
+    if: needs.resolve-label.outputs.ready == 'true' || github.event_name == 'push'
+    uses: ./{{LIGHT_SUITE_WORKFLOW_PATH}}
+    with:
+      tested_sha: ${{ needs.resolve-label.outputs.tested_sha }}
+      strict: '1'
+    secrets: inherit
+
+  # ── Fails loudly when either gated callee did not succeed ───────────────────────
+  # Observes the callees' ACTUAL results — never proxies the label. A skipped
+  # `suite`/`light` job (e.g. the label was pulled after trigger, or the push
+  # path never satisfied its own `if:`) reports a non-"success" result here,
+  # and this job fails with a grep-able message instead of the run reporting
+  # green with nothing gated having run.
+  merge-guard:
+    name: merge-guard (gated suites ran)
+    runs-on: {{RUNNER_LABELS}}
+    needs: [resolve-label, suite, light]
+    if: always()
+    timeout-minutes: 2
+    steps:
+      - name: Require both gated suites to have succeeded
+        run: |
+          if [ "${{ needs.suite.result }}" != "success" ] || [ "${{ needs.light.result }}" != "success" ]; then
+            echo "::error::Gated suites did not both succeed (suite=${{ needs.suite.result }}, light=${{ needs.light.result }}). Merge stays blocked until a labeled (or, on push, a push-triggered) run is green on both callees."
+            exit 1
+          fi
+          echo "Both gated suites succeeded (suite=${{ needs.suite.result }}, light=${{ needs.light.result }})."

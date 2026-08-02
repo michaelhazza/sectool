@@ -21,6 +21,7 @@ For every new artifact, name and verify its CONSUMING call site on the productio
 - **React component** → imported and rendered from its entry point in the SAME commit as the definition. "Component done" means visible, not compiled.
 - **Pure helper** → the production path calls it; a green test on an unwired helper is a dead test. A pure helper called as a bare statement with its return value discarded is a no-op bug.
 - **Callback/seam on a shared wrapper** → fulfils an "everywhere" requirement only when every in-scope caller wires it; grep all call sites, each passes it or carries a marked exemption.
+- **Registration shadowed by an earlier claim on the same key** → a Route, Job/worker/handler, or Event registration can exist, compile, be tested, AND be registered, and still never fire because an earlier registration already claims the same key (method+path, handler name, event name) and wins the runtime dispatch. "Is it registered" is not the final wiring question — "does ITS registration win" is. Grep the full registry for every claim on the key being added, not just the new one.
 
 Before classifying an uncalled handler as dead code: if the services it imports are live, it is almost certainly a missing WIRE, not a DELETE.
 

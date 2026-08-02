@@ -157,7 +157,7 @@ export interface MetricsReport {
  *   `2026-07-08T14-35-17Z`  dashed time with Z
  *   `2026-07-08`            date-only (time branch absent)
  */
-const TS_TAIL = /-(\d{4}-\d{2}-\d{2}(?:T\d{2}[:\-]?\d{2}[:\-]?\d{2}(?:\.\d+)?Z?)?)$/;
+const TS_TAIL = /-(\d{4}-\d{2}-\d{2}(?:T\d{2}[:-]?\d{2}[:-]?\d{2}(?:\.\d+)?Z?)?)$/;
 
 /**
  * Extract the build slug from a coordinator-decisions filename. Strips the
@@ -199,7 +199,7 @@ export function normalizeTimestamp(raw: unknown): number | null {
   }
 
   const dateTime = s.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2})[:\-]?(\d{2})[:\-]?(\d{2})(?:\.\d+)?Z?$/,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2})[:-]?(\d{2})[:-]?(\d{2})(?:\.\d+)?Z?$/,
   );
   if (dateTime) {
     const iso = `${dateTime[1]}-${dateTime[2]}-${dateTime[3]}T${dateTime[4]}:${dateTime[5]}:${dateTime[6]}Z`;

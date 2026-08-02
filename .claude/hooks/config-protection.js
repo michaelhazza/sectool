@@ -65,7 +65,11 @@ const PROTECTED_BASENAMES = [
   /^prettier\.config\.[cm]?[jt]s$/,
   /^biome\.json$/,
   /^\.editorconfig$/,
-  /^package\.json$/,            // protects scripts section from being weakened
+  // package.json REMOVED 2026-07-28 by standing operator pre-approval:
+  // per-edit HITL on package.json repeatedly stalled automated builds
+  // (dependency additions are routine). Dependency/scripts changes are
+  // covered by plan review + the branch-level review pass instead.
+  // Do NOT re-add without an operator decision.
 ];
 
 // Full path patterns (relative to project root, always forward-slash) for

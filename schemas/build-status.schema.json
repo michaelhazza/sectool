@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "build-status.schema.json",
+  "title": "BuildStatus",
+  "description": "Contract for tasks/builds/<slug>/status.json (contract_version build-status.v2). Producer: the coordinator owning the current phase (spec/feature/finalisation), written at every phase transition. Consumers: scripts/status/generate-current-focus.mjs, scripts/status/board-sync.mjs, human readers.",
+  "$comment": "Transition enforcement (previous->next legality, terminal immutability, and the blocker-gated back-edges) is coordinator discipline, not schema-enforced. Under build-status.v2 the back-edges are MERGE_READY->FINALISING (the label-pull CI fix loop), FINALISING->TESTING (a doc/review finding that needs a code change re-verified), TESTING->BUILDING (a failing test that is a product defect, not a test defect) and REVIEWING->BUILDING (review findings). This list superseded the v1 pair MERGE_READY->REVIEWING / REVIEWING->BUILDING when the enum widened 6->9 on 2026-07-29; the v1 wording survived that change unnoticed for a full review round, which is why scripts/status/status-vocabulary.test.mjs now fails the build when any status name appearing in prose here is absent from the enum below. JSON Schema validates one status.json document in isolation and cannot express cross-write or cross-document rules. A dedicated transition-validator module is a named deferred hardening, built the first time a bad transition is observed in any repo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "slug",
+    "title",
+    "classification",
+    "phase",
+    "status",
+    "branch",
+    "pr",
+    "gates",
+    "gate_evidence",
+    "blockers",
+    "summary",
+    "updated_at",
+    "updated_by"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "build-status.v2"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "$comment": "FORMAT ONLY (OAI-SPEC-003). JSON Schema cannot enforce filename<->content equality; the slug == directory-name invariant (this file must live at tasks/builds/<slug>/status.json) is a READER obligation, implemented by scripts/status/generate-current-focus.mjs (INVALID line on mismatch) and consumed by scripts/status/board-sync.mjs.",
+      "description": "Kebab-case build slug."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "Trivial",
+        "Standard",
+        "Significant",
+        "Major"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "spec",
+        "plan",
+        "build",
+        "review",
+        "finalise"
+      ],
+      "description": "Closed set. Must agree with .claude/hooks/phase-lock.js's VALID_PHASES."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "SPECIFYING",
+        "PLANNING",
+        "BUILDING",
+        "REVIEWING",
+        "TESTING",
+        "FINALISING",
+        "MERGE_READY",
+        "MERGED",
+        "ABANDONED"
+      ],
+      "description": "Per-build status — the operator-facing board column. Ordered by pipeline progress. SPECIFYING (deciding what to build) is distinct from PLANNING (sizing the build plan): they are different activities separated by a mandatory operator gate, and collapsing them was the single most confusing thing about the v1 vocabulary. TESTING (Codex authors tests + runs the full suite + iterates to green) is distinct from FINALISING (external review, docs, learning, CI parity) so the board can tell 'tests are being built' from 'tests are green, final checks running'. NONE is not a per-build state — it exists only in the generated current-focus pointer when no build is active."
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pr": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "GitHub PR number, or null until a PR exists."
+    },
+    "gates": {
+      "type": "object",
+      "$comment": "OPEN map keyed by gate-id (CSR-005) — a coordinator can record a new gate without a schema amendment. Initial key set: s0, duplication_check, g1, g2, g4, g5, verify, merge_gate.",
+      "additionalProperties": {
+        "enum": [
+          "pass",
+          "fail",
+          "incomplete",
+          "proceed",
+          null
+        ]
+      }
+    },
+    "gate_evidence": {
+      "type": "object",
+      "$comment": "Sibling open map to gates, same keys.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sha",
+          "run_ids",
+          "url",
+          "completed_at"
+        ],
+        "properties": {
+          "sha": {
+            "type": "string"
+          },
+          "run_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One entry per uploaded run — e.g. the verify gate records one release-control testRunId per uploaded lane (JUnit, Playwright); the merge gate records the one workflow run id. Empty array allowed."
+          },
+          "url": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text",
+          "raised_by",
+          "raised_at",
+          "cleared_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raised_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raised_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cleared_at": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "log": {
+      "type": "array",
+      "$comment": "OPTIONAL and additive (build-status.v2 unchanged — absent in pre-2.61.0 records, which stay valid). Append-only operator-facing activity log: coordinators append entries at every stage boundary (kind: start/done) and at notable mid-stage moments (kind: info). Entries are NEVER edited or removed once written. Rendered newest-first on the build's board card by board-sync.mjs so the operator can open the card at any time and read what the build has done without the session transcript. Language contract for note[] bullets is coordinator discipline (see the coordinators' § Status contract): plain-English operator-level dot points — what was built, what was found, how many issues were fixed — no file paths, no jargon, no transcripts.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "at",
+          "stage",
+          "kind",
+          "note"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601, UTC — when the entry was appended."
+          },
+          "stage": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Operator-level stage name (e.g. Spec, Plan, Build, Review, Testing, Finalisation, Merge)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "start",
+              "done",
+              "info"
+            ],
+            "description": "start = entering the stage; done = stage completed; info = notable mid-stage event (issues found, fix loop, gate result)."
+          },
+          "note": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "description": "1-6 short plain-English dot points, each <=200 chars."
+          }
+        }
+      }
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601, UTC."
+    },
+    "updated_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Coordinator name."
+    }
+  }
+}

@@ -83,7 +83,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const pathExists = (p: string): boolean => {
       const cached = existsCache.get(p);
       if (cached !== undefined) return cached;
-      let ok = false;
+      let ok: boolean;
       try {
         ok = existsSync(join(REPO_DIR, p.split('/').join(sep)));
       } catch {

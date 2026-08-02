@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "framework-state.schema.json",
+  "title": "FrameworkState",
+  "description": "Contract for a consumer's .claude/.framework-state.json. Mirrors the FrameworkState JSDoc typedef in sync.js (line 23): required fields are those the typedef declares non-optional; lastSubstitutionHash and appliedMigrations are optional (forward-migration fields). Unknown extra fields are permitted (additionalProperties: true) so older audit scripts do not hard-fail on newer state files; declared fields are strictly typed.",
+  "type": "object",
+  "required": [
+    "frameworkVersion",
+    "adoptedAt",
+    "adoptedFromCommit",
+    "profile",
+    "substitutions",
+    "files",
+    "syncIgnore"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "frameworkVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Framework semver the consumer is synced to. sync.js validates MAJOR.MINOR.PATCH with no prerelease/build suffix."
+    },
+    "adoptedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp written by sync.js --adopt."
+    },
+    "adoptedFromCommit": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ],
+      "description": "Framework git commit at adoption time, or null when the framework checkout had no resolvable commit."
+    },
+    "profile": {
+      "enum": ["MINIMAL", "STANDARD", "FULL"],
+      "description": "Adoption profile."
+    },
+    "substitutions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "not": { "pattern": "\\{\\{" },
+        "description": "Substitution values must never contain '{{' — sync.js validateSubstitutions rejects such values because they break idempotency."
+      },
+      "description": "Placeholder key to replacement value map applied to substituteAt: 'adoption' files."
+    },
+    "lastSubstitutionHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex) of the canonical substitutions map at the last sync. Optional: absent on states that predate the drift check (forward-migration; sync sets it on the next state write)."
+    },
+    "files": {
+      "type": "object",
+      "propertyNames": {
+        "not": { "pattern": "^([A-Za-z]:|[/\\\\])|(^|[/\\\\])\\.\\.([/\\\\]|$)" },
+        "description": "Keys are repo-relative forward-slash paths. Absolute paths and '..' segments are rejected — sync.js treats them as tampering (scanForUnresolvedMerges skips them; assertWithinRoot throws)."
+      },
+      "additionalProperties": { "$ref": "#/definitions/fileStateEntry" },
+      "description": "Per-managed-file sync baseline, keyed by repo-relative path."
+    },
+    "syncIgnore": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Concrete repo-relative paths the consumer has opted out of syncing. Matched by exact string equality in classifyFile — glob patterns here never match anything."
+    },
+    "appliedMigrations": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+      "description": "Migration version IDs recorded by run-migrations.js after each applied/skipped migration. Optional: absent on states that predate the migration runner."
+    }
+  },
+  "definitions": {
+    "fileStateEntry": {
+      "type": "object",
+      "required": [
+        "lastAppliedHash",
+        "lastAppliedFrameworkVersion",
+        "lastAppliedFrameworkCommit",
+        "lastAppliedSourcePath",
+        "customisedLocally"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "lastAppliedHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 (hex) of the normalised content sync.js last wrote (or rebaselined) for this file."
+        },
+        "lastAppliedFrameworkVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "lastAppliedFrameworkCommit": {
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "null" }
+          ]
+        },
+        "lastAppliedSourcePath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The manifest managedFiles entry path (possibly a glob) that governed this file at last sync."
+        },
+        "customisedLocally": {
+          "type": "boolean",
+          "description": "True when the last sync found the consumer's copy diverged and emitted a .framework-new sibling."
+        },
+        "adoptedOwnership": {
+          "type": "boolean",
+          "description": "Optional. True when an adopt-only file's ownership transferred to the consumer."
+        }
+      }
+    }
+  }
+}

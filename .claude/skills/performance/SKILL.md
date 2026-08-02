@@ -22,6 +22,7 @@ Optimisation without a measurement is a guess that costs complexity either way. 
 
 - N+1 detection: any per-row `await` inside a loop over query results is the signature — batch into one `IN (...)` query or a join, then map in memory. Works in dev at 10 rows, degrades linearly in production.
 - Index the predicate you actually query: the index must match the WHERE + ORDER BY shape (composite in filter-then-sort order; partial index when the hot query always carries the same status predicate). An index on the column alone doesn't serve `WHERE status = 'x' ORDER BY created_at` — verify with EXPLAIN, not intuition.
+- Every list query carries LIMIT or pagination at write time — an unbounded list query is correct at ten rows and a timeout at a hundred thousand; bounding is write-time discipline, not a later optimisation.
 - LIMIT + keyset pagination over OFFSET at depth — OFFSET N scans and discards N rows, so page 1000 costs 1000 pages; keyset cursors are constant-cost (tiebreaker and cursor-correctness rules: see the db-concurrency skill).
 - Push filters, sorts, and aggregates into SQL before LIMIT — fetching wide then filtering in application code pays transfer and memory for rows you discard.
 
@@ -46,6 +47,7 @@ Optimisation without a measurement is a guess that costs complexity either way. 
 
 ## Hot paths
 
+- Expensive or slow work (report generation, email sends, external-API fan-out, bulk writes) runs as a background job on the queue/scheduler, never inside an HTTP request handler — inline it and the client holds a connection for the duration, retries double the work, and one slow dependency stalls the request pool.
 - No per-call dynamic `import()` in request paths — module resolution cost on every call; hoist to module scope.
 - No synchronous filesystem or crypto calls in request handlers — one sync call serialises the whole event loop under load.
 - Locks and contention on hot write paths (never hold locks across slow I/O, SKIP LOCKED claim shapes): see the db-concurrency skill.

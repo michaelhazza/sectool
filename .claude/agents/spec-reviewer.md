@@ -52,7 +52,15 @@ Before starting, read:
 
 Locate the Codex binary (a repo may pin a machine-specific fallback path in its `.claude/context/agent-context.md` section for this agent):
 ```bash
-CODEX_BIN=$(command -v codex 2>/dev/null || echo "${CODEX_FALLBACK_PATH:-codex}")
+# Newer-of-PATH-vs-npm-shim resolution, per references/codex-invocation-contract.md.
+# Do NOT substitute `command -v codex`: on machines with two installs that
+# silently selects the PATH one, which may be older and hard-error against the
+# provisioned model. The script fails closed (exit 1, no stdout) when no
+# runnable binary exists.
+CODEX_BIN=$(bash scripts/codex/resolve-codex-bin.sh) || {
+  echo "No runnable Codex binary found — record a REVIEW_GAP and stop; do not proceed unsandboxed." >&2
+  exit 1
+}
 ```
 
 Verify auth:
@@ -136,29 +144,17 @@ Repeat the following up to MAX_ITERATIONS times, subject to the stopping heurist
 
 ### Step 1 — Run Codex against the spec
 
-Invoke Codex non-interactively against the spec file. The spec is a markdown document, not a code diff, so we use `codex exec`, NOT `codex review` — the `review` subcommand only reviews git changes (`--uncommitted` / `--base` / `--commit`) and cannot take an arbitrary document. Pass the review instructions as the prompt and the spec content on stdin (Codex appends piped stdin as a `<stdin>` block). Run in the `read-only` sandbox so Codex cannot edit the working tree.
+The spec is a markdown document, not a code diff, so this tier uses the `exec` subcommand, never `review` — the `review` subcommand only reviews git changes (`--uncommitted` / `--base` / `--commit`) and cannot take an arbitrary document.
 
-Define the review prompt once. It opens with an explicit read-only instruction as defence-in-depth, so that if a sandbox-less fallback ever runs, Codex is still told not to touch files:
+Codex invocation follows [`references/codex-invocation-contract.md`](../../references/codex-invocation-contract.md) — read-only review mode, cwd = repo root, artefact by path in the prompt. The spec path is named inside the prompt, never piped via stdin. Binary resolution, the fallback chain, the fail-closed sandbox clause, and the output-capture/retry rules all follow the contract; this file does not restate them.
 
-```bash
-REVIEW_PROMPT="This is a READ-ONLY review: do not modify, create, or delete any files — only read and report. Review this specification document for completeness, clarity, and implementation readiness. List findings as numbered items, each with Title, Severity (critical/high/medium/low), Category (bug/improvement/style/architecture), and a brief explanation. Focus on: missing contracts, ambiguous requirements, missing edge cases, internal inconsistencies, and unresolved forward references. End with an overall verdict: APPROVED, CHANGES_REQUESTED, or NEEDS_DISCUSSION."
-```
-
-Primary command — read-only sandbox, skip the git-repo check:
+Define the review prompt once, combining the contract's mandatory grounding instruction with the spec-review rubric:
 
 ```bash
-$CODEX_BIN exec -s read-only --skip-git-repo-check "$REVIEW_PROMPT" < "${SPEC_PATH}" 2>&1
+REVIEW_PROMPT="This is a READ-ONLY review: do not modify, create, or delete any files — only read and report. Read the specification at ${SPEC_PATH}, then explore the repository: does this design exist already, what does it touch, are there cross-file conflicts, is this a duplication of existing logic. Review the specification for completeness, clarity, and implementation readiness. List findings as numbered items, each with Title, Severity (critical/high/medium/low), Category (bug/improvement/style/architecture), and a brief explanation. Focus on: missing contracts, ambiguous requirements, missing edge cases, internal inconsistencies, and unresolved forward references. End with an overall verdict: APPROVED, CHANGES_REQUESTED, or NEEDS_DISCUSSION."
 ```
 
-If that exits non-zero because the local Codex does not support one of the exec options above, escalate while **preserving the read-only sandbox for as long as the installed Codex accepts it**. The first command in the `||` chain is the preferred fallback — `-s read-only` alone, dropping only `--skip-git-repo-check`. The second is the last resort: a bare `codex exec` for an older Codex without `-s`, which has no sandbox enforcement and relies solely on the read-only instruction in `$REVIEW_PROMPT` (weaker than sandbox enforcement):
-
-```bash
-$CODEX_BIN exec -s read-only "$REVIEW_PROMPT" < "${SPEC_PATH}" 2>&1 || $CODEX_BIN exec "$REVIEW_PROMPT" < "${SPEC_PATH}" 2>&1
-```
-
-Capture the full stdout+stderr as `CODEX_OUTPUT`.
-
-If Codex output is empty or clearly truncated, retry once. If the second attempt also fails, write a diagnostic to `tasks/review-logs/spec-review-plan-<timestamp>.md` and skip to the next iteration. If two consecutive iterations fail to produce Codex output, stop the loop and report the failure to the caller.
+Capture the full stdout+stderr of the invocation as `CODEX_OUTPUT`. If the contract's retry also fails, write a diagnostic to `tasks/review-logs/spec-review-plan-<timestamp>.md` and skip to the next iteration. If two consecutive iterations fail to produce Codex output, stop the loop and report the failure to the caller.
 
 ### Step 2 — Extract findings from Codex output
 

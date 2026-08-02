@@ -6,7 +6,7 @@ This file replaces ~10 duplicated copies of the same rule across the agent fleet
 
 ## Rule
 
-**Continuous integration runs the complete test/gate suite as the final pre-merge confirmation.** No local agent or development session runs the full battery. This applies to every agent in `.claude/agents/`, every skill, every review loop iteration, and every main-session task — with exactly ONE carve-out: the finalisation G5 local CI-parity gate (see below).
+**Continuous integration runs the complete test/gate suite as the final pre-merge confirmation.** No local agent or development session runs the full battery. This applies to every agent in `.claude/agents/`, every skill, every review loop iteration, and every main-session task — with exactly TWO carve-outs: the finalisation G5 local CI-parity gate, and the verify-phase stage-6 gating checkpoint (see below).
 
 ## Forbidden locally
 
@@ -26,9 +26,9 @@ This file replaces ~10 duplicated copies of the same rule across the agent fleet
 
 Authoring tests and gates is encouraged. Running the full battery of them locally is not. CI handles that.
 
-## Finalisation G5 carve-out (the ONE sanctioned local suite run — scoped by default, full on escape-hatch diffs)
+## Finalisation G5 carve-out (the FIRST of two sanctioned local suite runs — scoped by default, full on escape-hatch diffs)
 
-`finalisation-coordinator` Step 8c (G5 local CI-parity gate) and its Step 11 fix-loop verification run CI's check suite locally. This is deliberate and is the only exception to the rule above. G5 has two modes (selected at Step 8c.2):
+`finalisation-coordinator` Step 8c (G5 local CI-parity gate) and its Step 11 fix-loop verification run CI's check suite locally. This is deliberate and is one of the two exceptions to the rule above (the other is the verify-phase carve-out below). G5 has two modes (selected at Step 8c.2):
 
 - **G5-scoped (default when the repo ships `scripts/g5-scoped.sh`):** full lint + typecheck, the test runner's related-files selection over the branch diff (e.g. `vitest related --run <changed files>`, per suite), and only the static gates whose trigger surface the diff touches, per the declarative path-glob mapping table pinned in the consuming repo's `scripts/g5-scoped.sh`.
 - **Full G5 (mandatory escape hatch):** the entire parity set. Scoped mode refuses and falls back to full when the diff touches aggregate/global surfaces where subset runs are blind — migration directories, package manifests/lockfiles, the project's shared registry files, `*baseline*` files, the test-runner config, CI workflow files — or when a merge commit from main brought such changes into the branch.
@@ -38,6 +38,12 @@ Whichever mode runs records one line in `tasks/builds/<slug>/progress.md`: `G5 m
 **Why the carve-out exists:** GitHub Actions minutes are a constrained, billed resource. The consuming repo's heavy CI jobs are gated on the `ready-to-merge` label and re-run on every push while the label is present. The carve-out inverts the cost: the suite runs locally (cheap, fast iteration) until green, the label is applied once, and the labeled CI run is a single final confirmation — target: one full CI run per ticket. Scoped mode exists because the full parity set can take an hour on a dev machine: the diff-scoped subset preserves the local-first discipline at a cost proportional to the change, while the labeled CI run still catches anything the subset could not see.
 
 **Scope is strict.** The carve-out applies ONLY while executing the `finalisation-coordinator` playbook at Step 8c or Step 11 (CI-failure fix verification). No other agent, skill, plan, spec, review loop, or main-session task inherits it. `builder`, `feature-coordinator`, `pr-reviewer`, and every Phase 1/2 surface remain bound by "Forbidden locally" in full. A plan or spec citing this carve-out to justify a mid-build full-suite run is mis-scoped and gets auto-fixed by spec-reviewer.
+
+## Verify-phase carve-out (the SECOND sanctioned local suite run — stage-6 gating checkpoint #1)
+
+`verify-phase` Step 3 (Run) and Step 4 (Fix loop re-runs) run the full CI suite locally, once per stage-6 invocation — this is full-suite gating checkpoint **#1** and the stage-6 exit condition (spec §7.2 step 3). `verify-phase` is the **sole additional agent** permitted to run the full suite locally beyond the G5 carve-out above; no other agent, skill, plan, spec, review loop, or main-session task gains this permission by association. Scope is strict in the same way as G5: it applies ONLY while executing `verify-phase`'s own Step 3 and Step 4 — every other agent, including `builder` and `feature-coordinator`, remains bound by "Forbidden locally" in full.
+
+Verify-phase's local run is distinct from, and does not replace, the G5 carve-out above: verify-phase authors and runs the build's OWN new test coverage during construction (full-suite run #1 in the build's lifecycle, gated on `status.json.gates.verify`); G5 is the later pre-merge parity confirmation that runs on the finalised branch after review (a separate, later full-suite run). Full contract: `.claude/agents/verify-phase.md`.
 
 ## Why
 

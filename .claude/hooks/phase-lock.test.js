@@ -5,7 +5,12 @@
  * Verifies: block-on-mismatch during spec/plan phases, allow-on-match,
  * allow during build/review/finalise, missing/empty/invalid .phase → no-op,
  * path normalisation (.. rejection), and the dependency-free glob matcher
- * (* no-cross-dir, ** deep crossing, negative wildcard).
+ * (* no-cross-dir, ** deep crossing, negative wildcard). Also verifies the
+ * C9 slug-resolution fix: status.json admission, deriveSlugFromPath,
+ * extractBuildSlugFromContent (marker-scoped vs pre-migration whole-file),
+ * and resolvePhaseLockContext end-to-end (path-derived slug precedence,
+ * the legacy-above-markers live-bug replica, absent-current-focus fail-open
+ * scoped to a single write).
  *
  * Run: node .claude/hooks/phase-lock.test.js
  * Exit 0 on all pass, 1 on any fail.
@@ -14,7 +19,17 @@
  * This file is a sanity script — re-run after any change to phase-lock.js.
  */
 
-import { decidePhaseLock, extractFilePaths, toRelative } from "./phase-lock.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  decidePhaseLock,
+  extractFilePaths,
+  toRelative,
+  deriveSlugFromPath,
+  extractBuildSlugFromContent,
+  resolvePhaseLockContext,
+} from "./phase-lock.js";
 
 // [label, input, expectedDisposition]
 const CASES = [
@@ -170,6 +185,22 @@ const CASES = [
     "spec phase, Edit, ../escape/foo.ts, slug x → block",
     { toolName: 'Edit', targetPath: '../escape/foo.ts', currentPhase: 'spec', buildSlug: 'x' },
     'block',
+  ],
+
+  // 22. status.json admitted in spec phase (C9 contract 1 — the status-write
+  // step in the coordinators depends on this).
+  [
+    "spec phase, Write, tasks/builds/x/status.json, slug x → allow (status.json in specGlobs)",
+    { toolName: 'Write', targetPath: 'tasks/builds/x/status.json', currentPhase: 'spec', buildSlug: 'x' },
+    'allow',
+  ],
+
+  // 23. status.json admitted in plan phase (plan = specGlobs + plan.md, so
+  // status.json is inherited from the spec allow-list).
+  [
+    "plan phase, Write, tasks/builds/x/status.json, slug x → allow (status.json in specGlobs, inherited into plan)",
+    { toolName: 'Write', targetPath: 'tasks/builds/x/status.json', currentPhase: 'plan', buildSlug: 'x' },
+    'allow',
   ],
 ];
 
@@ -340,7 +371,285 @@ let cwdFallbackCases = 0;
   }
 }
 
-const totalCases = CASES.length + EXTRACT_CASES.length + TO_REL_CASES.length + cwdFallbackCases;
+// ── deriveSlugFromPath pure cases (C9 contract 2 — path-derived slug) ──────
+const DERIVE_SLUG_CASES = [
+  [
+    "tasks/builds/my-slug/spec.md → 'my-slug'",
+    'tasks/builds/my-slug/spec.md',
+    'my-slug',
+  ],
+  [
+    "tasks/builds/my-slug/nested/deep/file.ts → 'my-slug' (nested build-dir path)",
+    'tasks/builds/my-slug/nested/deep/file.ts',
+    'my-slug',
+  ],
+  [
+    "docs/superpowers/specs/foo.md → null (not a build-dir path)",
+    'docs/superpowers/specs/foo.md',
+    null,
+  ],
+  [
+    "tasks/builds/ → null (no slug segment)",
+    'tasks/builds/',
+    null,
+  ],
+  [
+    "tasks\\builds\\win-slug\\spec.md → 'win-slug' (backslash path normalised)",
+    'tasks\\builds\\win-slug\\spec.md',
+    'win-slug',
+  ],
+];
+
+for (const [label, input, expected] of DERIVE_SLUG_CASES) {
+  const actual = deriveSlugFromPath(input);
+  if (actual === expected) {
+    pass++;
+  } else {
+    fails.push({ label, input, expected, actual, reason: 'deriveSlugFromPath returned unexpected slug' });
+  }
+}
+
+// ── extractBuildSlugFromContent pure cases (C9 contract 3 — marker-scoped
+// fallback) ─────────────────────────────────────────────────────────────
+// No-markers content mirrors the pre-migration whole-file first-match regex
+// — byte-identical behaviour to the original single-pointer readBuildSlug.
+const NO_MARKER_CONTENT =
+  '<!-- mission-control\nbuild_slug: geo-auto-publish\nbranch: some-branch\n-->\n' +
+  'some other prose mentioning the build slug is not a match\n';
+
+// Markers present: only the region between BEGIN/END is searched. The
+// content before the markers deliberately contains a DIFFERENT build_slug
+// (the live-bug replica: a frozen legacy top block naming slug-a with no
+// .phase, plus a marker region naming slug-b which has a .phase) to prove
+// marker-scoping, not just "which content wins when there is one candidate".
+const MARKER_CONTENT =
+  '<!-- mission-control\nbuild_slug: slug-a\nbranch: legacy-branch\n-->\n' +
+  '<!-- STATUS:GENERATED:BEGIN -->\n' +
+  '### slug-b\nbuild_slug: slug-b\nstatus: BUILDING\nphase: spec\n' +
+  '<!-- STATUS:GENERATED:END -->\n';
+
+const EXTRACT_SLUG_FROM_CONTENT_CASES = [
+  [
+    "no markers → whole-file first match (pre-migration, byte-identical to original regex)",
+    NO_MARKER_CONTENT,
+    'geo-auto-publish',
+  ],
+  [
+    "markers present → first match INSIDE region wins, legacy block above ignored (live-bug replica)",
+    MARKER_CONTENT,
+    'slug-b',
+  ],
+  [
+    "no build_slug anywhere → null",
+    '# Nothing relevant here\n',
+    null,
+  ],
+];
+
+for (const [label, content, expected] of EXTRACT_SLUG_FROM_CONTENT_CASES) {
+  const actual = extractBuildSlugFromContent(content);
+  if (actual === expected) {
+    pass++;
+  } else {
+    fails.push({ label, input: content, expected, actual, reason: 'extractBuildSlugFromContent returned unexpected slug' });
+  }
+}
+
+// ── resolvePhaseLockContext FS-fixture cases (C9 end-to-end) ───────────────
+// mkdtempSync temp-dir fixtures, same pattern as memory-digest.test.js and
+// config-protection.test.js.
+let resolveContextCases = 0;
+
+// RC-1. Path-derived slug takes precedence over the current-focus fallback.
+// slug-a (named by current-focus.md) is unrestricted (build phase); slug-b
+// (derived from the write's own path) is restricted (spec phase). If the
+// resolver wrongly fell back to slug-a, a non-allow-listed file would be
+// ALLOWED (build is unrestricted) — the assertions below catch that.
+{
+  const proj = mkdtempSync(join(tmpdir(), 'pl-pathderiv-'));
+  mkdirSync(join(proj, 'tasks', 'builds', 'slug-a'), { recursive: true });
+  mkdirSync(join(proj, 'tasks', 'builds', 'slug-b'), { recursive: true });
+  writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'build_slug: slug-a\n');
+  writeFileSync(join(proj, 'tasks', 'builds', 'slug-a', '.phase'), 'build\n');
+  writeFileSync(join(proj, 'tasks', 'builds', 'slug-b', '.phase'), 'spec\n');
+
+  resolveContextCases++;
+  const ctx = resolvePhaseLockContext(proj, 'tasks/builds/slug-b/spec.md');
+  if (ctx.slug === 'slug-b' && ctx.phase === 'spec') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'path-derived slug: write to tasks/builds/slug-b/spec.md while current-focus names slug-a → resolves slug-b',
+      input: 'tasks/builds/slug-b/spec.md',
+      expected: { slug: 'slug-b', phase: 'spec' },
+      actual: ctx,
+      reason: 'resolvePhaseLockContext did not derive slug from path',
+    });
+  }
+
+  resolveContextCases++;
+  const ctx2 = resolvePhaseLockContext(proj, 'tasks/builds/slug-b/random-code.ts');
+  const decision = decidePhaseLock({
+    toolName: 'Write',
+    targetPath: 'tasks/builds/slug-b/random-code.ts',
+    currentPhase: ctx2.phase,
+    buildSlug: ctx2.slug,
+  });
+  if (decision.disposition === 'block') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'path-derived slug: tasks/builds/slug-b/random-code.ts blocked under slug-b spec phase (proves path precedence over the unrestricted slug-a fallback)',
+      input: 'tasks/builds/slug-b/random-code.ts',
+      expected: 'block',
+      actual: decision.disposition,
+      reason: decision.reason,
+    });
+  }
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// RC-2. Legacy-above-markers end-to-end (the live-bug replica, via real
+// files): a non-build-dir write must resolve slug-b (marker-scoped), not
+// slug-a (frozen legacy block, no .phase — the pre-fix bug enforced nothing
+// because readPhase(slug-a) returned null).
+{
+  const proj = mkdtempSync(join(tmpdir(), 'pl-legacy-markers-'));
+  mkdirSync(join(proj, 'tasks', 'builds', 'slug-b'), { recursive: true });
+  const content =
+    '<!-- mission-control\n' +
+    'build_slug: slug-a\n' +
+    'branch: legacy-branch\n' +
+    '-->\n' +
+    '<!-- STATUS:GENERATED:BEGIN -->\n' +
+    '### slug-b\n' +
+    'build_slug: slug-b\n' +
+    'status: BUILDING\n' +
+    'phase: spec\n' +
+    '<!-- STATUS:GENERATED:END -->\n';
+  writeFileSync(join(proj, 'tasks', 'current-focus.md'), content);
+  // slug-a deliberately has NO .phase file.
+  writeFileSync(join(proj, 'tasks', 'builds', 'slug-b', '.phase'), 'spec\n');
+
+  resolveContextCases++;
+  const ctx = resolvePhaseLockContext(proj, 'docs/superpowers/specs/foo.md');
+  if (ctx.slug === 'slug-b' && ctx.phase === 'spec') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'legacy-above-markers: non-build-dir write resolves slug-b (marker-scoped), not slug-a (legacy block)',
+      input: 'docs/superpowers/specs/foo.md',
+      expected: { slug: 'slug-b', phase: 'spec' },
+      actual: ctx,
+      reason: 'resolvePhaseLockContext did not scope the fallback read to the marker region',
+    });
+  }
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// RC-3. Build-dir write with current-focus.md entirely absent → still
+// governed by the path-derived build's phase. Must not crash; must not
+// regress to fail-open.
+{
+  const proj = mkdtempSync(join(tmpdir(), 'pl-absent-focus-builddir-'));
+  mkdirSync(join(proj, 'tasks', 'builds', 'slug-c'), { recursive: true });
+  writeFileSync(join(proj, 'tasks', 'builds', 'slug-c', '.phase'), 'plan\n');
+  // Deliberately no tasks/current-focus.md at all.
+
+  resolveContextCases++;
+  const ctx = resolvePhaseLockContext(proj, 'tasks/builds/slug-c/random-code.ts');
+  if (ctx.slug === 'slug-c' && ctx.phase === 'plan') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'build-dir write, current-focus.md entirely absent → still governed by path-derived slug (no crash, no fail-open regression)',
+      input: 'tasks/builds/slug-c/random-code.ts',
+      expected: { slug: 'slug-c', phase: 'plan' },
+      actual: ctx,
+      reason: 'resolvePhaseLockContext failed to derive from path when current-focus.md is missing',
+    });
+  }
+
+  resolveContextCases++;
+  const decision = decidePhaseLock({
+    toolName: 'Write',
+    targetPath: 'tasks/builds/slug-c/random-code.ts',
+    currentPhase: ctx.phase,
+    buildSlug: ctx.slug,
+  });
+  if (decision.disposition === 'block') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'build-dir write, current-focus.md absent → plan phase still enforces (random-code.ts blocked)',
+      input: 'tasks/builds/slug-c/random-code.ts',
+      expected: 'block',
+      actual: decision.disposition,
+      reason: decision.reason,
+    });
+  }
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// RC-4. True fail-open: no slug derivable at all (no path match AND no
+// current-focus fallback). This is the only case resolvePhaseLockContext
+// should return null for.
+{
+  const proj = mkdtempSync(join(tmpdir(), 'pl-true-failopen-'));
+
+  resolveContextCases++;
+  const ctx = resolvePhaseLockContext(proj, 'server/foo.ts');
+  if (ctx.slug === null && ctx.phase === null) {
+    pass++;
+  } else {
+    fails.push({
+      label: 'no slug derivable at all (no path match, no current-focus fallback) → { slug: null, phase: null }',
+      input: 'server/foo.ts',
+      expected: { slug: null, phase: null },
+      actual: ctx,
+      reason: 'resolvePhaseLockContext should fail-open when nothing can be derived',
+    });
+  }
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// RC-5. Pre-migration whole-file fallback via real files (no markers) — a
+// non-build-dir write resolves the same way it did before this fix.
+{
+  const proj = mkdtempSync(join(tmpdir(), 'pl-premigration-'));
+  mkdirSync(join(proj, 'tasks', 'builds', 'legacy-slug'), { recursive: true });
+  writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'build_slug: legacy-slug\nbranch: some-branch\n');
+  writeFileSync(join(proj, 'tasks', 'builds', 'legacy-slug', '.phase'), 'finalise\n');
+
+  resolveContextCases++;
+  const ctx = resolvePhaseLockContext(proj, 'tasks/review-logs/some-log.md');
+  if (ctx.slug === 'legacy-slug' && ctx.phase === 'finalise') {
+    pass++;
+  } else {
+    fails.push({
+      label: 'pre-migration (no markers): non-build-dir write resolves the whole-file first-match build_slug, byte-identical to today',
+      input: 'tasks/review-logs/some-log.md',
+      expected: { slug: 'legacy-slug', phase: 'finalise' },
+      actual: ctx,
+      reason: 'resolvePhaseLockContext regressed the pre-migration whole-file fallback',
+    });
+  }
+
+  rmSync(proj, { recursive: true, force: true });
+}
+
+const totalCases =
+  CASES.length +
+  EXTRACT_CASES.length +
+  TO_REL_CASES.length +
+  cwdFallbackCases +
+  DERIVE_SLUG_CASES.length +
+  EXTRACT_SLUG_FROM_CONTENT_CASES.length +
+  resolveContextCases;
 console.log(`Cases: ${totalCases}, passed: ${pass}, failed: ${fails.length}`);
 if (fails.length) {
   for (const f of fails) {

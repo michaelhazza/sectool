@@ -85,9 +85,26 @@ If the CLI exits non-zero, print its stderr and stop. Exit codes: 0 ok, 2 API er
 
 Substitute `{slug}` with the actual build slug. The plan link MUST be a repo-relative markdown link — never an absolute path, never backslashes, never a bare backtick-wrapped path (these break VSCode click-to-open; see "VSCode Extension Context / Code References in Text" guidance in CLAUDE.md).
 
+### Next-round artifact discipline (manual + parallel) — MANDATORY, NO EXCEPTIONS
+
+**Assume another round is coming. Always.** A review round is NOT complete until the operator has everything needed to run the next one, in the same message. Waiting to be asked is the failure this rule exists to prevent — it has been missed repeatedly, and the cost is a stalled round-trip every time.
+
+This applies to **`manual` AND `parallel`** modes — it is NOT inferred from mode. `parallel` runs the manual upload path, so every rule below applies to `parallel` exactly as written. **Sole exemption:** `automated`-only mode, where there is no human upload step.
+
+At the END of every round, BEFORE printing the round summary, produce the round-N+1 bundle:
+
+1. **The updated artifact** — `tasks/builds/{slug}/plan.md` as it now stands, with this round's accepted findings already applied.
+2. **The refreshed `PROJECT_CONTEXT`** — with this round's applied findings appended to the do-not-re-raise register. A reviewer that re-raises what round N already fixed produces duplicate findings and burns a round; that is the coordinator's fault, not the reviewer's.
+3. **The pinned artifact hash** (`git hash-object`), so the next round's compare panel identifies the exact version reviewed. State the superseded hash explicitly when it changed.
+4. **A ready-to-paste prompt** for the next round, listing any decisions settled since the last round so they come back as duplicates rather than findings.
+
+**The round summary is incomplete without clickable links to items 1–2 in the SAME message.** Do not print a round summary until they exist on disk and the links are in the message. This holds **even on a zero-change round** (all findings rejected or deferred, or a framing-only round) — regenerating proves the loop is fresh and folds in any out-of-loop edits.
+
+**Stop only on an explicit signal.** `proceed`, `approved`, `done`, `no more rounds`, or an equivalent explicit go-ahead ends the loop. Silence, a question, or a hedge ("looks fine") does NOT — produce the next-round bundle anyway. The operator skipping a prepared bundle costs nothing; a missing bundle costs a round-trip.
+
 ## Per-Round Loop
 
-**Round cap: 5.** After Round 5, if no APPROVED verdict has been reached, escalate to the operator: surface unresolved findings + recommend either operator-driven adjudication, a re-spec, or accepting the remaining findings as deferred. Do NOT fire Round 6 automatically. The 5-round cap is a hard ceiling; operator may explicitly authorise additional rounds case-by-case ("continue past cap").
+**Round cap: 5.** After Round 5, if no APPROVED verdict has been reached, escalate to the operator: surface unresolved findings + recommend either operator-driven adjudication, a re-spec, or accepting the remaining findings as deferred. Do NOT fire Round 6 automatically. The 5-round cap is a hard ceiling; operator may explicitly authorise additional rounds case-by-case ("continue past cap"). **The cap bounds how many rounds may run — it does NOT license skipping the next-round bundle above. Prepare the bundle every round up to the cap; at the cap, say so explicitly instead of silently withholding it.**
 
 **[AUTOMATED]** Trigger: user says "next round" or equivalent. The agent re-invokes the CLI on the (possibly edited) plan file and processes the new findings.
 

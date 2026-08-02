@@ -17,7 +17,7 @@ commit. `validate-setup` may diff agent-stated caps against this table.
 | 8 | architect plan-revision rounds | 3 | per plan | `.claude/agents/feature-coordinator.md` (Step 3) |
 | 9 | G2 integrated-gate retries | 3 | per build | `.claude/agents/feature-coordinator.md` (Step 7) |
 | 10 | pr-reviewer fix-loop rounds | 3 | per review pass (re-review pass gets its own 3) | `.claude/agents/feature-coordinator.md` (Step 8.4) |
-| 11 | dual-reviewer (Codex) iterations | 3 | per invocation | `.claude/agents/dual-reviewer.md` |
+| 11 | dual-reviewer (Codex) iterations | 5 | per invocation — raised from 3 (operator, 2026-07-29: real reviews regularly need more rounds; this build used all 3 with findings still flowing, and its own iterations 1-2 each introduced a bug the next caught). Convergence rule unchanged: a zero-accepted round still exits early | `.claude/agents/dual-reviewer.md` |
 | 12 | G4 regression-guard fix attempts | 3 | per Phase 3 session | `.claude/agents/finalisation-coordinator.md` (Step 3) |
 | 13 | G5 local CI-parity fix iterations | 10 | per Phase 3 session | `.claude/agents/finalisation-coordinator.md` (Step 8c) |
 | 14 | CI watch auto-fix iterations (label-pull loop) | **5** | per Phase 3 session — applies to BOTH `finalisation-coordinator` Step 11 AND `chatgpt-pr-review` standalone step 12 (unified in 2.27.0; they previously disagreed 5 vs 3) | `.claude/agents/finalisation-coordinator.md`, `.claude/agents/chatgpt-pr-review.md` |
@@ -26,6 +26,9 @@ commit. `validate-setup` may diff agent-stated caps against this table.
 | 17 | experiment-runner consecutive non-keeps | 5 (warn) / 10 (stop) | per experiment | `.claude/agents/experiment-runner.md` |
 | 18 | spec-coordinator Step 3a revise loop | 3 | per intent — on the 4th `revise`, escalate to the operator instead of looping (added 2.27.0; previously unbounded) | `.claude/agents/spec-coordinator.md` (Step 3a) |
 | 19 | G3 lint+typecheck fix attempts | 3 | per gate invocation (§8.1 CONFORMANT_AFTER_FIXES, §8.4 fix-loop, §8.5 post-dual-review) — on exceed, escalate with full diagnostics per failure path 4; never mark the gate passed | `.claude/agents/feature-coordinator.md` (Step 8) |
+| 20 | plan-reviewer (Codex) iterations | 5 | lifetime per plan | `.claude/agents/plan-reviewer.md` |
+| 21 | brief-reviewer rounds | single-round | per brief revision — one Codex + one ChatGPT pass, no loop; a revised brief may be re-reviewed once | `.claude/agents/brief-reviewer.md` |
+| 22 | verify-phase fix loop | 5 | per verify-phase invocation — exceed escalates to the operator with the failure set; recorded as REVIEW_GAP-style entry in `progress.md` (blocks merge) | `.claude/agents/verify-phase.md` |
 
 Auto-fix guardrails AF1–AF4 (`finalisation-coordinator` Step 11) are rules, not
 loops — they are intentionally not in this table.

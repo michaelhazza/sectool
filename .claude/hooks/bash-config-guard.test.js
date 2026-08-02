@@ -173,6 +173,48 @@ for (const [label, input, expectedExit] of CASES) {
   rmSync(SENTINEL, { force: true });
 }
 
+// ── SYNC NOTE contract: config-protection.js ↔ this guard ─────────────────
+// This guard duplicates config-protection.js's protected-path list (see the
+// SYNC NOTE in both headers) because config-protection.js exports nothing.
+// This block runs BOTH hooks end-to-end over the same probe paths and fails
+// when their coverage diverges beyond the two documented deltas:
+//   delta 1 — .claude/settings.local.json: Bash-side ONLY (shell write
+//             shapes are riskier, so this guard covers it too);
+//   delta 2 — tooling-config basenames (tsconfig/eslint/package.json/...):
+//             Edit-side ONLY (config-protection's PROTECTED_BASENAMES).
+// A failure here means one list changed without the other — update the
+// lagging hook AND the SYNC NOTEs, or record a new documented delta below.
+{
+  rmSync(SENTINEL, { force: true });
+  rmSync(join(PROJ, '.claude', 'knowledge-edit-approved'), { force: true });
+
+  const CONFIG_HOOK = join(dirname(fileURLToPath(import.meta.url)), 'config-protection.js');
+  const editStatus = (filePath) =>
+    spawnSync(process.execPath, [CONFIG_HOOK], {
+      input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: filePath } }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: PROJ },
+    }).status;
+  const bashStatus = (filePath) => runHook(bash(`echo x | tee ${filePath}`)).status;
+
+  // [probe path, expected config-protection (Edit) exit, expected bash-config-guard exit, contract note]
+  const PROBES = [
+    ['.claude/settings.json',       2, 2, 'core protected path — both guards block'],
+    ['.claude/hooks/some-hook.js',  2, 2, 'core protected path — both guards block'],
+    ['.claude/settings.local.json', 0, 2, 'delta 1 — Bash-side only'],
+    // package.json left PROTECTED_BASENAMES 2026-07-28 (standing operator
+    // pre-approval — see config-protection.js). Now unprotected on BOTH
+    // hook surfaces; kept in this table so a regression re-adding it to
+    // either hook fails here rather than shipping silently.
+    ['package.json',                0, 0, 'unprotected both sides since 2026-07-28 (operator pre-approval)'],
+    ['src/ordinary-file.ts',        0, 0, 'unprotected in both'],
+  ];
+  for (const [probe, editExpected, bashExpected, note] of PROBES) {
+    check(`sync/edit-side: ${probe} (${note})`, editStatus(probe), editExpected);
+    check(`sync/bash-side: ${probe} (${note})`, bashStatus(probe), bashExpected);
+  }
+}
+
 // ── Cleanup + report ───────────────────────────────────────────────────────
 
 rmSync(PROJ, { recursive: true, force: true });

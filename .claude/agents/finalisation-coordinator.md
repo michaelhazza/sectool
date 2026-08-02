@@ -1,6 +1,6 @@
 ---
 name: finalisation-coordinator
-description: Phase 3 orchestrator. Restores Phase 2 handoff, runs branch-sync S2 (auto-resolves known-shape conflicts in append-only artefact files; pauses only on code-area conflicts) + G4 regression guard, runs chatgpt-pr-review (manual ChatGPT-web rounds), runs the full doc-sync sweep, updates KNOWLEDGE.md and tasks/todo.md, re-syncs main (S3), drives the CI-parity gate (G5 — diff-scoped by default, full on escape-hatch diffs) to green locally BEFORE any label, transitions current-focus to MERGE_READY, applies the ready-to-merge label as the final CI confirmation, watches CI with the label-pull fix loop (any CI failure → remove label immediately → fix + verify locally → re-add label), and auto-merges on green. Step 0 — context loading + REVIEW_GAP check. Step 1 — TodoWrite list. Step 2 — S2 branch sync. Step 3 — G4 regression guard. Step 4 — PR existence check. Step 5 — chatgpt-pr-review. Step 6 — full doc-sync sweep. Step 7 — KNOWLEDGE.md pattern extraction. Step 7a — Compound Learning Feedback. Step 8 — tasks/todo.md cleanup. Step 8b — post-review branch re-sync (S3). Step 8c — G5 local CI-parity gate. Step 9 — current-focus.md → MERGE_READY. Step 10 — apply ready-to-merge label. Step 11 — CI watch + label-pull fix loop. Step 12 — auto-merge. Step 12.5 — release-note block (advisory). Step 13 — end-of-phase prompt.
+description: Phase 3 orchestrator. Restores Phase 2 handoff, runs branch-sync S2 (auto-resolves known-shape conflicts in append-only artefact files; pauses only on code-area conflicts) + G4 regression guard, runs the verify-phase stage-6 gate (Codex-authored tests + full-suite run, blocking on fail/incomplete) and a conditional Codex confirmation pass when the fix loop touched production code, runs chatgpt-pr-review (manual ChatGPT-web rounds), runs the full doc-sync sweep, updates KNOWLEDGE.md and tasks/todo.md, re-syncs main (S3), drives the CI-parity gate (G5 — diff-scoped by default, full on escape-hatch diffs; skipped entirely once the repo's runner_live flag is true, when the label-triggered merge-gate.yml run becomes the gate of record) to green locally BEFORE any label, transitions current-focus.md AND status.json to MERGE_READY (running the status generator + board-sync), applies the ready-to-merge label as the final CI confirmation, watches CI with the label-pull fix loop (any CI failure → remove label immediately → fix + verify locally → re-add label), runs the spec §13 8-row merge-gate refusal table as the pre-merge enforcement of record immediately before the squash-merge, and auto-merges on green — writing the terminal MERGED status in the same post-merge main-patch step. Step 0 — context loading + REVIEW_GAP check. Step 1 — TodoWrite list. Step 2 — S2 branch sync. Step 3 — G4 regression guard. Step 4 — PR existence check. Step 4a — verify-phase (stage 6). Step 4b — Codex confirmation pass (conditional). Step 5 — chatgpt-pr-review. Step 6 — full doc-sync sweep. Step 7 — KNOWLEDGE.md pattern extraction. Step 7a — Compound Learning Feedback. Step 8 — tasks/todo.md cleanup. Step 8a — review-scratch sweep (raw transcripts deleted after learnings extraction; finals stay as the audit trail). Step 8b — post-review branch re-sync (S3). Step 8c — G5 local CI-parity gate (conditional — pre-runner rollout only). Step 9 — current-focus.md + status.json → MERGE_READY. Step 10 — apply ready-to-merge label. Step 11 — CI watch + label-pull fix loop. Step 11.5 — merge-gate refusal table (pre-merge enforcement of record). Step 12 — auto-merge. Step 12.5 — release-note block (advisory). Step 13 — end-of-phase prompt.
 tools: Read, Glob, Grep, Bash, Edit, Write, Agent, TodoWrite
 model: opus
 ---
@@ -32,13 +32,15 @@ They all mean: take the already-reviewed PR through to a squash-merge on green. 
 
 When triggered with a merge-intent phrase, ALL of the following run to completion, in order. None may be skipped or deferred without an explicit operator override recorded as a `REVIEW_GAP` in `progress.md`:
 
-1. **Run every relevant CI check locally until green** — Step 8c (G5 local CI-parity gate). Loop: fix → re-run the full selected parity set → repeat until one clean uninterrupted pass.
-2. **Apply the `ready-to-merge` label** — Step 10.3, only after 8c is green.
-3. **Confirm it passes in GitHub Actions** — Step 11. If any labeled check fails: immediately remove the label (label-pull discipline) → fix locally → re-verify against the failing check's parity command → re-add the label → re-watch. Loop until all required checks are green (cap 5 iterations, then escalate).
-4. **Squash-merge the PR** — Step 12 (`--admin` squash), once CI is green and mergeable.
-5. **Provide the summary report** — Step 13 / the Phase 3 handoff section: what merged, the squash sha, CI outcome, and any deferrals.
+1. **Run the stage-6 verify phase to a `pass` verdict** — Step 4a (blocking gate; Codex-authored tests + a full-suite run). `fail`/`incomplete` halts finalisation until resolved — never advisory.
+2. **Run every relevant CI check locally until green** — Step 8c (G5 local CI-parity gate; skipped entirely when the repo declares `runner_live: true`). Loop: fix → re-run the full selected parity set → repeat until one clean uninterrupted pass.
+3. **Apply the `ready-to-merge` label** — Step 10.3, only after 8c is green or validly skipped.
+4. **Confirm it passes in GitHub Actions** — Step 11. If any labeled check fails: immediately remove the label (label-pull discipline) → fix locally → re-verify against the failing check's parity command → re-add the label → re-watch. Loop until all required checks are green (cap 5 iterations, then escalate).
+5. **Pass the merge-gate refusal table** — Step 11.5, all applicable rows of spec §13's 8-row table, re-checked against the current head SHA immediately before the merge command.
+6. **Squash-merge the PR** — Step 12 (`--admin` squash), once CI is green, mergeable, and Step 11.5 passed.
+7. **Provide the summary report** — Step 13 / the Phase 3 handoff section: what merged, the squash sha, CI outcome, and any deferrals.
 
-**Finalise-without-merge variant:** if the operator's phrasing explicitly withholds merge (e.g. "finalise but don't merge", "get it ready-to-merge then stop"), run Steps 0–10 and stop at the label — do NOT run Steps 11–12 auto-merge. Any plain finalisation/merge phrase defaults to the full run through squash-merge.
+**Finalise-without-merge variant:** if the operator's phrasing explicitly withholds merge (e.g. "finalise but don't merge", "get it ready-to-merge then stop"), run Steps 0–10 and stop at the label — do NOT run Steps 11–11.5–12 auto-merge. Any plain finalisation/merge phrase defaults to the full run through squash-merge.
 
 **Do NOT dispatch via `Agent({subagent_type: "finalisation-coordinator", ...})`.** The runtime does not allow dispatched sub-agents to dispatch further sub-agents (`No such tool available: Task. Task is not available inside subagents.`), and this playbook requires sub-agent dispatch for `chatgpt-pr-review` and (in the G4 fix path) `builder`. Nesting this coordinator as a sub-agent breaks the review and fix-up steps.
 
@@ -103,6 +105,45 @@ no-op — finalisation touches to `KNOWLEDGE.md`, `docs/capabilities.md`,
 not benefit from its own enforcement — the hook is not yet deployed during this
 build. New builds post-v2.13.0 adoption get the markers automatically.
 
+## Status contract (status.json)
+
+At each phase transition this coordinator owns — `REVIEWING → TESTING` (Step 4a), `TESTING → FINALISING` (Step 5), `FINALISING → MERGE_READY` (composed Step 9, written Step 10.1, before the label) and `MERGE_READY → MERGED` (Step 12.4, the post-merge main-patch) — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run:
+
+```bash
+node scripts/status/generate-current-focus.mjs
+node scripts/status/board-sync.mjs
+```
+
+The generator and `board-sync.mjs` run together at every such write, including the back-edge write in Step 11.5.
+
+**Precedence.** `status.json` is **authoritative** for build state. `.phase` is a **derived projection** — its content equals `status.phase` — written in the **same coordinator step** as the `status.json` write. On disagreement, `status.json` wins and the coordinator **rewrites `.phase`** to match. This coordinator's `.phase` value stays `finalise` throughout Phase 3 (set at Step 0) — only `status` moves.
+
+**Verify-phase writes its own gate.** `verify-phase` (Step 4a) already upserts `status.json.gates.verify` and `status.json.gate_evidence.verify` as part of its own contract (§8.3) — this coordinator READS those fields (Step 4a, Step 11.5 rows 1-2), it never re-derives or re-writes them.
+
+**The transitions this coordinator actually exercises (spec §8.1 transition matrix, `build-status.v2`):**
+- **Forward: `REVIEWING → TESTING`** — written at **Step 4a**, as the verify phase begins. Phase 3 previously carried `REVIEWING` all the way to `MERGE_READY`, which made the board unable to distinguish "Codex is authoring and running the suite" (often the longest single stretch of a build) from "everything is green, final checks running". Steps 1–4 are short prep (sync, regression guard, PR check) and remain `REVIEWING`; the status moves when test work actually starts.
+- **Forward: `TESTING → FINALISING`** — written at **Step 5**, once the verify-phase suite is green and any required Codex confirmation pass has completed. Everything from the ChatGPT PR review onward is finalisation work.
+- **Forward: `FINALISING → MERGE_READY`** — composed in Step 9, written to disk in Step 10.1 (before the `ready-to-merge` label is applied, so the labeled head SHA already contains the write — no new SHA between the gate run and the merge, per spec §13's terminal-fact write location).
+- **Back-edge: `MERGE_READY → FINALISING`** — fired by Step 11.5 on any refusal-table row and by Step 11's label-pull discipline on a red CI check (spec §13's "merge-gate failure or pulled label"). **REQUIRES a blocker entry recorded in the same write** (spec §8.1) — see Step 11.5 for the exact write shape.
+- **Back-edge: `FINALISING → TESTING`** — used when a late failure is a genuine test or production defect rather than a gate/CI problem, i.e. the work belongs back in the verify-phase fix loop. Same blocker-entry requirement. Choosing between the two back-edges is a judgement about *where the work goes*, not about severity: a red CI check on unchanged code is `→ FINALISING`; a defect needing a code or test change is `→ TESTING`.
+- **Terminal: `MERGE_READY → MERGED`** — written in Step 12.4, the existing post-merge main-patch step, alongside `gates.merge_gate` evidence when `runner_live: true` (omitted/unchanged when pre-runner, since no merge-gate run exists to evidence). This is a documentation write on `main`, not a second entry of build code — "main entered exactly once" refers to the build's code, and this preserves it (spec §13). `MERGED` is terminal — no further transition follows.
+
+**Activity log (`log[]`) — the operator's board-visible history (additive, schema-optional).** Every stage-boundary `status.json` upsert ALSO appends to the record's `log[]` array. Append-only: never edit or remove an existing entry. Rules:
+
+- Forward transition → append TWO entries in the same write: `kind: "done"` closing the stage just finished, then `kind: "start"` opening the next (Step 4a closes `Review` and opens `Testing`; Step 5 closes `Testing` and opens `Finalisation`; Step 10.1 closes `Finalisation` and opens `Merge`; Step 12.4 closes `Merge` with the merged PR number).
+- Back-edge (Step 11.5 / Step 11 label-pull, or `FINALISING → TESTING`) → one `kind: "info"` entry saying in plain language why work went back, in the same write as the required blocker entry.
+- Notable mid-stage moment that already carries a status write (suite result, fix loop opened or closed, CI red/green on the label watch) → one `kind: "info"` entry.
+- Entry shape (`log[]` in `schemas/build-status.schema.json`): `{ "at": "<ISO 8601 UTC now>", "stage": "<Spec|Plan|Build|Review|Testing|Finalisation|Merge>", "kind": "start|done|info", "note": ["<dot point>", ...] }`.
+- **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was tested, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"All tests green: 214 passed"` · `"CI failed once, fixed and re-run, now green"` · `"Merged as PR #741"`. Bad: `"G5 g5-scoped.sh exit 1 on workspace-actor-coverage"`.
+- `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
+
+**Board-sync is non-blocking.** A `board-sync.mjs` failure is recorded in `progress.md` and never blocks a build — the board is a view, not a gate.
+
+**Error handling.**
+- Board-sync failure → record, continue. Never a build stop.
+- Generator hard error (duplicate `STATUS:GENERATED` markers) → **stop the transition and surface.** Do not proceed past Step 9/Step 12.4 on a phase transition whose status projection failed to write.
+- A status write rejected by `.claude/hooks/phase-lock.js` means the `status.json` write-allowlist did not land, or `.phase` disagrees with the write path — **fail loudly** rather than silently skipping the status write.
+
 ## Step 1 — Top-level TodoWrite list
 
 Emit a TodoWrite list before doing any other work. Update items in real time as you complete each step.
@@ -111,16 +152,19 @@ Emit a TodoWrite list before doing any other work. Update items in real time as 
 2. Branch-sync S2 + freshness check
 3. G4 regression guard
 4. PR existence check (gh pr view); create if missing
+4a. verify-phase (stage 6) — blocking gate
+4b. Codex confirmation pass (conditional on production-file changes during stage 6)
 5. chatgpt-pr-review (MANUAL mode)
 6. Full doc-sync sweep
 7. KNOWLEDGE.md pattern extraction
 7a. Compound Learning Feedback
 8. tasks/todo.md cleanup
 8b. Post-review branch re-sync (S3)
-8c. G5 local CI-parity gate — loop until green
-9. tasks/current-focus.md → MERGE_READY + clear active fields
-10. Apply ready-to-merge label to PR (only after G5 green)
+8c. G5 local CI-parity gate — loop until green (conditional — skipped when runner_live: true)
+9. tasks/current-focus.md + status.json → MERGE_READY + clear active fields
+10. Apply ready-to-merge label to PR (only after G5 green, or after Step 8c is validly skipped)
 11. CI watch + label-pull fix loop
+11.5. Merge-gate refusal table (pre-merge enforcement of record) — loop until all 8 rows pass
 12. Auto-merge
 12.5. Release-note block (advisory)
 13. End-of-phase prompt
@@ -284,13 +328,56 @@ Print the PR URL as the **FIRST line of output** (standalone, before any other o
 PR: https://github.com/.../<number>
 ```
 
+## Step 4a — verify-phase (stage 6)
+
+**Insertion point (spec §7.2):** after S2 sync (Step 2) + G4 regression guard (Step 3), before `chatgpt-pr-review` (Step 5).
+
+**FIRST, write the status transition `REVIEWING → TESTING`** — before invoking `verify-phase`, not after. Upsert `status.json` with `status: TESTING` per § Status contract, then run the generator and `board-sync.mjs`. This is deliberately the first action of the step: test design, authoring and the suite fix loop are frequently the longest single stretch of a build, and a board that only updates on completion would show `REVIEWING` for hours of test work. Writing it up front is what makes the column honest.
+
+Dispatch `verify-phase` as a sub-agent, passing the build slug from the handoff:
+
+```
+Agent({subagent_type: "verify-phase", prompt: "slug: {slug}"})
+```
+
+Read verify-phase's Output block directly — do **not** re-derive any of its fields from a diff, from `git log`, or from `status.json`. `verify-phase` already upserted `status.json.gates.verify` and `status.json.gate_evidence.verify` itself (§8.3); this coordinator reads what it wrote:
+
+- `Verdict: pass | fail | incomplete`
+- `gate_evidence.verify: { sha, run_ids, url, completed_at }`
+- `production_files_touched: [<paths>]` — the exact list Step 4b consumes.
+- `Gap record (if any)`
+
+**Verdict `pass` → continue to Step 4b.**
+
+**Verdict `fail` or `incomplete` → BLOCKS the merge, exactly like a failed G4/G5 check** (spec §7.2 step 4, §8.3). Do not proceed to Step 4b or Step 5.
+- `incomplete` (Codex death, cap-5 hit): `verify-phase` already recorded a REVIEW_GAP-style entry in `progress.md` per its own contract. Surface it to the operator, leave TodoWrite item 4a `pending`, and stop.
+- `fail`: escalate to the operator with the lane-by-lane failure summary from verify-phase's return. The operator resolves and re-invokes `verify-phase: {slug}` (which resumes per its own re-entry rule, §8.3) before finalisation continues.
+
+Never treat a `fail`/`incomplete` verdict as advisory — stage 6 is a gate (spec §7.2), unlike the review tiers.
+
+## Step 4b — Codex confirmation pass (conditional on structural change)
+
+**Trigger:** Step 4a's `production_files_touched` list is non-empty — i.e. the stage-6 fix loop's app-defect path fired at least once and Claude (main session) edited production code that Codex itself never touches. Read this list directly from Step 4a's return; never re-derive it from `git diff` or any other source.
+
+**Empty list → skip entirely.** No Codex invocation happens. Note in `tasks/builds/{slug}/progress.md`: `Step 4b skipped — no production files touched during stage 6.` Continue to Step 5.
+
+**Non-empty list → invoke Codex once, read-only mode**, per [`references/codex-invocation-contract.md`](../../references/codex-invocation-contract.md) (`-s read-only`, cwd = repo root), scoped explicitly to the exact `production_files_touched` path set named in the prompt — **not** a re-derived branch diff. Grounding instruction: "these files were modified during the stage-6 verify-phase fix loop to fix a test-discovered defect; read them in full repo context and confirm the fix is sound, does not introduce a new regression, and matches the surrounding code's conventions." Retry-once on empty/truncated output per the contract's standard rule.
+
+Record the outcome as one line in `tasks/builds/{slug}/progress.md`: `Codex confirmation pass (stage 6): <clean | concerns: {summary}>`. This pass is **advisory** — it never blocks Step 5 on its own — but a `concerns` outcome is folded into the `chatgpt-pr-review` kickoff context in Step 5, the same way `spec_deviations` already is, so the human reviewer sees it.
+
 ## Step 5 — chatgpt-pr-review
+
+**FIRST, write the status transition `TESTING → FINALISING`.** Precondition: Step 4a reported the verify-phase gate green **and** any required Codex confirmation pass (Step 4b) has completed. Upsert `status.json` with `status: FINALISING` per § Status contract, then run the generator and `board-sync.mjs`. Do NOT make this write if the verify gate did not pass — a build whose suite is not green has not left `TESTING`, and moving it on would be the board asserting something untrue.
 
 Invoke `chatgpt-pr-review` as a sub-agent. MODE = **manual**. **INVOCATION CONTEXT = `coordinator-invoked` — state this explicitly in the kickoff message.** In this context the sub-agent's own finalisation steps 10–12 (merge main, `ready-to-merge` label, CI monitor/auto-merge) are forbidden per its INVOCATION CONTEXT contract — THIS coordinator owns branch sync (Step 8b), the label (Step 10), CI watching (Step 11), and the merge (Step 12). If the sub-agent's return message claims it merged or labelled the PR, treat that as a contract violation: verify actual PR state with `gh pr view` before proceeding, and record the violation in progress.md.
 
 Before invoking, check `handoff.md` for `spec_deviations:`. If present, include in the sub-agent kickoff context:
 
 > Note: the following spec deviations were recorded during Phase 2. Please review whether the implementation handles these correctly: {list}.
+
+Also check Step 4b's `progress.md` line. If it recorded `Codex confirmation pass (stage 6): concerns: {summary}`, include in the sub-agent kickoff context:
+
+> Note: a Codex confirmation pass at stage 6 flagged concerns on the production-code fix made during the verify-phase fix loop: {summary}. Please review this specifically.
 
 The sub-agent uses its existing contract:
 
@@ -443,6 +530,18 @@ For each closed item: remove from `tasks/todo.md` (or move to a `## Closed by {s
 
 Items in `tasks/todo.md` that are NOT closed by this build remain untouched.
 
+## Step 8a — Review-scratch sweep
+
+Deletes the review loop's raw working material now that its value has been extracted. Runs **after Step 7** deliberately — Step 7's KNOWLEDGE extraction is the last consumer the raw material could have.
+
+**What is scratch vs what is durable** (contract: `tasks/review-logs/README.md § Retention`): final reports and structured results (`.md` / `.json` / `.jsonl`) are the audit trail — committed, never deleted, they answer "did this review run and why was finding X rejected". Raw transcripts, prompt inputs and stdout/stderr captures (`.txt` / `.stderr` / `.tmp`) are scratch — everything durable in them is distilled into the final report **before a round closes** (that is the round's exit criterion), so after Step 7 they carry nothing the finals do not.
+
+1. Confirm the consuming repo's `.gitignore` covers `tasks/review-logs/*.txt`, `*.stderr`, `*.tmp`. If not, add the three lines (one-time, first finalisation after adoption) and include them in this phase's commit.
+2. Delete: `find tasks/review-logs -maxdepth 1 \( -name '*.txt' -o -name '*.stderr' -o -name '*.tmp' \) -delete`
+3. Record one line in `progress.md`: `Step 8a: swept <n> review-scratch file(s)`. Zero is a fine answer — record it anyway so "swept nothing" is distinguishable from "never ran".
+
+If a raw capture genuinely must survive (it is itself evidence in a dispute), the escape hatch is renaming it `.md` with a one-line preamble saying why — the extension is the retention decision. Never skip the sweep wholesale to save one file.
+
 ## Step 8b — Post-review branch re-sync (S3)
 
 (Step 8a is reserved for consumer-specific steps declared in the repo's `.claude/context/agent-context.md` § finalisation-coordinator.)
@@ -455,7 +554,14 @@ If the branch is already up to date with `origin/main`, S3 is a no-op — contin
 
 **Do not push yet.** The S3 merge commit (and any G5 fix commits from Step 8c) stay local until the single Step 10.2 push, so the remote sees one push — and CI sees one `synchronize` event — for the entire finalisation tail.
 
-## Step 8c — G5 local CI-parity gate (mandatory, pre-label)
+## Step 8c — G5 local CI-parity gate (mandatory, pre-label — pre-runner rollout only)
+
+**Rollout conditional (spec §7.5 Item 5).** Read `runner_live` from `.claude/project-registries.json` (default/absent = `false`).
+
+- **`runner_live: false` (pre-runner, today's default) → this step runs exactly as written below, unchanged.**
+- **`runner_live: true` → this step is SKIPPED entirely.** The label-triggered `merge-gate.yml` run (rendered per-repo from `templates/github-workflows/merge-gate.yml`) IS the gate of record instead, enforced at Step 11.5 (rows 5-8) rather than here. Record one line in `tasks/builds/{slug}/progress.md`: `Step 8c skipped — runner_live: true, merge-gate.yml is the gate of record.` Proceed directly to Step 9.
+
+The old G5 third full-suite run disappears **only** on runner-live repos — this is the retirement spec §7.5 names, not a removal of the step for repos still on the pre-runner rollout.
 
 **Contract: every check CI would run on the labeled PR must pass locally before the ready-to-merge label is applied.** The labeled CI run in Steps 10–11 is a final confirmation — ideally the only full CI run for the ticket — not the place failures are discovered. This step is the sanctioned exception to the "test gates are CI-only" rule — see `references/test-gate-policy.md § Finalisation G5 carve-out`.
 
@@ -488,9 +594,11 @@ Commit fixes locally as you go (normal commit discipline; never `--no-verify`). 
 
 **Hard rule: Step 10.3 (label apply) is unreachable until G5 reports green.** Applying the ready-to-merge label with a failing, partial, or skipped G5 is a policy violation. If the operator explicitly overrides (e.g. the suite genuinely cannot run on this machine), record a `REVIEW_GAP` line for `G5-local-parity` in `progress.md` with `operator-override: yes-<ISO-timestamp>`.
 
-## Step 9 — current-focus.md → MERGE_READY (deferred write)
+## Step 9 — current-focus.md + status.json → MERGE_READY (deferred write)
 
-**Precondition: Step 8c (G5) reported green.** Do not compose MERGE_READY state for a build whose local parity gate has not passed.
+**Precondition: Step 8c (G5) reported green, OR Step 8c was validly skipped (`runner_live: true`, recorded per its own conditional).** Do not compose MERGE_READY state for a build whose applicable pre-runner-mode local parity gate has not passed.
+
+Also compose — in memory only, same deferred-write rule as below — the new `tasks/builds/{slug}/status.json` content: `status: MERGE_READY` (per § Status contract above). This is the write-site named in that section as the "Forward: `FINALISING → MERGE_READY`" transition.
 
 Compose — but do NOT yet write to disk — the new mission-control block for `tasks/current-focus.md`:
 
@@ -512,7 +620,7 @@ The explicit clearing of `active_spec`, `active_plan`, `build_slug`, `branch` is
 
 The `last_merge_ready_*` fields are added so the audit trail survives — they record what just shipped, in case CI or merge fails and the operator needs to recover context.
 
-Compose the matching prose body for the same file. Status enum transitions `REVIEWING → MERGE_READY`.
+Compose the matching prose body for the same file. Status enum transitions `FINALISING → MERGE_READY` (v2: the status left `REVIEWING` back at Step 4a when the verify phase began).
 
 **Do NOT touch `tasks/current-focus.md` on disk yet.** Step 9 only prepares the new content in memory. The actual write happens in Step 10 — handoff.md first, then current-focus.md — BEFORE the ready-to-merge label is applied (so CI fires exactly once, on the final post-Phase-3 commit).
 
@@ -520,7 +628,7 @@ Compose the matching prose body for the same file. Status enum transitions `REVI
 
 **Order is load-bearing — never invert.** The ready-to-merge label triggers CI. If it is applied before the Phase 3 commit lands on the remote, CI runs against the pre-Phase-3 HEAD, the Phase 3 commit then lands and re-fires CI from scratch, and the first run becomes wasted compute. Operator-locked 2026-05-09.
 
-**Equally load-bearing: the label is applied ONLY after Step 8c (G5) reported green.** The labeled run is the final confirmation of a locally-verified tree, never the first execution of the suite.
+**Equally load-bearing: the label is applied ONLY after Step 8c (G5) reported green, or was validly skipped per its `runner_live` conditional.** The labeled run is the final confirmation of a locally-verified tree, never the first execution of the suite.
 
 **Step 10.1 — Write artefacts (no commit yet).**
 
@@ -536,6 +644,7 @@ Then write in this order (abort-write-order invariant):
 
 1. Append the Phase 3 handoff section to `tasks/builds/{slug}/handoff.md` (with `LABEL_TIMESTAMP_PLACEHOLDER` recorded as "ready-to-merge label applied at").
 2. Write the new mission-control block + prose body to `tasks/current-focus.md` (composed in Step 9).
+3. Upsert `tasks/builds/{slug}/status.json`: `status: MERGE_READY` (composed in Step 9, per § Status contract above), then run `node scripts/status/generate-current-focus.mjs` and `node scripts/status/board-sync.mjs`. This is the **terminal-fact write location** for pre-merge status (spec §13) — landing on the branch BEFORE the label, so the labeled head SHA already contains it; no new SHA is created between the gate run and the merge.
 
 **Step 10.2 — Commit + push Phase 3 files in a single commit.**
 
@@ -544,6 +653,7 @@ Stage and commit:
 - Updated `tasks/todo.md`
 - Updated `tasks/current-focus.md`
 - Updated `tasks/builds/{slug}/handoff.md` (Phase 3 section just appended)
+- Updated `tasks/builds/{slug}/status.json` (`status: MERGE_READY`)
 
 Commit message:
 
@@ -750,9 +860,55 @@ Set TodoWrite item to `pending` and stop. Do not attempt iteration 6 unless the 
 
 **Out-of-scope CI failures.** Some checks (e.g. third-party security scanners on a separate workflow file) may report `FAILURE` for reasons unrelated to this branch's diff (transient infra, expired tokens, upstream service outage). On the second iteration of the same check failing the same way without an actionable diff signal, classify as out-of-scope and surface to the operator with one-line reasoning. Do not consume fix-loop budget on transient infra.
 
+## Step 11.5 — Merge-gate refusal table (pre-merge enforcement of record)
+
+**This step is the enforcement of record for spec §13's 8-row refusal table (CSR-001) — it runs immediately before Step 12's squash-merge, every time, regardless of rollout state.** Step 11's CI watch already drove the labeled run to green; this step re-verifies against the CURRENT head SHA, independently, so the merge command is never issued against stale or degraded evidence.
+
+**Commit identity is the PR head SHA end-to-end (spec §13, Codex #5).** Every row below queries by the current head SHA, re-read fresh at the top of this step, never a cached value from earlier in the session:
+
+```bash
+HEAD_SHA=$(gh pr view {N} --json headRefOid -q '.headRefOid')
+```
+
+Read `runner_live` from `.claude/project-registries.json` (default/absent = `false`) — this selects which of rows 4-8 apply; rows 1-3 apply in both rollout states.
+
+**Rows 1-3 (both rollout states):**
+
+| # | Check | Refusal (grep-able literal) | Coordinator action on refusal |
+|---|---|---|---|
+| 1 | `status.json.gates.verify` equals exactly `pass` (any other value — `fail`, `incomplete`, `proceed`, `null`, or an unknown value — is a refusal; fail-closed so the §8.1 open-map value enum can never smuggle a non-`pass` verify past this gate) | `MERGE-REFUSAL-ROW-1: gates.verify is not pass` | Refuse. Verify phase must complete first — return to Step 4a. |
+| 2 | `git diff <gate_evidence.verify.sha>..${HEAD_SHA} --name-only` touches NO production-code path (globs excluding merge-from-main / docs / tests / status files) | `MERGE-REFUSAL-ROW-2: verify evidence is SHA-stale on production code` | Refuse. Re-run verify-phase steps 3-4 (Run + Fix loop) on the new head — sync-only and docs-only deltas do NOT trigger this row, since the merge-gate's own fresh full-suite run covers them. |
+| 3 | `git rev-list --count HEAD..origin/main` equals `0` | `MERGE-REFUSAL-ROW-3: branch is behind origin/main` | Refuse. Run the Step 8b (S3) sync contract, which guarantees head tree = post-squash tree. |
+
+**Row 4 (pre-runner only, `runner_live: false`):**
+
+| # | Check | Refusal (grep-able literal) | Coordinator action on refusal |
+|---|---|---|---|
+| 4 | `status.json.gates.g5` equals `pass` for the current head | `MERGE-REFUSAL-ROW-4: G5 is not green for the current head` | Refuse. Run G5 per Step 8c. |
+
+**Rows 5-8 (runner-live only, `runner_live: true`):**
+
+| # | Check | Refusal (grep-able literal) | Coordinator action on refusal |
+|---|---|---|---|
+| 5 | The `merge-gate.yml` run for `${HEAD_SHA}` has `conclusion: success` (`gh run list --workflow=merge-gate.yml --json headSha,conclusion,url`, filtered to `${HEAD_SHA}`) | `MERGE-REFUSAL-ROW-5: merge-gate run conclusion is not success` | Refuse; hold at REVIEWING (back-edge with blocker entry — see below); surface the run URL. |
+| 6 | At least one `merge-gate.yml` run exists for `${HEAD_SHA}` | `MERGE-REFUSAL-ROW-6: no merge-gate run exists for the head SHA` | Refuse; require the `ready-to-merge` label to be re-applied (Step 10.3's mechanism) to trigger a run. |
+| 7 | The green run found (if any) is FOR `${HEAD_SHA}`, not an earlier SHA (compare against the workflow's own provenance echo, `merge-gate.yml`'s "Provenance:" line) | `MERGE-REFUSAL-ROW-7: merge-gate run is stale for the head SHA` | Refuse; treat identically to row 6 (no-run) — a stale-SHA run is not evidence for this head. |
+| 8 | `runner_live: true` AND at least one PAST green `merge-gate.yml` run exists in this repo's run history (any head SHA, any time) | `MERGE-REFUSAL-ROW-8: runner_live is set but no green merge-gate run history exists` | Refuse the flag path entirely — do NOT evaluate rows 5-7 for this merge attempt. Fall back to pre-runner mode: run Step 8c (G5) retroactively for the current head, then re-evaluate this table using row 4 in place of rows 5-7 (spec §16 pre-mortem risk 1 — the flag alone must never retire G5 with zero live evidence backing it). |
+
+**On ANY refusal (rows 1-8), except row 8's fallback path:**
+
+1. If the `ready-to-merge` label is currently applied, remove it — same mechanism as Step 11's label-pull discipline (`gh pr edit {N} --remove-label "ready-to-merge"`).
+2. Upsert `status.json`: `status: REVIEWING` (back-edge from `MERGE_READY`), append a `blockers[]` entry `{ "id": <generated>, "text": "<the row's grep-able refusal literal>", "raised_by": "finalisation-coordinator", "raised_at": "<ISO8601>", "cleared_at": null }`, in the SAME write. Run the generator + board-sync (per § Status contract above). This is the one back-edge this coordinator exercises (§ Status contract).
+3. Route to the row's Coordinator action above.
+4. Once fixed, clear the blocker (`cleared_at` set) and return to Step 9 to recompose `MERGE_READY`, re-running Step 10 (write + label) and Step 11 (CI watch) before re-entering this step.
+
+**All 8 rows PASS → proceed to Step 12.** No further status write happens here — Step 12 owns the post-merge terminal write.
+
+**Admin-bypass posture (spec §13).** The historical admin-squash escape hatch — merging despite an unresolved row above — stays technically possible on a personal repo, but under this contract it becomes an **explicit operator override**, recorded in `status.json.blockers` (`raised_by: "operator"`, the override reason as `text`) **and** in `progress.md`, **before** the merge command runs. **The coordinator never initiates this path** — it only ever reaches Step 12 by every row above passing, or by the operator explicitly instructing an override after reading a refusal. This is distinct from Step 12.3's existing `--admin` flag usage below, which is a separate, already-evidenced mechanism (the DG-5 three-line check) for skipping GitHub's required-check wait on a provably redundant docs-only prep commit — that mechanism is unchanged by this table. Until branch-protection required checks are configured (operator setup decision, §17 Ask-first, unchanged), **this refusal table IS the gate of record.**
+
 ## Step 12 — Auto-merge (post-CI-green)
 
-**Trigger:** Step 11 reached the `green` state. Mergeability is `CLEAN`, all required checks SUCCESS.
+**Trigger:** Step 11 reached the `green` state (mergeability `CLEAN`, all required checks SUCCESS) AND Step 11.5's refusal table passed all 8 rows for the current head SHA.
 
 **No operator pause here.** Once the Trigger conditions are met, Steps 12.1–12.4 run automatically. Do NOT pose an `AskUserQuestion` ("auto-merge now?", "all checks green — proceed?") and do NOT pose any other confirmation prompt. The single operator-controlled decision point in this coordinator is the `ready-to-merge` label at Step 10.3 (per the optional `feedback_ready_to_merge_label.md` operator-memory pattern — the label is opt-in in repos that adopt that memory). Once that label is applied and CI is green, the rest of the merge sequence is automatic: prep-commit current-focus → squash-merge --admin → patch main with squash sha. Operator-locked 2026-05-26.
 
@@ -853,10 +1009,19 @@ git pull origin main
 
 Edit `tasks/current-focus.md` on main: replace `last_merged_commit: pending-squash` with `last_merged_commit: {SQUASH_SHA}`, and in the prose, replace `squash-commit \`pending-squash\`` with `squash-commit \`{SQUASH_SHA}\``.
 
+**Terminal status write (§ Status contract above; spec §13 terminal-fact write location).** Also edit `tasks/builds/{slug}/status.json` on main in this same patch: `status: MERGED` (terminal — no further transition follows). When `runner_live: true`, also set `gates.merge_gate: pass` with `gate_evidence.merge_gate: { "sha": "{SQUASH_SHA}", "run_ids": [<merge-gate run id captured at Step 11.5>], "url": <run url>, "completed_at": "<ISO8601 now>" }`. When pre-runner, leave `gates.merge_gate` at its existing value (`null`) — no merge-gate workflow ran for this build. This is a documentation write on `main`, not a second entry of build code — "main entered exactly once" refers to the build's code, and this write preserves that. Then run:
+
+```bash
+node scripts/status/generate-current-focus.mjs
+node scripts/status/board-sync.mjs
+```
+
+(The generator only rewrites the marked `STATUS:GENERATED` region — this build now reports `MERGED` and drops out of the generated non-terminal-build list. It does not touch the prose tail this step just hand-edited.)
+
 Commit on main:
 
 ```bash
-git add tasks/current-focus.md
+git add tasks/current-focus.md tasks/builds/{slug}/status.json
 git commit -m "chore({slug}): finalize — squash sha {SQUASH_SHA}
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
@@ -865,7 +1030,7 @@ git push origin main
 
 If branch protection on `main` requires PRs (no direct push allowed):
 
-- Skip 12.4 and surface the placeholder to the operator: "Squash sha is `{SQUASH_SHA}`. `tasks/current-focus.md` on main still says `pending-squash` — open a small follow-up PR to patch, OR amend in the next merge's pre-merge prep."
+- Skip 12.4 and surface the placeholder to the operator: "Squash sha is `{SQUASH_SHA}`. `tasks/current-focus.md` on main still says `pending-squash` and `status.json` still reads `MERGE_READY` — open a small follow-up PR to patch, OR amend in the next merge's pre-merge prep."
 - Do not force-push to main. Do not bypass branch protection.
 
 ## Step 12.5 — Release-note block (advisory, non-blocking)
@@ -998,6 +1163,8 @@ Mark the final TodoWrite item complete and stop.
 - **CI fix-loop exceeds 5 iterations (Step 11)** → escalate with diagnostic block. Operator decides: (a) continue past 5 — they say "continue iteration 6" and the loop resumes; (b) merge manually after a manual fix; (c) close the loop and dispatch a fresh fix session.
 - **Same check fails twice with same root-cause hypothesis (Step 11 stuck-detection)** → escalate immediately, do not iterate. Per CLAUDE.md §1.
 - **Out-of-scope CI failures (Step 11)** → classify on second occurrence, surface to operator, do not consume fix-loop budget.
+- **verify-phase returns `fail` or `incomplete` (Step 4a)** → BLOCKS the merge exactly like a failed gate. `fail` escalates to the operator with the failure summary; `incomplete` surfaces the verify-phase-authored REVIEW_GAP-style `progress.md` entry. Do not proceed to Step 4b or Step 5 either way.
+- **Merge-gate refusal table fires any row (Step 11.5)** → pull the label if applied, back-edge `status.json` to `REVIEWING` with a blocker entry (the row's grep-able refusal literal), route to the row's coordinator action, and return to Step 9 once fixed. Row 8 is the one exception that is a re-route rather than a full back-edge: fall back to running Step 8c (G5) retroactively, then re-evaluate using row 4. Never merge on an unresolved row without a recorded operator override (§ Admin-bypass posture, Step 11.5).
 - **`gh pr merge` fails (Step 12.3)** → diagnose the mergeability state. If BEHIND, S2-sync and return to Step 11. Otherwise escalate.
 - **`git push origin main` blocked by branch protection (Step 12.4)** → skip the post-merge sha patch and surface to operator with the placeholder note. Do not force-push, do not bypass.
 - **`tasks/current-focus.md` status mismatch (entry guard)** → refuse with the current status and expected status. Tell the operator to either launch the correct phase coordinator or manually correct the status field if the previous coordinator exited uncleanly.
