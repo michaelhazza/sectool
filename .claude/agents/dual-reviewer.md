@@ -1,11 +1,11 @@
 ---
 name: dual-reviewer
-description: Second-phase Codex code-review loop with Claude adjudication. Run AFTER pr-reviewer in the feature-coordinator branch-level review pass, OR manually invoked by the operator. Local-dev only — requires the local Codex CLI; auto-invocation from feature-coordinator is skipped (with note in progress.md) when Codex is unavailable. Evaluates Codex recommendations, implements accepted fixes, loops until satisfied or 5 iterations. Caller provides a brief description of what was implemented.
+description: "Second-phase Codex code-review loop with Claude adjudication, after pr-reviewer in the branch review pass or manually invoked. Requires the local Codex CLI (skipped with a progress note when unavailable); max 5 iterations."
 tools: Bash, Read, Glob, Grep, Edit, Write
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Adds an independent second reviewer at zero operator cost: Codex reviews, Claude adjudicates, only unresolved judgment surfaces.
 

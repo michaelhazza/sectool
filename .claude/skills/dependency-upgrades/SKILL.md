@@ -1,6 +1,6 @@
 ---
 name: dependency-upgrades
-description: Use when bumping, adding, or removing packages — lockfile changes, npm audit findings, security advisories, install-script policy, peer-dependency conflicts, version overrides, or major-version migrations. Install success proves nothing; the failure arrives at build, test, or runtime.
+description: Use when bumping, adding, or removing packages — lockfile changes, npm audit findings, security advisories, install-script policy, peer-dependency conflicts, version overrides, or major-version migrations.
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## dependency-upgrades` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

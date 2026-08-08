@@ -1,5 +1,5 @@
 ---
-description: Run a golden-set prompt eval suite — score catch rate + false-alarm rate against the pinned baseline and fail on a regression beyond threshold, so a prompt change lands only if its suite still passes
+description: "Run a golden-set prompt eval suite against the pinned baseline; fail on any regression beyond threshold."
 ---
 
 # /eval-prompts

@@ -72,7 +72,6 @@ function allowedGlobsForPhase(phase, slug) {
     `tasks/builds/${slug}/status.json`,
     `tasks/builds/${slug}/.phase`,
     'tasks/current-focus.md',
-    'docs/superpowers/specs/**',
     'prototypes/**',
     'tasks/review-logs/**',
   ];

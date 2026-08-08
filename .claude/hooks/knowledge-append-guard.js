@@ -19,6 +19,21 @@
  * the old_string spans a dated `### [` heading is irrelevant: a body-line
  * rewrite is still a rewrite.
  *
+ * ── Heading-format validation (2B) ────────────────────────────────────
+ * On the ALLOW path (a pure append), every NEWLY APPENDED H2/H3 heading
+ * must be an indexable dated entry heading `### [YYYY-MM-DD] ...` (the
+ * Step 7 template shape the knowledge-index generator parses); otherwise
+ * the append is blocked with guidance (exit 2). Only headings introduced
+ * by the new content are checked; the tail anchor and pre-existing entries
+ * are never re-validated, so a consumer's legacy H2 entries never block an
+ * unrelated append. A body-only append (no new heading) passes untouched;
+ * the finalisation Step-7-close index dry-run covers that gap.
+ *
+ * Claim discipline: this covers the Claude tool writes the guard governs
+ * (Edit / Write / MultiEdit on KNOWLEDGE.md). Shell writes go through the
+ * separate HITL approval path; manual edits outside Claude tools are
+ * uncovered.
+ *
  * ── HITL override ─────────────────────────────────────────────────────
  * Mirrors config-protection.js: a ONE-SHOT sentinel file at
  * .claude/knowledge-edit-approved containing the target's repo-relative
@@ -299,6 +314,56 @@ function blockWithHitl(toolName, filePath) {
   process.exit(2);
 }
 
+// ── Heading-format validation (2B) ─────────────────────────────────────────
+
+// A newly-appended heading is valid only when it is an indexable dated entry
+// heading `### [YYYY-MM-DD] ...`, matching the knowledge-index generator's own
+// entry regex (`^###\s+\[YYYY-MM-DD\]`). The single-space form here mirrors the
+// Step 7 template exactly; only headings introduced by the append are checked.
+const HEADING_LINE_RE = /^#{2,3}\s+/; // an H2/H3 heading line
+const DATED_ENTRY_HEADING_RE = /^### \[\d{4}-\d{2}-\d{2}\]/; // the required indexable form
+
+/** Newly-appended heading lines that are not indexable dated entries (empty when clean). */
+function invalidAppendedHeadings(appendedText) {
+  const bad = [];
+  for (const line of String(appendedText).split(/\r?\n/)) {
+    if (HEADING_LINE_RE.test(line) && !DATED_ENTRY_HEADING_RE.test(line)) {
+      bad.push(line.replace(/\r$/, ''));
+    }
+  }
+  return bad;
+}
+
+/**
+ * Block an append that introduces a malformed entry heading. Distinct from the
+ * HITL history-rewrite block: this is a format-fix nudge (no sentinel override),
+ * because the fix is to correct the heading, not to force a malformed one through.
+ */
+function blockWithHeadingGuidance(toolName, filePath, offenders) {
+  const key = sentinelKey(filePath);
+  const message = [
+    `KNOWLEDGE-HEADING-FORMAT: ${toolName} to "${key}" appends an entry heading the`,
+    `knowledge-index generator cannot parse, so the entry would be invisible to recall.`,
+    ``,
+    `Offending heading line(s):`,
+    ...offenders.map((h) => `    ${h}`),
+    ``,
+    `Every KNOWLEDGE.md entry heading MUST match the Step 7 template:`,
+    ``,
+    `    ### [YYYY-MM-DD] [Category] -- Pattern title`,
+    ``,
+    `i.e. an H3 ("###") heading whose first token is a bracketed ISO date`,
+    `[YYYY-MM-DD] (regex ^### \\[\\d{4}-\\d{2}-\\d{2}\\]). Common mistakes: an H2`,
+    `("##") heading, an unbracketed date, or a bracketed non-date title.`,
+    ``,
+    `Fix the heading to the dated H3 form and retry. Body-only appends (no new`,
+    `heading line) are never blocked by this check.`,
+  ].join('\n');
+
+  process.stderr.write(message + '\n');
+  process.exit(2);
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 let raw = '';
@@ -327,8 +392,12 @@ process.stdin.on('end', () => {
       if (classifyWrite(fileContent, toolInput.content) === 'block') {
         blockWithHitl(toolName, filePath); // exits 2, or returns if a sentinel approved this rewrite
       } else {
-        // Natural allow path (a genuine append) — run the non-blocking dedup advisory.
-        emitDedupAdvisory(fileContent, filePath, appendedPortion(toolName, toolInput, fileContent));
+        // Natural allow path (a genuine append): validate the newly-appended
+        // headings, then run the non-blocking dedup advisory.
+        const appended = appendedPortion(toolName, toolInput, fileContent);
+        const badHeadings = invalidAppendedHeadings(appended);
+        if (badHeadings.length) blockWithHeadingGuidance(toolName, filePath, badHeadings); // exits 2
+        emitDedupAdvisory(fileContent, filePath, appended);
       }
       process.exit(0);
     }
@@ -349,10 +418,14 @@ process.stdin.on('end', () => {
       }
     }
 
-    // Only advise on the natural append path — a sentinel-approved rewrite is
-    // not an append, so no dedup hint there.
+    // Only validate/advise on the natural append path — a sentinel-approved
+    // rewrite is not an append, so neither the heading check nor the dedup hint
+    // applies there.
     if (!blocked) {
-      emitDedupAdvisory(fileContent, filePath, appendedPortion(toolName, toolInput, fileContent));
+      const appended = appendedPortion(toolName, toolInput, fileContent);
+      const badHeadings = invalidAppendedHeadings(appended);
+      if (badHeadings.length) blockWithHeadingGuidance(toolName, filePath, badHeadings); // exits 2
+      emitDedupAdvisory(fileContent, filePath, appended);
     }
 
     process.exit(0);

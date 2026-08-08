@@ -1176,6 +1176,17 @@ Hunt targets:
   a small intermediate chunk between N and N+M that owns the missing
   artefact.
 
+Review lenses (references/review-lenses.md):
+Sweep all four before reporting. product_value: does the plan deliver what the
+spec promised, to whom it named? engineering_feasibility: will it build in this
+order, in this codebase? design_quality: for user-facing surfaces, does the
+result belong to the product someone already uses (skip with a note when no
+user surface is touched)? developer_experience: can the result be operated,
+debugged and handed off? Coverage is mandatory and tagging is not: set the
+optional per-finding lens key ONLY when one lens clearly dominates, omit it for
+cross-cutting findings, and name the lenses that reviewed clean inside
+integrity_check. A miscategorised finding is worse than an unclassified one.
+
 Process:
 Pass 1 DAG simulation (do prerequisites exist before each chunk? real vs
 fictional dependencies?). Pass 2 Inventory. Pass 3 Evidence. Pass 4 Builder
@@ -1191,7 +1202,10 @@ Output a single JSON object matching schemas/review-result.schema.json (the
 merged contract per §3). Same field-level rules as the spec prompt — emit
 finding_type, risk_domain, source_refs[] with at least one entry,
 auto_apply_eligible, auto_apply_reason, triage_hint, and the versioning fields
-(set prompt_version: "openai-plan-review.v2"). Use triage_hint "technical" for
+(set prompt_version: "openai-plan-review.v2"). The schema also permits an
+optional lens key per finding (product_value | engineering_feasibility |
+design_quality | developer_experience) — emit it under the dominant-lens rule
+above, omit it otherwise; it is the one key beyond the skeleton you may add. Use triage_hint "technical" for
 chunk splits, ordering, contracts, tests, RLS mechanics, idempotency, evidence,
 and primitive reuse; "user-facing" only when the plan changes what users or
 admins experience, changes priority/scope/defaults, or weakens a spec

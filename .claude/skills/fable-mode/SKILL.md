@@ -1,6 +1,6 @@
 ---
 name: fable-mode
-description: Use when starting judgment-heavy work — authoring a brief, spec, implementation plan, or audit; making an architecture, adjudication, or incident-triage decision; or any task where a wrong conclusion is expensive, on any model tier (the gates are the discipline, not a substitute for capability). Also use when a caller (agent, coordinator, or operator) says "fable mode".
+description: "Use when starting judgment-heavy work: authoring a brief, spec, plan, or audit; architecture, adjudication, or incident-triage decisions; any task where a wrong conclusion is expensive, on any model tier. Also when a caller says 'fable mode'."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## fable-mode` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

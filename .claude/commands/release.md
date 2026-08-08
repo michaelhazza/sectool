@@ -33,9 +33,17 @@ Cut a framework release from the `claude-code-framework` repo itself. Given a bu
 
    The operator supplies the entry body, or, on request, draft it from `git log v<previous-version>..HEAD --oneline` (fall back to the commits since the previous version's release commit when the tag is missing — a symptom of the very lag this command fixes) and show it for approval before writing.
 
+   **Growth-gate declaration (control C5) — mandatory for every NEW always-loaded addition.** If this release ADDS any file under `.claude/agents/`, `.claude/skills/`, `.claude/hooks/`, or `.claude/commands/` (a new agent, skill, hook, or command — the always-loaded behavioural surface), the CHANGELOG entry MUST carry one declaration line per new file:
+
+   ```
+   > growth-gate: <path-or-name> — replaces: <what it replaces | none: why nothing existing covers it>; footprint: <N bytes | not-always-loaded>
+   ```
+
+   This is enforced mechanically at step 7 (`verify-growth-gate.mjs`). A new tier or a new always-loaded doc section is the same class of growth — declare its replacement rationale and footprint in prose even though the mechanical gate only diffs the four file classes.
+
 6. **Migration scaffold (ask).** If the release contains structural changes a consumer must react to (file renames/moves, state-schema changes, template seeds, retired files), ask the operator whether it needs `migrations/v<new-version>.js`. If yes: scaffold from `migrations/_template.js` when present, otherwise model on the most recent `migrations/v*.js` per `migrations/README.md` § *Authoring a new migration* (idempotent, non-destructive on conflict, returns `{ status, notes }`). The `migrations/v*.js` manifest glob picks it up automatically. Reference it from the CHANGELOG entry: `Migration: v<new-version>.js — <what and why>`.
 
-7. **Re-run the version-consistency check** from step 3 against the bumped files (including the new CHANGELOG heading). Then commit:
+7. **Re-run the version-consistency check** from step 3 against the bumped files (including the new CHANGELOG heading). **Then run the growth gate** — `node scripts/gates/verify-growth-gate.mjs` — which diffs new behavioural files since the previous release tag and fails (exit 1) if any lacks its `> growth-gate:` CHANGELOG declaration (control C5). Fix the CHANGELOG entry before proceeding; the gate fails-open only when the previous tag is unresolvable. **Then run the description-budget gate** — `node scripts/gates/verify-description-budgets.mjs` — a BLOCKING gate (exit 1) if any agent/skill/command `description:` frontmatter exceeds its per-surface budget (agents 400B / skills 450B / commands 180B). Those descriptions load into every session's system prompt, so an over-budget one is held out of the release; trim it to a WHEN-TO-INVOKE signal (procedure belongs in the body) per `references/doc-size-budgets.md`. Then commit:
 
    ```bash
    git add -A

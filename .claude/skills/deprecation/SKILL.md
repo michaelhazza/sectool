@@ -1,6 +1,6 @@
 ---
 name: deprecation
-description: Use when sunsetting, retiring, or removing a system, feature, API, service, or capability this codebase OWNS — deciding whether to deprecate, planning consumer migration, choosing advisory vs hard-deadline deprecation, or acting on unowned "zombie" code. Not for consuming someone else's deprecation (dependency-upgrades) or DB schema changes (postgres-migrations).
+description: Use when sunsetting, retiring, or removing a system, feature, API, service, or capability this codebase OWNS — deciding whether to deprecate, planning consumer migration, choosing advisory vs hard-deadline deprecation, or acting on unowned "zombie" code. Not for someone else's deprecation (dependency-upgrades) or DB schema changes (postgres-migrations).
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## deprecation` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

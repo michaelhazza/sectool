@@ -81,7 +81,7 @@ function check(label, actual, expected, extra) {
   rmSync(proj, { recursive: true, force: true });
 }
 
-// ── 3. KNOWLEDGE tail-only: newest 6 entries kept, oldest dropped ───────────
+// ── 3. KNOWLEDGE tail-only: newest 3 entries kept, oldest dropped ───────────
 {
   const proj = makeProj('md-know-');
   let k = '';
@@ -94,9 +94,9 @@ function check(label, actual, expected, extra) {
   const out = r.stdout || '';
   check('know: exit 0', r.status, 0, r.stderr);
   check('know: newest entry present', out.includes('ENTRY_10'), true, out);
-  check('know: 6th-from-newest present', out.includes('ENTRY_05'), true, out);
+  check('know: 3rd-from-newest present', out.includes('ENTRY_08'), true, out);
   check('know: oldest entry dropped', out.includes('ENTRY_01'), false, out);
-  check('know: 7th-from-newest dropped', out.includes('ENTRY_04'), false, out);
+  check('know: 4th-from-newest dropped', out.includes('ENTRY_07'), false, out);
   rmSync(proj, { recursive: true, force: true });
 }
 
@@ -186,8 +186,8 @@ function check(label, actual, expected, extra) {
   const proj = makeProj('md-idx-match-');
   mkdirSync(join(proj, 'references'), { recursive: true });
   // Line 1 = the old, matchable entry; then 6 newer entries push it out of newest-6.
-  let k = '### 2026-01-02 Widget calibration drift\nWIDGET_DRIFT body about calibration offsets\n\n';
-  for (let i = 1; i <= 6; i++) k += `### 2026-06-0${i} Recent entry ${i}\nrecent body ${i}\n\n`;
+  let k = '### [2026-01-02] Widget calibration drift\nWIDGET_DRIFT body about calibration offsets\n\n';
+  for (let i = 1; i <= 6; i++) k += `### [2026-06-0${i}] Recent entry ${i}\nrecent body ${i}\n\n`;
   writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
   writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Status: BUILDING\nSlug: widget-calibration-fix\n');
   writeFileSync(
@@ -204,12 +204,59 @@ function check(label, actual, expected, extra) {
   rmSync(proj, { recursive: true, force: true });
 }
 
+// ── 9b. Exact-body dedup (H3): a matched entry that SHARES boilerplate lines
+// with the recency block but carries UNIQUE content is still surfaced. The old
+// "≥50% of lines already shown" heuristic would have dropped it, losing the
+// unique knowledge; exact body-equality keeps it.
+{
+  const proj = makeProj('md-idx-dedup-unique-');
+  mkdirSync(join(proj, 'references'), { recursive: true });
+  // Old matchable entry: 1 unique line + 2 shared boilerplate lines.
+  let k = '### [2026-01-02] Widget calibration drift\nWIDGET_UNIQUE calibration detail that is new\nSHARED boilerplate note one\nSHARED boilerplate note two\n\n';
+  // Recent entry 1 carries ONLY the two shared lines (so 2 of the old entry\'s 3
+  // content lines overlap → ≥50% → the old heuristic dropped it).
+  k += '### [2026-06-01] Recent entry 1\nSHARED boilerplate note one\nSHARED boilerplate note two\n\n';
+  for (let i = 2; i <= 6; i++) k += `### [2026-06-0${i}] Recent entry ${i}\nrecent body ${i}\n\n`;
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
+  writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Status: BUILDING\nSlug: widget-calibration-fix\n');
+  writeFileSync(
+    join(proj, 'references', 'knowledge-index.md'),
+    'KNOWLEDGE.md:1 | 2026-01-02 | Widget calibration drift | widget, calibration, drift\n',
+  );
+  const r = runHook(proj);
+  const out = r.stdout || '';
+  check('idx-dedup-unique: unique-content entry surfaced (not dropped)', out.includes('WIDGET_UNIQUE'), true, out);
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// ── 9c. Exact-body dedup (H3): a matched entry whose body is IDENTICAL to a
+// recency entry (title differs) IS dropped as a true duplicate.
+{
+  const proj = makeProj('md-idx-dedup-dup-');
+  mkdirSync(join(proj, 'references'), { recursive: true });
+  let k = '### [2026-01-02] Widget drift (old title)\nDUP_BODY identical calibration note\nDUP_BODY second identical line\n\n';
+  k += '### [2026-06-01] Widget drift (new title)\nDUP_BODY identical calibration note\nDUP_BODY second identical line\n\n';
+  for (let i = 2; i <= 6; i++) k += `### [2026-06-0${i}] Recent entry ${i}\nrecent body ${i}\n\n`;
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
+  writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Status: BUILDING\nSlug: widget-calibration-fix\n');
+  writeFileSync(
+    join(proj, 'references', 'knowledge-index.md'),
+    'KNOWLEDGE.md:1 | 2026-01-02 | Widget drift old | widget, calibration, drift\n',
+  );
+  const r = runHook(proj);
+  const out = r.stdout || '';
+  // The identical body appears once (from the recency block), not twice.
+  const occurrences = (out.match(/DUP_BODY identical calibration note/g) || []).length;
+  check('idx-dedup-dup: identical body not duplicated by index-match', occurrences <= 1, true, out);
+  rmSync(proj, { recursive: true, force: true });
+}
+
 // ── 10. Index present + no keyword match → no matched block ──────────────────
 {
   const proj = makeProj('md-idx-nomatch-');
   mkdirSync(join(proj, 'references'), { recursive: true });
-  let k = '### 2026-01-02 Widget calibration drift\nWIDGET_DRIFT body about calibration offsets\n\n';
-  for (let i = 1; i <= 6; i++) k += `### 2026-06-0${i} Recent entry ${i}\nrecent body ${i}\n\n`;
+  let k = '### [2026-01-02] Widget calibration drift\nWIDGET_DRIFT body about calibration offsets\n\n';
+  for (let i = 1; i <= 6; i++) k += `### [2026-06-0${i}] Recent entry ${i}\nrecent body ${i}\n\n`;
   writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
   writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Status: BUILDING\nSlug: unrelated-config-cleanup\n');
   writeFileSync(
@@ -228,7 +275,7 @@ function check(label, actual, expected, extra) {
 // ── 11. Index absent → behaviour identical to today (recency-only) ───────────
 {
   const proj = makeProj('md-idx-absent-');
-  writeFileSync(join(proj, 'KNOWLEDGE.md'), '### 2026-07-05 Recent\nRECENT_MARKER body\n');
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), '### [2026-07-05] Recent\nRECENT_MARKER body\n');
   writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Slug: widget-calibration-fix\n');
   const r = runHook(proj);
   const out = r.stdout || '';
@@ -242,7 +289,7 @@ function check(label, actual, expected, extra) {
 {
   const proj = makeProj('md-idx-malformed-');
   mkdirSync(join(proj, 'references'), { recursive: true });
-  writeFileSync(join(proj, 'KNOWLEDGE.md'), '### 2026-07-05 Recent\nRECENT_MARKER body\n');
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), '### [2026-07-05] Recent\nRECENT_MARKER body\n');
   writeFileSync(join(proj, 'tasks', 'current-focus.md'), 'Slug: widget-calibration-fix\n');
   writeFileSync(
     join(proj, 'references', 'knowledge-index.md'),
@@ -267,8 +314,8 @@ function check(label, actual, expected, extra) {
   for (let i = 1; i <= 12; i++) less += `### 2026-05-${String(i).padStart(2, '0')} - L${i}\nlesson ${i} body line one\nlesson ${i} body line two\n\n`;
   writeFileSync(join(proj, 'tasks', 'lessons.md'), less);
   // Line 1 = old matchable entry; 12 newer entries drop it from newest-6.
-  let know = '### 2026-01-01 Old matched entry\nMATCHED_OLD body line\n\n';
-  for (let i = 1; i <= 12; i++) know += `### 2026-06-${String(i).padStart(2, '0')}\nknow ${i} body line one\nknow ${i} body line two\n\n`;
+  let know = '### [2026-01-01] Old matched entry\nMATCHED_OLD body line\n\n';
+  for (let i = 1; i <= 12; i++) know += `### [2026-06-${String(i).padStart(2, '0')}]\nknow ${i} body line one\nknow ${i} body line two\n\n`;
   writeFileSync(join(proj, 'KNOWLEDGE.md'), know);
   writeFileSync(
     join(proj, 'references', 'knowledge-index.md'),
@@ -278,6 +325,42 @@ function check(label, actual, expected, extra) {
   const lineCount = (r.stdout || '').replace(/\n$/, '').split('\n').length;
   check('idx-cap: exit 0', r.status, 0, r.stderr);
   check('idx-cap: <= 150 lines', lineCount <= 150, true, `got ${lineCount} lines`);
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// ── 12. Per-entry cap: a long recent entry is truncated to KNOWLEDGE_ENTRY_MAX_LINES body lines ─
+{
+  const proj = makeProj('md-entry-cap-');
+  let k = '### [2026-08-07] Gotcha -- Long entry\n';
+  for (let i = 1; i <= 40; i++) k += `line ${String(i).padStart(2, '0')}\n`;
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
+  const r = runHook(proj);
+  const out = r.stdout || '';
+  check('entry-cap: exit 0', r.status, 0, r.stderr);
+  check('entry-cap: heading present', out.includes('### [2026-08-07] Gotcha -- Long entry'), true, out);
+  check('entry-cap: 12th body line kept', out.includes('line 12'), true, out);
+  check('entry-cap: 13th body line dropped', out.includes('line 13'), false, out);
+  check('entry-cap: truncation marker present', out.includes('… (entry truncated'), true, out);
+  rmSync(proj, { recursive: true, force: true });
+}
+
+// ── 13. Per-entry cap: a bare `### Subheading` inside an entry does NOT reset the cap ─
+{
+  const proj = makeProj('md-entry-cap-subhead-');
+  let k = '### [2026-08-07] Incident -- With subheadings\n';
+  for (let i = 1; i <= 6; i++) k += `alpha ${i}\n`;
+  k += '### Root cause\n';
+  for (let i = 1; i <= 10; i++) k += `beta ${i}\n`;
+  writeFileSync(join(proj, 'KNOWLEDGE.md'), k);
+  const r = runHook(proj);
+  const out = r.stdout || '';
+  check('entry-cap-subhead: exit 0', r.status, 0, r.stderr);
+  check('entry-cap-subhead: alpha 6 present', out.includes('alpha 6'), true, out);
+  check('entry-cap-subhead: subheading kept as body text', out.includes('### Root cause'), true, out);
+  check('entry-cap-subhead: beta 1 present', out.includes('beta 1'), true, out);
+  check('entry-cap-subhead: beta 5 present (body line 12)', out.includes('beta 5'), true, out);
+  check('entry-cap-subhead: beta 6 dropped (body line 13)', out.includes('beta 6'), false, out);
+  check('entry-cap-subhead: truncation marker present', out.includes('… (entry truncated'), true, out);
   rmSync(proj, { recursive: true, force: true });
 }
 

@@ -167,6 +167,38 @@
     },
     "fix_sketch": {
       "type": "string"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "Reviewer's confidence that this finding is real. Optional and additive: absence means the reviewer did not rate it, NOT high confidence."
+    },
+    "evidence_kind": {
+      "type": "string",
+      "enum": [
+        "file_read",
+        "diff_hunk",
+        "command_output",
+        "test_run",
+        "external_doc",
+        "reasoning_only"
+      ],
+      "description": "What kind of evidence backs this finding. `reasoning_only` marks a finding derived without observing the artefact — the class most prone to hallucinated premises."
+    },
+    "lens": {
+      "type": "string",
+      "enum": [
+        "product_value",
+        "engineering_feasibility",
+        "design_quality",
+        "developer_experience"
+      ],
+      "description": "Dominant review perspective this finding came from, per references/review-lenses.md. Set only when ONE lens clearly dominates; cross-cutting findings omit it. Lens COVERAGE is mandatory for plan reviews, but tagging an individual finding is not — a miscategorised finding is worse than an unclassified one."
+    },
+    "verification_state": {
+      "type": "string",
+      "enum": ["verified", "inferred", "assumed"],
+      "description": "Evidence tier of the finding's load-bearing claim, using the same vocabulary as the fable-mode reasoning overlay: verified (observed this session), inferred (follows from something observed), assumed (unexamined)."
     }
   },
   "if": {

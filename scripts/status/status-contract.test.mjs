@@ -249,6 +249,31 @@ describe('validateRecordShape — Ajv unavailable (the structural floor)', () =>
       log: [{ at: 'yesterday', stage: 'Build', kind: 'done', note: ['x'] }],
     }))).toContain('at');
   });
+
+  // -------------------------------------------------------------------------
+  // Runtime-identity fields (top-level `runtime` object and `log[]`
+  // `runtime`/`role` keys, optional/additive — 2.62.0). Both are
+  // additionalProperties: false, so the additive proof is that a record with
+  // NONE of these keys still validates, and a record carrying all of them
+  // also validates once the keys are declared in `properties`.
+  // -------------------------------------------------------------------------
+
+  it('accepts a record with none of the new runtime-identity keys — the additive proof', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    expect(await validateRecordShape(validRecord())).toBeNull();
+  });
+
+  it('accepts a record stamped with runtime-identity at both the top level and on log[] entries', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const record = validRecord({
+      runtime: { coordinator_runtime: 'claude-code', coordinator_role: 'Coordinator' },
+      log: [
+        { at: '2026-08-02T01:00:00Z', stage: 'Build', kind: 'start', note: ['Building chunk A3'], runtime: 'claude-code', role: 'Builder' },
+        { at: '2026-08-02T01:00:01Z', stage: 'Build', kind: 'done', note: ['Chunk A3 built'], runtime: 'openclaw', role: 'Builder' },
+      ],
+    });
+    expect(await validateRecordShape(record)).toBeNull();
+  });
 });
 
 describe('validateRecordShape — Ajv available', () => {

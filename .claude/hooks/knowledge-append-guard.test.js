@@ -184,11 +184,132 @@ const CASES = [
     { tool_name: 'Edit' },
     0,
   ],
+
+  // ── 2B: heading-format validation on NEWLY-APPENDED headings ──────────────
+  // Valid indexable dated H3 appends pass.
+  [
+    '2B: append the exact Step 7 template sample heading → exit 0',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n### [2026-08-05] [Correction] -- Example pattern title\n**Source:** x\n**Pattern:** y\n**Why it matters:** z\n',
+    }),
+    0,
+  ],
+  [
+    '2B: append multiple valid dated entries in one edit → exit 0',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n### [2026-08-05] [Pattern] -- first\nBody.\n\n### [2026-08-06] [Correction] -- second\nBody.\n',
+    }),
+    0,
+  ],
+  [
+    '2B: CRLF line endings on a valid dated append → exit 0',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\r\n### [2026-08-05] [Pattern] -- crlf entry\r\nBody line.\r\n',
+    }),
+    0,
+  ],
+  [
+    '2B: body-only append (no heading in new content) → exit 0',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: TAIL,
+      new_string: TAIL + '\nAn extra body sentence appended to the last entry.\n',
+    }),
+    0,
+  ],
+  // Malformed newly-appended headings each block (exit 2).
+  [
+    '2B: H2-dated heading (## [date]) → exit 2 (not indexable as H3)',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n## [2026-08-05] H2 dated heading\nBody.\n',
+    }),
+    2,
+  ],
+  [
+    '2B: unbracketed-date heading (### 2026-...) → exit 2',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n### 2026-08-05 unbracketed date\nBody.\n',
+    }),
+    2,
+  ],
+  [
+    '2B: undated bracketed heading (### [Pattern title]) → exit 2',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n### [Pattern title] no date\nBody.\n',
+    }),
+    2,
+  ],
+  [
+    '2B: CRLF malformed H2-dated heading → exit 2',
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\r\n## [2026-08-05] crlf H2 dated\r\nBody.\r\n',
+    }),
+    2,
+  ],
+  [
+    '2B: Write append introducing a malformed heading → exit 2',
+    payload('Write', {
+      file_path: KNOWLEDGE,
+      content: EXISTING + '\n### undated new entry\nBody.\n',
+    }),
+    2,
+  ],
+  [
+    '2B: MultiEdit where one appended heading is malformed → exit 2',
+    payload('MultiEdit', {
+      file_path: KNOWLEDGE,
+      edits: [
+        { old_string: '', new_string: '\n### [2026-08-05] [Pattern] -- good\nBody.\n' },
+        { old_string: '', new_string: '\n### bad heading undated\nBody.\n' },
+      ],
+    }),
+    2,
+  ],
 ];
 
 for (const [label, input, expectedExit] of CASES) {
   const result = runHook(input);
   check(label, result.status, expectedExit, result.stderr && result.stderr.slice(0, 200));
+}
+
+// ── 2B: Windows-path invocation + block-message content ─────────────────────
+// The hook is spawned by its ABSOLUTE path (process.execPath + HOOK); on Windows
+// that path carries a drive letter and backslashes. Assert the heading-format
+// block fires end-to-end through that spawn (the repo's ESM entry-point lesson:
+// the hook must run when invoked by absolute path), and that the block message
+// names the format contract and the required template form.
+{
+  check('2B: HOOK spawned by an absolute path', /^([A-Za-z]:[\\/]|\/)/.test(HOOK), true, HOOK);
+  const r = runHook(
+    payload('Edit', {
+      file_path: KNOWLEDGE,
+      old_string: '',
+      new_string: '\n### undated malformed via absolute-path spawn\nBody.\n',
+    }),
+  );
+  check('2B: malformed heading blocks through absolute-path spawn → exit 2', r.status, 2, r.stderr && r.stderr.slice(0, 200));
+  check('2B: block names the heading-format contract', /KNOWLEDGE-HEADING-FORMAT/.test(r.stderr || ''), true, r.stderr && r.stderr.slice(0, 200));
+  check('2B: block cites the Step 7 template form', /### \[YYYY-MM-DD\]/.test(r.stderr || ''), true, r.stderr && r.stderr.slice(0, 200));
+  check(
+    '2B: heading-format block is NOT the HITL history-rewrite path',
+    !/HITL-APPROVAL-REQUIRED/.test(r.stderr || ''),
+    true,
+    r.stderr && r.stderr.slice(0, 200),
+  );
 }
 
 // Block message mirrors the HITL convention

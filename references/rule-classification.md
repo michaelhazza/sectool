@@ -15,7 +15,7 @@ Generated 2026-07-10T11:43:22.783Z by the Fable Framework Batch (WS2, F4). Class
 | class | rows |
 |---|---|
 | durable-invariant | 113 |
-| process-contract | 572 |
+| process-contract | 574 |
 | model-workaround | 67 |
 | residue | 0 |
 | no-rules markers | 64 |
@@ -98,7 +98,6 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/bug-fixer.md#linked-pr-detection` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
 | `.claude/agents/bug-fixer.md#execution-fix-mode` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
 | `.claude/agents/bug-fixer.md#step-0-parse-trigger-phrase` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
-| `.claude/agents/bug-fixer.md#experiment-eligible-label-recommendation` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
 | `.claude/agents/bug-fixer.md#step-1-todowrite-skeleton` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
 | `.claude/agents/bug-fixer.md#step-2-issue-actionability-check` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
 | `.claude/agents/bug-fixer.md#step-2a-resolve-pr-base-branch` | directives under this heading | process-contract | file classified at file-level default (not per-directive extracted this pass) — spot-check candidate; never-auto-finalise gate and 2-attempt check cap noted |
@@ -134,6 +133,7 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/builder.md#ci-gate-pre-flight-apply-while-writing-these-gates-are-ci-only-not-in-g1` | directives under this heading | model-workaround | assumption: description-based skill/doc triggering is unreliable; sunset: re-evaluate when triggering proves reliable on the WS4 eval suite |
 | `.claude/agents/builder.md#step-4-g1-gate-scoped-lint-targeted-tests-only` | directives under this heading | process-contract | scoped-command list is PC; 3-attempt cap is MW (assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md) |
 | `.claude/agents/builder.md#step-5-return-summary` | directives under this heading | process-contract |  |
+| `.claude/agents/builder.md#documentation-impact-maps-to-completion-packetv1` | directives under this heading | process-contract | producer convention for the completion-packet doc-impact fields (2.63.0); advisory validator, warning not gate |
 | `.claude/agents/builder.md#hard-rules` | directives under this heading | durable-invariant | never --no-verify / never amend / never commit are integrity floors |
 | `.claude/agents/builder.md#worktree-awareness-61` | directives under this heading | process-contract |  |
 | `.claude/agents/builder.md#project-specific-notes` | directives under this heading | process-contract |  |
@@ -182,6 +182,7 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/claude-plan-review.md#review-posture-per-plan` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-plan-review.md#finding-triage` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-plan-review.md#process` | directives under this heading | process-contract |  |
+| `.claude/agents/claude-plan-review.md#lens-sweep-run-on-every-plan` | directives under this heading | process-contract | four review lenses per references/review-lenses.md (2.63.0); coverage mandatory, tagging conditional |
 | `.claude/agents/claude-plan-review.md#rubric-pass-run-on-every-plan` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-plan-review.md#output` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-plan-review.md#rules` | directives under this heading | process-contract | lifetime cap 3 is MW (assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md) |
@@ -206,18 +207,6 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/claude-spec-review.md#rubric-pass-run-on-every-spec` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-spec-review.md#output` | directives under this heading | process-contract |  |
 | `.claude/agents/claude-spec-review.md#rules` | directives under this heading | process-contract | lifetime cap 3 is MW (assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md) |
-| `.claude/agents/codebase-explainer.md#when-invoked` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-1-todowrite-skeleton` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-2-read-framing-inputs` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-3-decide-structure` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-4-write-the-tour` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-5-worked-example-how-a-request-flows` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-6-where-to-make-a-change-by-domain` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-7-where-to-not-make-a-change` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-8-where-to-read-next` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-9-update-mode` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#step-10-output-and-finish` | directives under this heading | process-contract |  |
-| `.claude/agents/codebase-explainer.md#rules` | directives under this heading | process-contract |  |
 | `.claude/agents/context-pack-loader.md#when-invoked` | directives under this heading | process-contract |  |
 | `.claude/agents/context-pack-loader.md#step-1-read-the-pack-file` | directives under this heading | process-contract |  |
 | `.claude/agents/context-pack-loader.md#step-2-load-named-sections` | directives under this heading | process-contract |  |
@@ -248,15 +237,6 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/dual-reviewer.md#rules` | directives under this heading | durable-invariant | never force-push / never --amend / never --no-verify; CI-only test gates |
 | `.claude/agents/dual-reviewer.md#project-specific-notes` | — | no-rules | |
 | `.claude/agents/dual-reviewer.md#main-loop-max-5-iterations` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#experiment-runner` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#1-caller-contract-inputs` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#2-output` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#3-loop-contract` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#4-consecutive-counter-rules` | directives under this heading | model-workaround | assumption: model persists on non-converging strategies; sunset: per model upgrade via eval |
-| `.claude/agents/experiment-runner.md#5-recommendation-surfaces` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#6-tsv-row-append-appenditerationrowslug-row` | directives under this heading | process-contract |  |
-| `.claude/agents/experiment-runner.md#7-example-invocation` | — | no-rules | |
-| `.claude/agents/experiment-runner.md#worked-example-endpoint-p95-profiling` | directives under this heading | process-contract |  |
 | `.claude/agents/feature-coordinator.md#invocation` | directives under this heading | process-contract |  |
 | `.claude/agents/feature-coordinator.md#context-loading-step-0` | directives under this heading | process-contract |  |
 | `.claude/agents/feature-coordinator.md#step-1-top-level-todowrite-list` | directives under this heading | process-contract |  |
@@ -354,6 +334,11 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/finalisation-coordinator.md#step-8c-g5-local-ci-parity-gate-mandatory-pre-label-pre-runner-rollout-only` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-9-current-focusmd-statusjson-mergeready-deferred-write` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-115-merge-gate-refusal-table-pre-merge-enforcement-of-record` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#destination-effects-and-write-authority-rule-1` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#recurrence-escalation-rule-2` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#overlay-coverage-check-rule-3` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#pending-mirror-drain-rule-4` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#worked-routing-fixture` | directives under this heading | process-contract |  |
 | `.claude/agents/hotfix.md#when-to-invoke` | directives under this heading | process-contract |  |
 | `.claude/agents/hotfix.md#execution` | — | no-rules | |
 | `.claude/agents/hotfix.md#step-1-todowrite-skeleton` | directives under this heading | model-workaround | assumption: attention/state reliability degrades over long contexts (skipped steps, batched completions); sunset: re-evaluate per model upgrade via the eval suite |
@@ -550,22 +535,8 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/triage-agent.md#context-loading` | directives under this heading | process-contract |  |
 | `.claude/agents/triage-agent.md#two-modes-of-operation` | — | no-rules | |
 | `.claude/agents/triage-agent.md#mode-1-capture` | directives under this heading | process-contract |  |
-| `.claude/agents/triage-agent.md#experiment-eligible-tag` | directives under this heading | process-contract |  |
 | `.claude/agents/triage-agent.md#mode-2-triage` | directives under this heading | process-contract |  |
 | `.claude/agents/triage-agent.md#rules` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#when-to-invoke` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-1-todowrite-skeleton` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-2-inventory` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-3-agent-referenced-files` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-3a-agent-canonical-rule-adr-0006` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-4-context-pack-anchors` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-5-adr-index-integrity` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-6-frameworkversion-matches-changelog` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-7-doc-sync-coverage` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-8-hooks-registered` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#step-9-findings-report` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#rules` | directives under this heading | process-contract |  |
-| `.claude/agents/validate-setup.md#project-specific-notes` | — | no-rules | |
 | `.claude/agents/brief-reviewer.md#when-invoked` | directives under this heading | process-contract |  |
 | `.claude/agents/brief-reviewer.md#configuration` | directives under this heading | model-workaround | MAX_ITERATIONS 5; assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md |
 | `.claude/agents/brief-reviewer.md#design-note-no-claude-tier-at-the-brief-stage-by-design-not-a-gap` | directives under this heading | process-contract |  |
@@ -806,6 +777,7 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/commands/cleanfiles.md#config-optional` | directives under this heading | process-contract |  |
 | `.claude/commands/cleanfiles.md#when-to-run` | directives under this heading | process-contract |  |
 | `.claude/commands/cleanfiles.md#report-format` | directives under this heading | process-contract |  |
+| `.claude/commands/cleanfiles.md#wire-the-clock` | directives under this heading | process-contract |  |
 | `.claude/commands/eval-prompts.md#eval-prompts` | directives under this heading | process-contract |  |
 | `.claude/commands/eval-prompts.md#what-to-do` | directives under this heading | process-contract |  |
 | `.claude/commands/eval-prompts.md#integration-contract` | directives under this heading | process-contract |  |
@@ -926,6 +898,7 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/hooks/knowledge-append-guard.js` | hook contract (event, block/advisory, fail-mode) | process-contract | append-only memory contract (fail-closed block on non-tail edits); F8 advisory dedup rides here fail-open (WS3) |
 | `.claude/hooks/long-doc-guard.js` | hook contract (event, block/advisory, fail-mode) | model-workaround | assumption: single-shot long-document quality degrades without chunking; sunset: re-evaluate per model upgrade via eval |
 | `.claude/hooks/memory-digest.js` | hook contract (event, block/advisory, fail-mode) | process-contract | session context bootstrap; byte/line-bounded; fail-open (F7 adds index-matched recall, WS3) |
+| `.claude/hooks/path-portability-guard.js` | hook contract (event, block/advisory, fail-mode) | durable-invariant | PreToolUse; blocks Write to Windows-invalid paths (invalid chars incl. colon, trailing dot/space, reserved device names) so one bad filename can't break `git pull` on Windows clones; fail-open on hook bugs; CI backstop `scripts/gates/verify-portable-paths.sh` |
 | `.claude/hooks/phase-lock.js` | hook contract (event, block/advisory, fail-mode) | process-contract | per-phase allowed-write-paths matrix; fail-open on internal errors |
 | `.claude/hooks/spec-creation-grill-nudge.js` | hook contract (event, block/advisory, fail-mode) | model-workaround | assumption: description-based skill/doc triggering is unreliable; sunset: re-evaluate when triggering proves reliable on the WS4 eval suite |
 | `.claude/hooks/wargame-nudge.js` | hook contract (event, block/advisory, fail-mode) | model-workaround | trigger-reliability patch (D6); sunset: re-evaluate when description-based skill triggering proves reliable on the WS4 eval suite |

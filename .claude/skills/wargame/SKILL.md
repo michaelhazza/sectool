@@ -1,6 +1,6 @@
 ---
 name: wargame
-description: Use when planning a risky operational mission that runs outside the build pipeline: an infrastructure or data migration, credential rotation, bulk edit/delete/rename, provider cutover, decommission, a deploy or publish with no undo, a repo restructure, or any multi-step plan a separate session or cheaper model will execute. Produces a persistent wargame artifact (a decision tree with expected observations, failure branches, counter-moves, and abort conditions) consumed by an executor. Also fires on "wargame", "war game", "battle plan", "pre-mortem this plan", "stress-test this plan", "what could go wrong", "failure modes", "make this executable by a cheaper model". NOT for feature builds inside the spec/plan/build pipeline (architect owns those plans) and NOT for hotfix or incident response (speed path).
+description: "Use when planning a risky operational mission outside the build pipeline: migrations, credential rotation, bulk edit/delete/rename, provider cutovers, decommissions, no-undo deploys, or any multi-step plan a separate session or cheaper model will execute. Produces a decision-tree artifact with failure branches and abort conditions. Triggers: 'wargame', 'pre-mortem this plan'. NOT for pipeline feature builds or hotfixes."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## wargame` section, read it: it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

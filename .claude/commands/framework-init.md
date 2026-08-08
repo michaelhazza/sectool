@@ -4,7 +4,7 @@ description: Bootstrap the claude-code-framework into a repo that does not yet m
 
 # /framework-init
 
-First-time adoption of `claude-code-framework` in a fresh consumer repo. Adds the submodule at `.claude-framework/`, gathers the profile choice and substitution values from the operator, seeds `.claude/.framework-state.json`, deploys via `sync.js --adopt`, health-checks with `validate-setup`, and lands the whole adoption in one commit. This is the fast path for the common case; `ADAPT.md` (in the framework repo root) remains the manual fallback for advanced adaptation — verification-command customisation, `architecture.md` anchor wiring (Phase 3b), CLAUDE.md integration, and the full phase-by-phase walkthrough.
+First-time adoption of `claude-code-framework` in a fresh consumer repo. Adds the submodule at `.claude-framework/`, gathers the profile choice and substitution values from the operator, seeds `.claude/.framework-state.json`, deploys via `sync.js --adopt`, health-checks with `/framework-doctor`, and lands the whole adoption in one commit. This is the fast path for the common case; `ADAPT.md` (in the framework repo root) remains the manual fallback for advanced adaptation — verification-command customisation, `architecture.md` anchor wiring (Phase 3b), CLAUDE.md integration, and the full phase-by-phase walkthrough.
 
 ## What to do
 
@@ -57,7 +57,7 @@ First-time adoption of `claude-code-framework` in a fresh consumer repo. Adds th
 
    Show the operator the per-file output. `--adopt` catalogues pre-existing matching files rather than conflicting on them; genuinely divergent pre-existing files still get `.framework-new` siblings — resolve those (suggest `/claudemerge`) before continuing.
 
-7. **Verify.** Run the `validate-setup` agent (read `.claude/agents/validate-setup.md` and execute it) for the framework health report: agent fleet integrity, hook wiring, cross-references, version consistency. Also grep for leftover placeholders: `grep -rE '\{\{(PROJECT_NAME|PROJECT_DESCRIPTION|STACK_DESCRIPTION|COMPANY_NAME)\}\}' .claude/ docs/ references/` — zero hits expected. Surface any findings; fix mechanical ones (missing `syncIgnore` entry, unsubstituted placeholder) before committing.
+7. **Verify.** Run the `/framework-doctor` command for the framework health report: inventory vs README claims, dangling cross-references, hook wiring, unmanaged files in managed directories, version drift. Also grep for leftover placeholders: `grep -rE '\{\{(PROJECT_NAME|PROJECT_DESCRIPTION|STACK_DESCRIPTION|COMPANY_NAME)\}\}' .claude/ docs/ references/` — zero hits expected. Surface any findings; fix mechanical ones (missing `syncIgnore` entry, unsubstituted placeholder) before committing.
 
 8. **PAUSE — pre-commit review.** Show the operator `git status` + a summary of what adoption added (submodule, state file, deployed file count per category). On approval, land it as a single commit:
 

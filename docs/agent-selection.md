@@ -40,7 +40,7 @@ The coordinators auto-invoke the right reviewers per task class — you only inv
 |----------|--------|
 | Repo sweep of accumulated working files | `/cleanfiles` |
 | Bump the framework submodule + sync + migrations | `/claudeupdate` |
-| Diagnose framework health / drift | `/framework-doctor` (deep) or `validate-setup` (read-only checks) |
+| Diagnose framework health / drift | `/framework-doctor` (read-only health report) |
 | Codebase audit (cleanup or production-readiness) | `audit-runner: hotspot <area>` — runs INLINE; default to Hotspot mode |
 | Fix all failing CI gates at the root | `/fix-ci-gate-debt` |
 

@@ -54,11 +54,11 @@ const CASES = [
     'allow',
   ],
 
-  // 4. plan phase, Edit, docs/superpowers/specs/foo.md → allow
+  // 4. plan phase, Edit, docs/superpowers/specs/foo.md → block (W2.7 froze superpowers spec writes)
   [
-    "plan phase, Edit, docs/superpowers/specs/foo.md, slug x → allow",
+    "plan phase, Edit, docs/superpowers/specs/foo.md, slug x → block (superpowers freeze)",
     { toolName: 'Edit', targetPath: 'docs/superpowers/specs/foo.md', currentPhase: 'plan', buildSlug: 'x' },
-    'allow',
+    'block',
   ],
 
   // 5. spec phase, Write, tasks/builds/x/plan.md → block (plan.md not allowed in spec phase)
@@ -117,11 +117,12 @@ const CASES = [
     'block',
   ],
 
-  // 13. Wildcard ** deep: spec phase, docs/superpowers/specs/nested/deep/foo.md → allow
+  // 13. Superpowers freeze (W2.7): spec phase, docs/superpowers/specs/nested/deep/foo.md → block
+  //     (new spec writes must live under tasks/builds/<slug>/; the ** deep-match itself is covered by case 14)
   [
-    "spec, Write, docs/superpowers/specs/nested/deep/foo.md → allow (** matches deep)",
+    "spec, Write, docs/superpowers/specs/nested/deep/foo.md → block (superpowers freeze)",
     { toolName: 'Write', targetPath: 'docs/superpowers/specs/nested/deep/foo.md', currentPhase: 'spec', buildSlug: 'x' },
-    'allow',
+    'block',
   ],
 
   // 14. Wildcard ** deeper: spec phase, prototypes/foo/bar/baz/index.html → allow
@@ -131,10 +132,10 @@ const CASES = [
     'allow',
   ],
 
-  // 15. Negative wildcard: plan phase, docs/superpowers/specs-other/foo.md → block
+  // 15. Negative wildcard: plan phase, prototypes-other/foo.md → block (prototypes/** must not match prototypes-other)
   [
-    "plan, Write, docs/superpowers/specs-other/foo.md → block (docs/superpowers/specs/** must not match specs-other)",
-    { toolName: 'Write', targetPath: 'docs/superpowers/specs-other/foo.md', currentPhase: 'plan', buildSlug: 'x' },
+    "plan, Write, prototypes-other/foo.md → block (prototypes/** must not match prototypes-other)",
+    { toolName: 'Write', targetPath: 'prototypes-other/foo.md', currentPhase: 'plan', buildSlug: 'x' },
     'block',
   ],
 

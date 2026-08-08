@@ -167,7 +167,7 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    - The resolution is **always** the framework version, verbatim. There is no keep-local option for these paths.
    - Any repo-specific delta found in them is **relocated**, not preserved in place: agents → the matching `## <agent-name>` section of `.claude/context/agent-context.md`; skills → `.claude/context/skill-context.md`. Both files are adopt-only (never overwritten by sync) and are read FIRST by every canonical agent/skill at runtime (ADR-0006), so the repo-specific behaviour still applies — without ever forking the canonical file.
    - Hooks and commands have no runtime overlay: a local delta there is proposed upstream (a framework-repo PR) or dropped; the consumer copy still ends byte-identical to canonical.
-   - `/claudemerge` § *Behavioural files* implements this relocation protocol; `validate-setup` flags any residual divergent agent file as a critical finding.
+   - `/claudemerge` § *Behavioural files* implements this relocation protocol; this command's own 6d2 behavioural-divergence guard flags any residual divergent agent file as a critical finding.
 
 8. **On migration failure (6b throws):**
    - `sync.js` has NOT run yet — the consumer's working tree only has the bumped submodule pointer.

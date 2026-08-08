@@ -1,0 +1,257 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "completion-packet.schema.json",
+  "title": "CompletionPacket",
+  "description": "Versioned return contract (FR-3) for any role reporting back to a coordinator, runtime-neutral. Contract version completion-packet.v1. Formalises the verdict block already produced informally by the Claude Code builder agent (.claude/agents/builder.md) — Verdict/Files changed/Spec sections/What was implemented/Plan gap/G1 attempts/Notes for caller/DID NOT TOUCH.",
+  "$comment": "status enum is exactly the builder verdict set (SUCCESS, PLAN_GAP, G1_FAILED) — no drift permitted; any new terminal a Builder can return requires a coordinated schema bump. commit_sha is nullable because a PLAN_GAP or G1_FAILED result, or a SUCCESS awaiting a coordinator-owned commit, has no commit yet.",
+  "definitions": {
+    "executionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "The execution policy in force during a run, normalized per references/execution-policy.md. Structurally the work packet's execution_policy PLUS allowed_files: the effective policy folds in the work packet's top-level allowed_files so the object is self-contained and evaluable without the original packet. Semantics are conjunctive — a path is writable iff it matches allowed_files (when present) AND write_scope (when present) AND no protected_paths entry.",
+      "$comment": "Every key except allowed_files is duplicated from work-packet.schema.json properties.execution_policy, because validate-packet.mjs compiles each packet schema standalone with no addSchema, so a cross-file $ref would fail to resolve, be swallowed by the compile try/catch, and silently degrade that packet to the structural floor. validate-packet.test.mjs asserts every shared key stays identical and that allowed_files is the only permitted divergence.",
+      "properties": {
+        "allowed_files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Folded copy of the work packet's top-level allowed_files, normalized. Conjunctive with write_scope."
+        },
+        "write_scope": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repo-relative glob patterns this dispatch may write. Conjunctive with allowed_files: a path must match BOTH when both are present. An empty array means nothing is writable."
+        },
+        "protected_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repo-relative glob patterns that must never be written, overriding allowed_files and write_scope."
+        },
+        "destructive_actions": {
+          "type": "string",
+          "enum": ["forbidden", "require_approval"]
+        },
+        "credential_access": {
+          "type": "string",
+          "enum": ["none", "read"]
+        },
+        "network_egress": {
+          "type": "string",
+          "enum": ["none", "allowlist"]
+        },
+        "egress_allowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Permitted egress hosts. Only meaningful with network_egress: allowlist."
+        },
+        "deploy_authority": {
+          "const": false,
+          "description": "The only expressible value is false. A policy can withhold deploy authority but can never confer it; deployment stays operator-owned."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Instant after which this policy must not be honoured. Expiry is evaluated at dispatch time by the coordinator, not by this schema."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "network_egress": { "const": "allowlist" } },
+            "required": ["network_egress"]
+          },
+          "then": {
+            "required": ["egress_allowlist"],
+            "properties": { "egress_allowlist": { "minItems": 1 } }
+          }
+        },
+        {
+          "if": { "required": ["egress_allowlist"] },
+          "then": {
+            "required": ["network_egress"],
+            "properties": { "network_egress": { "const": "allowlist" } }
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "contract_version",
+    "packet_id",
+    "status",
+    "role",
+    "runtime",
+    "summary"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "completion-packet.v1"
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echoes the packet_id of the work-packet.v1 this result answers."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "PLAN_GAP", "G1_FAILED"]
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runtime": {
+      "type": "string",
+      "minLength": 1
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "spec_sections": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise operator-facing summary of what was done."
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "result"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result": {
+            "type": "string",
+            "enum": ["pass", "fail", "skip"]
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unresolved_risks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "commit_sha": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "produced_artefacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes_for_caller": {
+      "type": "string"
+    },
+    "did_not_touch": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "effective_policy": {
+      "$ref": "#/definitions/executionPolicy",
+      "description": "The policy actually in force during this run. Echoed so a coordinator can detect divergence between what was dispatched and what the executing runtime believed it was bound by."
+    },
+    "effective_policy_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Lowercase SHA-256 over the canonical serialization of the normalized policy DECLARATIONS (never a resolved file set), computed by normalizeExecutionPolicy in scripts/packet-contract/execution-policyPure.mjs. Declaration-level so a coordinator can recompute it from the work packet alone."
+    },
+    "policy_evaluation": {
+      "type": "string",
+      "enum": ["passed", "violated", "not_evaluated"],
+      "description": "Whether policy compliance was actually assessed. Distinguishes 'checked, clean' from 'never checked' — an empty policy_violations array cannot. Absence must be read as not_evaluated."
+    },
+    "policy_violations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Policy violations observed during the run. Only meaningful when policy_evaluation is violated."
+    },
+    "documentation_impact": {
+      "type": "string",
+      "enum": ["none", "reference", "how_to", "tutorial", "explanation", "multiple"],
+      "description": "Diataxis class of documentation this change affects. Advisory: no gate consumes it yet. Absence means the producer did not classify, which is NOT the same as none."
+    },
+    "changed_docs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Documentation files this change touched. Must be a subset of changed_files."
+    },
+    "doc_exemption_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why no documentation changed despite code changing. Required by producer convention when documentation_impact is none and changed_files contains non-doc code; see .claude/agents/builder.md."
+    },
+    "release_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Post-completion evidence linking this packet to what was deployed and observed. No tested-commit field: the top-level commit_sha already carries it.",
+      "$comment": "A SUCCESS completion MAY carry canary_result: fail. Canaries run after the work completes, so attaching the observation must not force a status rewrite; the consuming release gate decides what a failed canary means.",
+      "properties": {
+        "release_control_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canary_result": {
+          "type": "string",
+          "enum": ["pass", "fail", "not_run"]
+        },
+        "evidence_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "canary_result": { "enum": ["pass", "fail"] } },
+            "required": ["canary_result"]
+          },
+          "then": {
+            "required": ["evidence_paths"],
+            "properties": { "evidence_paths": { "minItems": 1 } }
+          }
+        }
+      ]
+    }
+  }
+}

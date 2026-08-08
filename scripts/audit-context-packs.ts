@@ -45,16 +45,28 @@ export interface PackUnmappedToken {
   line: number;
 }
 
+// A pack fully substituted (no unmapped tokens) but still carrying the
+// `Status: template` line or the adoption placeholder note. sync.js's
+// finaliseContextPack should have stripped these once every anchor resolved, so
+// their presence means the pack was written by a pre-fix sync.js (or hand-edited)
+// and is advertising itself as an unmapped template while reading clean.
+export interface PackTemplateResidue {
+  pack: string;
+  line: number;
+  marker: string;
+}
+
 export interface AuditContextPacksInput {
   packs: Array<{ path: string; content: string }>;
   architectureMarkdown: string;
 }
 
-// `unmapped` is present only when non-empty, so callers comparing against the
-// historical `{ kind: 'ok' }` / `{ kind: 'fail', missing }` shapes keep working.
+// `unmapped`/`templateResidue` are present only when non-empty, so callers
+// comparing against the historical `{ kind: 'ok' }` / `{ kind: 'fail', missing }`
+// shapes keep working.
 export type AuditContextPacksResult =
-  | { kind: 'ok'; unmapped?: PackUnmappedToken[] }
-  | { kind: 'fail'; missing: PackAnchorMiss[]; unmapped?: PackUnmappedToken[] };
+  | { kind: 'ok'; unmapped?: PackUnmappedToken[]; templateResidue?: PackTemplateResidue[] }
+  | { kind: 'fail'; missing: PackAnchorMiss[]; unmapped?: PackUnmappedToken[]; templateResidue?: PackTemplateResidue[] };
 
 // ---------------------------------------------------------------------------
 // GFM heading slug algorithm
@@ -298,6 +310,26 @@ function extractUnmappedTokens(content: string): Array<{ purpose: string; line: 
   return tokens;
 }
 
+/**
+ * Extract residual template markers — the singular non-blockquote
+ * `Status: template` line and the `> **Anchor placeholders:**` note — from a
+ * pack. Only meaningful for a pack with zero unmapped tokens (the caller gates
+ * on that), where the markers should have been stripped by sync.js's
+ * finaliseContextPack. Code blocks are skipped so README's example prose and the
+ * blockquoted `> **Status: templates ...` header never register.
+ */
+function extractTemplateResidue(content: string): Array<{ line: number; marker: string }> {
+  const out: Array<{ line: number; marker: string }> = [];
+  const lines = content.split('\n');
+  const masked = buildCodeBlockMask(lines);
+  for (let i = 0; i < lines.length; i++) {
+    if (masked[i]) continue;
+    if (/^Status:\s*template\b/.test(lines[i])) out.push({ line: i + 1, marker: 'Status: template' });
+    else if (/^>\s*\*\*Anchor placeholders:\*\*/.test(lines[i])) out.push({ line: i + 1, marker: 'Anchor placeholders note' });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Explicit declared anchors — for --list-anchors (mapping helper)
 // ---------------------------------------------------------------------------
@@ -335,6 +367,7 @@ export function auditContextPacks(input: AuditContextPacksInput): AuditContextPa
   const declared = extractDeclaredAnchors(input.architectureMarkdown);
   const missing: PackAnchorMiss[] = [];
   const unmapped: PackUnmappedToken[] = [];
+  const templateResidue: PackTemplateResidue[] = [];
 
   for (const pack of input.packs) {
     const refs = extractPackAnchors(pack.content);
@@ -343,15 +376,27 @@ export function auditContextPacks(input: AuditContextPacksInput): AuditContextPa
         missing.push({ pack: pack.path, anchor: ref.anchor, line: ref.line });
       }
     }
-    for (const token of extractUnmappedTokens(pack.content)) {
+    const packUnmapped = extractUnmappedTokens(pack.content);
+    for (const token of packUnmapped) {
       unmapped.push({ pack: pack.path, purpose: token.purpose, line: token.line });
+    }
+    // Residue only makes sense once a pack is fully substituted: a pack with
+    // tokens still present is a legitimately-unadopted template.
+    if (packUnmapped.length === 0) {
+      for (const r of extractTemplateResidue(pack.content)) {
+        templateResidue.push({ pack: pack.path, line: r.line, marker: r.marker });
+      }
     }
   }
 
+  const extra: { unmapped?: PackUnmappedToken[]; templateResidue?: PackTemplateResidue[] } = {};
+  if (unmapped.length > 0) extra.unmapped = unmapped;
+  if (templateResidue.length > 0) extra.templateResidue = templateResidue;
+
   if (missing.length === 0) {
-    return unmapped.length === 0 ? { kind: 'ok' } : { kind: 'ok', unmapped };
+    return { kind: 'ok', ...extra };
   }
-  return unmapped.length === 0 ? { kind: 'fail', missing } : { kind: 'fail', missing, unmapped };
+  return { kind: 'fail', missing, ...extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +457,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
       const result = auditContextPacks({ packs, architectureMarkdown });
       const unmapped = result.unmapped ?? [];
+      const templateResidue = result.templateResidue ?? [];
+
+      // Template residue: a fully-substituted pack still advertising itself as a
+      // template. Advisory by default (the consumer gate reads the token, not the
+      // Status line), promoted to a hard failure under --strict-unmapped.
+      for (const r of templateResidue) {
+        process.stdout.write(`RESIDUE ${r.pack}:${r.line} ${r.marker}\n`);
+      }
+      if (templateResidue.length > 0) {
+        process.stdout.write(
+          `NOTE: ${templateResidue.length} pack(s) fully substituted but still carrying a template marker — ` +
+            `sync.js finaliseContextPack should have stripped it. Re-run \`node .claude-framework/sync.js\` ` +
+            `to rewrite the pack(s), or remove the stale marker by hand.\n`
+        );
+      }
 
       // Unmapped placeholder tokens: always reported, advisory by default.
       // They mean "packs installed but not adopted" — every pack consumer
@@ -432,13 +492,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
 
       if (result.kind === 'ok') {
-        if (unmapped.length > 0 && STRICT_UNMAPPED) {
+        if ((unmapped.length > 0 || templateResidue.length > 0) && STRICT_UNMAPPED) {
           process.exit(1);
         }
+        const advisories = [
+          unmapped.length > 0 ? `${unmapped.length} unmapped placeholder(s)` : '',
+          templateResidue.length > 0 ? `${templateResidue.length} template residue marker(s)` : '',
+        ].filter(Boolean);
         process.stdout.write(
-          unmapped.length === 0
+          advisories.length === 0
             ? 'OK\n'
-            : `OK — no broken anchor references (adoption incomplete: ${unmapped.length} unmapped placeholder(s))\n`
+            : `OK — no broken anchor references (advisory: ${advisories.join(', ')})\n`
         );
         process.exit(0);
       } else {

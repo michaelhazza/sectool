@@ -38,6 +38,8 @@ This is the fleet-wide analogue of a `CLAUDE.md`: one file the whole agent fleet
 - **Neutral:**
   - The framework's existing top-level `context/` directory (reviewer `PROJECT_CONTEXT` injection) is a DISTINCT concept from `.claude/context/agent-context.md` (fleet-wide agent operating notes). They cross-reference but do not merge.
 
+**Amended v2.67.0:** every agent reads the preamble (binding for all) plus only its own `##` section; agents without a section stop after the preamble — measured ~27KB waste per dispatch at one consumer. The whole-file read described in the Decision/Mechanism above is superseded by this bounded sectioned read (Grep `^## ` for boundaries, read the preamble, then only the matching section).
+
 ## Alternatives considered
 
 - **Keep inline `LOCAL-OVERRIDE` for agents.** Rejected — concentrates repo content in framework-canonical files, scatters customisation across 14+ files, and forces a `.framework-new` merge on out-of-marker drift.

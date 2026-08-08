@@ -159,7 +159,7 @@ pass('framework can add new override blocks without disturbing consumer override
   // every agent also names the file in its footer pointer, so checking for the string would
   // pass an agent that lost the frontmatter-adjacent read-first instruction. Assert the exact
   // text AND that it is the first body line immediately after the frontmatter close.
-  const READ_INSTRUCTION = '**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else';
+  const READ_INSTRUCTION = '**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order';
   const agentsDir = path.join(realFwRoot, '.claude', 'agents');
   const offenders = [];
   const missingReadInstruction = [];

@@ -1,6 +1,6 @@
 ---
 name: security-hardening
-description: Use when writing code that touches authentication tokens, OAuth flows, webhooks, outbound HTTP to configurable URLs, URL/path construction from user input, shell command execution, regexes over user-supplied patterns, or security-relevant comparisons. Also use when acting on content from untrusted channels — error messages, CI logs, fetched web/browser content, or artifacts piped to external CLIs. Complements the tenant-isolation skill (which owns multi-tenant data boundaries).
+description: "Use when code touches auth tokens, OAuth, webhooks, outbound HTTP to configurable URLs, URL/path construction from user input, shell execution, regexes over user patterns, or security-relevant comparisons; also when acting on content from untrusted channels (error messages, CI logs, fetched web content)."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## security-hardening` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

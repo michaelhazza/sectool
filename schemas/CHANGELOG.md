@@ -1,5 +1,95 @@
 # Schema CHANGELOG
 
+## review-result.v2 — additive finding evidence fields (2026-08-03, framework 2.63.0)
+
+**`review-finding.schema.json` — new OPTIONAL `confidence`, `evidence_kind` and `verification_state` properties. `contract_version` unchanged at `review-result.v2`; no changes to existing enums; nothing to migrate.**
+
+Every finding already carried `source_refs` (where the reviewer looked) and `risk_domain` (what it touches), but nothing recorded how strongly the reviewer believed it or what kind of observation backed it. A triage loop cannot mechanically separate "read the file, this is broken" from "inferred from a diff hunk, might be broken" without that. `verification_state` deliberately reuses the `verified | inferred | assumed` vocabulary of the fable-mode reasoning overlay so reviewer output and reasoning discipline share one word set; `evidence_kind: reasoning_only` names the class most prone to hallucinated premises.
+
+**Why additive rather than a version bump:** identical reasoning to the `build-status.v2` entries below — a required field or a `contract_version` bump invalidates every stored review result in every consuming repo the moment the schema syncs, before any reviewer has emitted the new shape. All three fields are optional, and absence means "not rated", never a default of high confidence.
+
+**Consumers must:** nothing. Reviewers may start emitting the fields at any time; coordinators that do not read them are unaffected.
+
+## review-result.v2 — additive review lens (2026-08-03, framework 2.63.0)
+
+**`review-finding.schema.json` — new OPTIONAL `lens` property (`product_value | engineering_feasibility | design_quality | developer_experience`). `contract_version` unchanged at `review-result.v2`; nothing to migrate.**
+
+A reviewer with finite attention converges on whichever failure class is easiest to see — usually engineering feasibility, because it is the most concrete. Value, design and operability failures then reach the operator unexamined. Naming the four perspectives makes an unreviewed one visible as an omission rather than invisible as a non-finding. Definitions and reporting rules: `references/review-lenses.md`.
+
+**Coverage is mandatory; tagging is not.** Plan reviewers sweep all four lenses and state which reviewed clean; a finding carries `lens` only when ONE lens clearly dominates. The field stays optional precisely so cross-cutting findings can omit it — a miscategorised finding is worse than an unclassified one.
+
+Wired into all three plan-review tiers: `claude-plan-review` and `plan-reviewer` (lens sweep + a five-line decision brief in their prose logs — NOT a JSON field, the envelope stays closed), and `chatgpt-plan-review` via `SYSTEM_PROMPT_PLAN_V2`. Manual ChatGPT-web mode carries the lenses in the paste-ready prompt, since it does not get the system prompt.
+
+**`prompt_version` deliberately stays `openai-plan-review.v2`.** In this repo that identifier names the prompt TIER (v1 legacy shape vs v2 canonical envelope, selected by `--prompt-version`), not each content revision; the v2 prompts have been revised in place before, e.g. the 2026-05-28 move of artefact content out of the system prompt. Adding a v3 tier would mean a new `getSystemPrompt` branch for a content change that alters no output shape.
+
+**Consumers must:** nothing. `lens` is never a routing input — triage stays keyed on `risk_domain` and `triage_hint`.
+
+## work-packet.v1 / completion-packet.v1 — additive execution policy (2026-08-03, framework 2.63.0)
+
+**`work-packet.schema.json` — new OPTIONAL `execution_policy` object. `completion-packet.schema.json` — new OPTIONAL `effective_policy` (via `definitions.executionPolicy`), `effective_policy_hash`, `policy_evaluation` and `policy_violations`. Both `contract_version` values unchanged; nothing to migrate.**
+
+`execution_policy` is capability-REMOVING dispatch metadata: `write_scope`, `protected_paths`, `destructive_actions`, `credential_access`, `network_egress` + `egress_allowlist`, `deploy_authority` (a `const false` — a policy can withhold deploy authority, never confer it) and `expires_at`. Normative semantics live in `references/execution-policy.md`; the computation lives in `scripts/packet-contract/execution-policyPure.mjs`.
+
+**Three decisions worth recording:**
+
+1. **Composition is a conjunction, not a merge.** A path is writable iff it matches `allowed_files` (when present) AND `write_scope` (when present) AND no `protected_paths` entry. Glob intersection is not computable over pattern strings — intersecting `server/**` with `**/*.test.ts` means "test files under server/", which no string operation on the two patterns yields — so both lists are carried and the conjunction is evaluated per path.
+2. **The hash covers normalized declarations, not a resolved file set.** A coordinator must be able to recompute it from the work packet alone to detect mutation between dispatch and return, and a resolved set cannot express authority over files that do not exist yet — which is most of what a builder writes.
+3. **The policy shape is duplicated** between the two schema files rather than `$ref`'d across them. `validate-packet.mjs` compiles each packet schema standalone with no `addSchema`, so a cross-file `$ref` would fail to resolve, be swallowed by the compile `try/catch`, and silently degrade that packet to the structural floor. `validate-packet.test.mjs` asserts every shared key stays identical and that `allowed_files` — folded into the echo so it is self-contained — is the only permitted divergence.
+
+**Validator change:** `validatePacket` now returns `{ok, errors, warnings}` (previously `{ok, errors}`) and runs `validatePacketSemantics` after the structural check in BOTH modes. The structural floor reads only top-level `required`/`enum`/`const`, so every nested policy invariant would otherwise be enforced with Ajv and silently ignored without it — a constraint that holds only where a devDependency happens to be installed is not a constraint. Deleting the semantic call fails 23 tests across both modes.
+
+Three fallback-mode gaps closed in review, each one a case where the same packet's verdict depended on whether Ajv was installed:
+
+1. **Closed key sets.** `additionalProperties: false` lives in the schema, which the floor never reads, so an undeclared key inside `execution_policy`, `effective_policy` or `release_evidence` passed without Ajv. That is the authority-shaped hole the layer exists to close — a future consumer could read an undeclared field as a capability grant while the validator reported the packet valid. `POLICY_KEYS` and `RELEASE_EVIDENCE_KEYS` now close the sets, and a test asserts they match the schemas' `properties` so a new schema key cannot land unvalidated.
+2. **Strict RFC 3339 for `expires_at`.** `Date.parse` accepts a date-only `2026-01-01`, a timezone-less `2026-08-03T12:00:00`, and silently rolls `2026-02-31` into March; `ajv-formats` rejects all three. `isRfc3339DateTime` replaces it, and a parity test checks it against the real Ajv format across 16 vectors rather than a remembered rule.
+3. **`policy_evaluation: violated` with `policy_violations` absent.** Previously only the explicitly-empty array was rejected, so omitting the field entirely let a packet claim a violation while listing none.
+
+A second round found the same class again in adjacent fields — array CONTENTS are invisible to the floor, so `policy_violations: [42]`, `evidence_paths: [""]`, duplicate `changed_docs`, an empty `release_control_id` or `doc_exemption_reason`, and duplicate `egress_allowlist` hosts all passed without Ajv. Shared `nonEmptyStringArrayErrors` / `nonEmptyStringErrors` helpers now mirror those constraints.
+
+**The durable fix is the guard, not the patch.** `SEMANTICALLY_COVERED_PATHS` declares which schema paths this layer re-implements, and a test walks both schemas, collects every value-level constraint (`items.minLength`, `uniqueItems`, `minLength`, `pattern`, `format`), and fails if one is neither covered nor listed in `FLOOR_UNCOVERED_LEGACY_PATHS`. Verified by adding a constrained property to a schema: the suite fails naming the exact path and the fix. Two review rounds each found a different unmirrored constraint by hand; a third occurrence now fails the build instead.
+
+`FLOOR_UNCOVERED_LEGACY_PATHS` inventories 26 PRE-EXISTING fields (`objective`, `changed_files`, `summary`, `allowed_files`, …) whose value constraints the floor has never enforced. Deliberately unchanged here: closing them alters validation of contracts consumers already emit, which belongs in its own change with its own migration note. They are now inventoried rather than merely unnoticed.
+
+**Scope boundary:** this ships declarations only. Recompute-and-compare of the hash, `expires_at` evaluation at dispatch, matching patterns against a real checkout, symlink handling, and cross-field reconciliation against `allowed_resources` belong to the later enforcement build. A packet carrying `execution_policy` grants nothing and blocks nothing on its own.
+
+**Why additive:** same reasoning as every entry below. All new fields are optional; a frozen pre-2.63.0 work packet and completion packet are asserted still-valid in the suite.
+
+**Consumers must:** nothing. Callers reading `.errors` are unaffected by the added `.warnings` key.
+
+## completion-packet.v1 — additive documentation impact and release evidence (2026-08-03, framework 2.63.0)
+
+**`completion-packet.schema.json` — new OPTIONAL `documentation_impact`, `changed_docs`, `doc_exemption_reason` and `release_evidence`. `contract_version` unchanged at `completion-packet.v1`; nothing to migrate.**
+
+`documentation_impact` is a Diataxis classification (`none | reference | how_to | tutorial | explanation | multiple`) declared by the producer at completion time, with `changed_docs` naming the files and `doc_exemption_reason` explaining a `none` alongside changed code. This makes the existing doc-sync judgement inspectable rather than implicit. The producer-side convention — how to classify, what counts as documentation, when the exemption is required — lives in `.claude/agents/builder.md` § *Documentation impact*, because a field with no instructed producer is a field nobody fills in.
+
+Enforcement split, deliberately: `changed_docs ⊄ changed_files` and a non-`none` impact with no documents listed are ERRORS (factual contradictions inside one packet), while a missing exemption reason is a WARNING. Documentation judgement is not mechanically decidable, and failing there would make an optional field mandatory for every code change.
+
+`release_evidence` (`release_control_id`, `canary_result`, `evidence_paths`) links a packet to what was deployed and observed. It carries no tested-commit field because the top-level `commit_sha` already does. A `pass`/`fail` canary must point at its evidence; `not_run` need not. A `SUCCESS` completion MAY carry `canary_result: fail` — canaries run after the work completes, so attaching the observation must not force a status rewrite, and the consuming release gate decides what a failed canary means.
+
+**Why additive:** as below. Both objects are optional and `minProperties: 1`, so an empty stub cannot masquerade as a filled-in one.
+
+**Consumers must:** nothing. Both are advisory in this contract; no gate reads them yet.
+
+## build-status.v2 — additive runtime-identity fields (2026-08-02, framework 2.62.0)
+
+**`build-status.schema.json` — new OPTIONAL top-level `runtime` object and new OPTIONAL `runtime`/`role` string keys on `log[]` items. `contract_version` unchanged at `build-status.v2`; no enum changes; nothing to migrate.**
+
+Part of the runtime-neutral pilot (`framework-runtime-neutral-v3`, spec §12.A Chunk A3, FR-1/FR-4/FR-13). The top-level `runtime: {coordinator_runtime, coordinator_role}` records the build-level coordinating runtime. The `log[]` item's `runtime` + `role` string keys are the per-stage/per-commit stamp (FR-13): each activity entry records the acting runtime and role at that transition. See `references/runtime-roles.md` for the role-to-runtime vocabulary and the stamping rule.
+
+**Why additive rather than v3:** same reasoning as the `log[]` addition below — a required field or a `contract_version` bump would invalidate every existing `status.json` in every consuming repo the moment the schema synced. Optional-and-additive means pre-2.62.0 records stay valid forever.
+
+**Consumers must:** nothing. Both `runtime` objects are `additionalProperties: false`, so the new keys had to be declared in their respective `properties` — done here. The structural floor in `status-contract.mjs` derives its checks from the schema, so the new fields validate automatically on sync.
+
+## work-packet.v1 / completion-packet.v1 — new schemas (2026-08-02, framework 2.62.0)
+
+**New files: `schemas/work-packet.schema.json` and `schemas/completion-packet.schema.json`. Both draft-07, `additionalProperties: false`, versioned via a `contract_version` const. Part of the runtime-neutral pilot (`framework-runtime-neutral-v3`, spec §12.A Chunk A1, FR-2/FR-3).**
+
+These formalise, as machine-checkable contracts, dispatch/return shapes that already exist informally today: `work-packet.schema.json` (`contract_version: "work-packet.v1"`) mirrors the fields already carried in Claude Code agent dispatch prompts (objective, governing artefacts, allowed files/resources, dependencies, verification commands, output locations, prohibited actions, resume id), plus additive `role` and `runtime` fields for runtime-neutral dispatch. `completion-packet.schema.json` (`contract_version: "completion-packet.v1"`) mirrors the builder verdict block in `.claude/agents/builder.md` (Verdict / Files changed / Spec sections / What was implemented / Plan gap / G1 attempts / Notes for caller / DID NOT TOUCH); its `status` enum (`SUCCESS`, `PLAN_GAP`, `G1_FAILED`) is exactly the builder verdict set, no drift permitted.
+
+**Required set kept minimal** on both schemas so existing Claude Code dispatches map cleanly without every field being mandatory: work-packet requires `contract_version, packet_id, feature_slug, repo, branch, objective, role, runtime`; completion-packet requires `contract_version, packet_id, status, role, runtime, summary`. All other fields (arrays of strings, plus `tests[]` as `{name, result}` objects with `result` enum `pass`/`fail`/`skip`) are optional and additive.
+
+**Consumers must:** nothing yet — these schemas are declarative contracts with no wired validator in this chunk. `scripts/packet-contract/validate-packet.mjs` (framework-runtime-neutral-v3 Chunk A2) adds the round-trip harness and fixtures that exercise them against Ajv.
+
 ## build-status.v2 — additive `log[]` activity log (2026-07-30, framework 2.61.0)
 
 **`build-status.schema.json` — new OPTIONAL top-level `log[]` array. `contract_version` unchanged at `build-status.v2`; no enum changes; nothing to migrate.**

@@ -1,6 +1,6 @@
 ---
 name: frontend-correctness
-description: Use when writing or modifying React component logic — state lifecycle (modals, drawers, forms, hooks), async races (fetches, polling, SSE/WebSocket consumers), permission gating, client API adapters, or data-handling bugs. Engineering correctness, not visual design. Sibling: invoke frontend-design-check alongside when the change alters what the user sees — layout, copy, controls, or a new UI surface.
+description: "Use when writing or modifying React component logic: state lifecycle (modals, forms, hooks), async races (fetches, polling, SSE), permission gating, client API adapters, or data-handling bugs. Engineering correctness, not visual design; pair with frontend-design-check when the change alters what the user sees."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## frontend-correctness` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

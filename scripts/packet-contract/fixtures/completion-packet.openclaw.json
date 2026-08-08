@@ -1,0 +1,14 @@
+{
+  "contract_version": "completion-packet.v1",
+  "packet_id": "cp-a2-fixture-0001",
+  "status": "SUCCESS",
+  "role": "builder",
+  "runtime": "openclaw",
+  "changed_files": [
+    "src/example-feature/openclaw-built-module.mjs"
+  ],
+  "spec_sections": ["12.A", "13-1"],
+  "summary": "Implemented the packet validation harness and round-trip fixtures.",
+  "commit_sha": "f9e8d7c6b5a4039281706f5e4d3c2b1a09876543",
+  "notes_for_caller": "none"
+}

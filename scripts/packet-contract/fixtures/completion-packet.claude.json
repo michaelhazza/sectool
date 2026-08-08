@@ -1,0 +1,14 @@
+{
+  "contract_version": "completion-packet.v1",
+  "packet_id": "cp-a2-fixture-0001",
+  "status": "SUCCESS",
+  "role": "builder",
+  "runtime": "claude-code",
+  "changed_files": [
+    "scripts/packet-contract/validate-packet.mjs"
+  ],
+  "spec_sections": ["12.A", "13-1"],
+  "summary": "Implemented the packet validation harness and round-trip fixtures.",
+  "commit_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "notes_for_caller": "none"
+}

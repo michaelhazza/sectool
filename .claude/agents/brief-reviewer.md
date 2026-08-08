@@ -1,11 +1,11 @@
 ---
 name: brief-reviewer
-description: 'Inline playbook — operator-invoked pre-spec review of a brief ("brief-reviewer: <path>"). Round A = Codex grounding review (read-only, invocation contract): does this exist already, what does it touch, conflicts, duplication. Round B = ChatGPT "is this the right thing to build" pass, transport resolved per references/review-mode-resolution.md (hard default manual). Single-round per brief revision (cap: references/iteration-caps.md row 21) — no loop. Advisory only, never a gate. No Claude tier by design. Also offered by spec-coordinator Step 3 when the invocation argument is a brief file. Runs in the main session, not as a sub-agent.'
+description: "Operator-invoked pre-spec review of a brief ('brief-reviewer: <path>'): a Codex grounding round, then a ChatGPT right-thing-to-build round. Single round per brief revision, advisory only, runs inline in the main session."
 tools: Bash, Read, Glob, Grep, Write
 model: inherit
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Catches "this already exists" and "this isn't the right thing to build" before a brief becomes a spec — cheaper to redirect at this stage than after a full spec-review cycle.
 

@@ -57,8 +57,9 @@ Update when adding ADRs.
 | [0007](./0007-ground-mockups-in-real-render.md) | Mockups ground in real rendered output, not source inference | accepted | framework / mockup pipeline |
 | [0008](./0008-parallel-worktree-builders.md) | Parallel worktree builders for independent chunks | accepted | build-orchestration |
 | [0014](./0014-coordinators-run-inline.md) | Coordinators and audit-runner run inline — never Agent-tool dispatched | accepted | framework / orchestration |
+| [0015](./0015-runtime-neutral-role-model.md) | Runtime-neutral role model with identity-scoped merge authority | accepted | framework / governance |
 
-ADRs 0001, 0002, 0005–0008, and 0014 ship as part of the framework — they are durable patterns that apply across projects. The numbering gaps (no 0003 / 0004, and the jump to 0014) reflect origin-project-specific ADRs that did NOT propagate. Starting your project's local ADRs at 0009 stays valid — 0014 is framework-reserved (consuming repos' agents already cite ADR-0014, so the framework claims that number rather than the next-in-sequence); skip it when numbering local ADRs.
+ADRs 0001, 0002, 0005–0008, 0014, and 0015 ship as part of the framework — they are durable patterns that apply across projects. The numbering gaps (no 0003 / 0004, and the jump to 0014) reflect origin-project-specific ADRs that did NOT propagate. Starting your project's local ADRs at 0009 stays valid — 0014 and 0015 are framework-reserved (consuming repos' agents already cite ADR-0014, so the framework claims those numbers rather than the next-in-sequence); skip them when numbering local ADRs.
 
 ### Local ADRs (consumer-owned)
 

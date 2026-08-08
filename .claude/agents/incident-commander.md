@@ -5,7 +5,7 @@ tools: Read, Glob, Grep, Bash, Edit, Write, TodoWrite
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Protects shipped quality (the floor under the goal) when production breaks: coordinates the response so the operator makes decisions, not logistics.
 

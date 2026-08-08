@@ -1,6 +1,6 @@
 ---
 name: wire-it-through
-description: Use whenever adding a new capability (table, service, route, job, event, component, field, enum value) to verify it is wired end-to-end before calling it done, and when adding fields that cross serialization or client-server boundaries. The single most common build failure across all review history is a component that exists, compiles, and is tested — but is never called.
+description: "Use whenever adding a new capability (table, service, route, job, event, component, field, enum value) to verify it is wired end-to-end before calling it done, and when adding fields that cross serialization or client-server boundaries."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## wire-it-through` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

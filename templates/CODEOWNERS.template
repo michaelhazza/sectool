@@ -1,0 +1,20 @@
+# CODEOWNERS — assigns every path to the repository operator
+#
+# Purpose (spec framework-runtime-neutral-v3 §9 "Required default-branch
+# rules"): combined with the default-branch ruleset
+# (templates/default-branch-ruleset.json) and its "require review from Code
+# Owners" rule, this file ensures only the operator's own approval satisfies
+# a pull request's approval requirement. An approval from any agent identity
+# (the OpenClaw builder identity, a Claude session, or any other non-operator
+# account) never counts, no matter who authored the PR.
+#
+# This file MUST live on the repository's default branch — GitHub only
+# honours CODEOWNERS from the default branch's HEAD, not from a feature
+# branch or PR.
+#
+# Replace {{OPERATOR_GITHUB_HANDLE}} below with the operator's GitHub
+# username before installing. Example: @michaelhazza
+#
+# See docs/openclaw-pilot-adoption.md for the full installation walkthrough.
+
+* @{{OPERATOR_GITHUB_HANDLE}}

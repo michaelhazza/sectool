@@ -1,11 +1,11 @@
 ---
 name: verify-phase
-description: Codex-owned test-authoring and full-suite verification playbook — stage-6 gate. Codex designs a test plan (Design), authors tests via a write-enabled invocation bounded by the consuming repo's declared testing posture (Author), the full CI suite runs locally as full-suite gating checkpoint #1 (Run), failures are fixed in a capped 5-iteration loop split by cause — Codex fixes its own tests, Claude fixes production code (Fix loop) — and results upload to release-control (Report). Invoked by `finalisation-coordinator` at Phase 3 entry (after S2 sync + G4, before `chatgpt-pr-review`); also operator-invocable as `verify-phase: <slug>`. An incomplete verify phase (Codex death, cap hit) BLOCKS the merge exactly like a failed suite. Caller provides the build slug.
+description: "Codex-owned test-authoring and full-suite verification gate (stage 6): Codex designs and authors tests, the full suite runs locally, failures fix in a capped loop. Invoked by finalisation-coordinator at Phase 3 entry or as 'verify-phase: <slug>'; incomplete blocks the merge."
 tools: Bash, Read, Glob, Grep, Edit, Write
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Ships the build's own test coverage before it merges, using an independent tester (Codex) that never edits the production code it is testing — and gates the merge on a genuine suite verdict rather than an assertion that testing "was done."
 

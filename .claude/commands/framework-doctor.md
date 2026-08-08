@@ -1,5 +1,5 @@
 ---
-description: Read-only framework health report — inventory vs README claims, dangling cross-references, unmanaged files in managed directories, orphaned .framework-new, consumer version drift. Zero writes
+description: "Read-only framework health report: inventory vs README claims, dangling cross-refs, unmanaged files in managed dirs, orphaned .framework-new, version drift. Zero writes."
 ---
 
 # /framework-doctor

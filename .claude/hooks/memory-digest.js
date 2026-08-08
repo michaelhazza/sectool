@@ -59,12 +59,19 @@ const LESSONS_MAX_BYTES = 262_144; // 256KB head — small in practice; cap remo
 const FOCUS_MAX_LINES = 40;
 const LESSONS_MAX_ENTRIES = 5;
 const LESSONS_MAX_LINES = 40;
-const KNOWLEDGE_MAX_ENTRIES = 6;
+const KNOWLEDGE_MAX_ENTRIES = 3;
 const KNOWLEDGE_MAX_LINES = 55;
+const KNOWLEDGE_ENTRY_MAX_LINES = 12; // body lines per recent entry (heading excluded), mirrors MATCHED_ENTRY_MAX_LINES
+// A KNOWLEDGE entry heading is `### [` (dated, canonical since 2026) or a
+// legacy `## ` entry — the SAME census predicate verify-doc-size.mjs uses to
+// count live entries. Deliberately NOT /^#{2,3}\s/: a bare `### Subheading`
+// inside a long entry is body text, and must not reset the per-entry cap or
+// count as one of the KNOWLEDGE_MAX_ENTRIES recent entries.
+const KNOWLEDGE_ENTRY_HEADING = /^(?:### \[|## )/;
 
 // Index-matched resurfacing (references/knowledge-index.md → current-focus domain).
 const INDEX_MAX_BYTES = 262_144; // 256KB head — one compact line per index entry
-const INDEX_MATCH_MAX_ENTRIES = 3; // bounded resurfacing budget beyond the newest-N window
+const INDEX_MATCH_MAX_ENTRIES = 1; // bounded resurfacing budget beyond the newest-N window
 const MATCHED_SOURCE_MAX_BYTES = 524_288; // 512KB head per source file — byte-bounded, cached per file
 const MATCHED_ENTRY_MAX_LINES = 12; // per resurfaced entry
 const MATCHED_MAX_LINES = 40; // whole matched block sub-budget
@@ -78,6 +85,8 @@ const FOCUS_STOPWORDS = new Set([
 
 // Global cap + soft time budget.
 const TOTAL_MAX_LINES = 150;
+const TOTAL_MAX_BYTES = 8192; // hard global byte cap on the emitted digest (~8KB)
+const LINE_MAX_CHARS = 200; // per-line truncation — one runaway line cannot dominate the budget
 const SOFT_BUDGET_MS = 100;
 
 // ── bounded reads ───────────────────────────────────────────────────────────
@@ -161,7 +170,12 @@ function isDateLikeHeadingText(rest) {
 function buildFocus(dir) {
   const raw = readHead(join(dir, 'tasks', 'current-focus.md'), FOCUS_MAX_BYTES);
   const body = stripLeadingHtmlComments(raw);
-  const lines = trimBlankEdges(body.split('\n'));
+  let lines = body.split('\n');
+  // Stop at the generated machine-readable block — the operator digest never
+  // needs the raw status-records.v1 JSON blob, which can be multi-KB per build.
+  const mrIdx = lines.findIndex((l) => /^#{2,3}\s+Machine-readable\b/.test(l));
+  if (mrIdx !== -1) lines = lines.slice(0, mrIdx);
+  lines = trimBlankEdges(lines);
   return lines.slice(0, FOCUS_MAX_LINES);
 }
 
@@ -195,7 +209,7 @@ function buildKnowledge(dir) {
 
   const headings = [];
   for (let i = 0; i < lines.length; i++) {
-    if (/^#{2,3}\s/.test(lines[i])) headings.push(i);
+    if (KNOWLEDGE_ENTRY_HEADING.test(lines[i])) headings.push(i);
   }
   if (headings.length === 0) return []; // no recognisable entries — silent
 
@@ -207,10 +221,26 @@ function buildKnowledge(dir) {
   let block = trimBlankEdges(lines.slice(startIdx));
   if (block.length > KNOWLEDGE_MAX_LINES) {
     block = block.slice(block.length - KNOWLEDGE_MAX_LINES); // keep the newest tail
-    const h = block.findIndex((l) => /^#{2,3}\s/.test(l));
+    const h = block.findIndex((l) => KNOWLEDGE_ENTRY_HEADING.test(l));
     if (h > 0) block = block.slice(h); // realign to a clean heading boundary
   }
-  return block;
+  // Per-entry cap: awareness needs the headline + a few body lines, not the
+  // full forensic text. Contract: the heading does NOT count against the
+  // budget — an entry renders as heading + up to KNOWLEDGE_ENTRY_MAX_LINES
+  // body lines + a truncation marker. Full text stays one Read away.
+  const capped = [];
+  let bodyLines = 0;
+  for (const line of block) {
+    if (KNOWLEDGE_ENTRY_HEADING.test(line)) {
+      bodyLines = 0;
+      capped.push(line);
+      continue;
+    }
+    bodyLines++;
+    if (bodyLines <= KNOWLEDGE_ENTRY_MAX_LINES) capped.push(line);
+    else if (bodyLines === KNOWLEDGE_ENTRY_MAX_LINES + 1) capped.push('… (entry truncated — full text: KNOWLEDGE.md tail)');
+  }
+  return capped;
 }
 
 // ── index-matched resurfacing ────────────────────────────────────────────────
@@ -277,10 +307,32 @@ function buildIndexMatched(dir, knowledgeLines) {
   const focusTokens = tokenize(focusRaw, FOCUS_STOPWORDS);
   if (focusTokens.size === 0) return []; // no domain to match against
 
-  const knowledgeText = knowledgeLines.join('\n');
+  // Dedup by BODY, not title: an entry whose body already appears in the recency
+  // block is a duplicate even if its index title differs (title drift,
+  // supersede-rename). This is EXACT body equality, not majority overlap: an
+  // entry is dropped ONLY when its full normalised body equals one already shown.
+  // A "≥50% of lines already present" heuristic would discard a genuinely-new
+  // entry that happens to share boilerplate/template lines with a shown one —
+  // silently losing unique knowledge. Keys exclude the heading line (that IS the
+  // title we are deliberately ignoring).
+  const entryBodyKey = (lines) =>
+    lines
+      .filter((l) => !/^#{2,3}\s/.test(l))
+      .map((l) => l.trim().toLowerCase())
+      .filter((l) => l.length >= TOKEN_MIN_LEN)
+      .join('\n');
+  const shownBodyKeys = new Set();
+  {
+    let cur = [];
+    const flush = () => { const k = entryBodyKey(cur); if (k) shownBodyKeys.add(k); cur = []; };
+    for (const l of knowledgeLines) {
+      if (/^#{2,3}\s/.test(l)) flush();
+      else cur.push(l);
+    }
+    flush();
+  }
   const scored = [];
   for (const e of entries) {
-    if (e.title && knowledgeText.includes(e.title)) continue; // already in the recency block
     let score = 0;
     for (const tok of e.tokens) if (focusTokens.has(tok)) score++;
     if (score > 0) scored.push({ e, score });
@@ -310,6 +362,10 @@ function buildIndexMatched(dir, knowledgeLines) {
     if (used >= INDEX_MATCH_MAX_ENTRIES) break;
     const body = sliceEntryAtLine(sourceLines(e.file), e.lineNo, MATCHED_ENTRY_MAX_LINES);
     if (body.length === 0) continue;
+    // Exact body-equality dedup: skip only when this entry's full normalised body
+    // is identical to one already in the recency block (a true duplicate).
+    const key = entryBodyKey(body);
+    if (key && shownBodyKeys.has(key)) continue;
     const chunk = [`[${e.file}:${e.lineNo}]`, ...body];
     if (out.length + chunk.length > MATCHED_MAX_LINES) break;
     out.push(...chunk);
@@ -341,6 +397,22 @@ function totalLines(blocks) {
   return n;
 }
 
+/** Emitted byte size: header + content lines + separators, newline-joined. */
+function totalBytes(blocks) {
+  let bytes = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    if (i > 0) bytes += 1; // blank separator line
+    bytes += Buffer.byteLength(blocks[i].header) + 1;
+    for (const l of blocks[i].lines) bytes += Buffer.byteLength(l) + 1;
+  }
+  return bytes;
+}
+
+/** Truncate one line to LINE_MAX_CHARS so a single runaway line cannot dominate. */
+function truncateLine(l) {
+  return l.length > LINE_MAX_CHARS ? l.slice(0, LINE_MAX_CHARS - 1) + '…' : l;
+}
+
 try {
   const start = Date.now();
 
@@ -364,10 +436,14 @@ try {
   if (knowledge.length) blocks.push({ role: 'knowledge', header: '— Recent knowledge (KNOWLEDGE.md) —', lines: knowledge, dropFrom: 'start' });
   if (matched.length) blocks.push({ role: 'matched', header: '— Related knowledge (index-matched to current focus) —', lines: matched, dropFrom: 'end' });
 
+  // Per-line truncation before any budgeting so byte/line counts are accurate.
+  for (const b of blocks) b.lines = b.lines.map(truncateLine);
+
   // Global cap — trim oldest/lowest-priority content first; current-focus last.
-  // 'matched' is supplementary → trimmed before the recency blocks.
+  // 'matched' is supplementary → trimmed before the recency blocks. Both the line
+  // cap and the ~8KB byte cap must hold; the loop trims until both are satisfied.
   const dropOrder = ['matched', 'knowledge', 'lessons', 'focus'];
-  while (totalLines(blocks) > TOTAL_MAX_LINES) {
+  while (totalLines(blocks) > TOTAL_MAX_LINES || totalBytes(blocks) > TOTAL_MAX_BYTES) {
     let dropped = false;
     for (const role of dropOrder) {
       const b = blocks.find((x) => x.role === role && x.lines.length > 0);

@@ -1,0 +1,19 @@
+{
+  "contract_version": "work-packet.v1",
+  "packet_id": "wp-a2-fixture-0001",
+  "initiative_id": "framework-runtime-neutral-v3",
+  "feature_slug": "framework-runtime-neutral-v3",
+  "repo": "claude-code-framework",
+  "branch": "claude/framework-runtime-neutral-v3",
+  "objective": "Implement chunk A2: packet round-trip fixtures and validation harness.",
+  "governing_artefacts": [
+    "tasks/builds/framework-runtime-neutral-v3/plan.md"
+  ],
+  "allowed_files": [
+    "scripts/packet-contract/validate-packet.mjs"
+  ],
+  "dependencies": ["A1"],
+  "verification_commands": ["npm run validate"],
+  "role": "builder",
+  "runtime": "claude-code"
+}

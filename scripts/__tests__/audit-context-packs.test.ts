@@ -454,6 +454,53 @@ test('CLI exits 0 when no context packs exist (architecture.md also absent)', ()
 // surfaced (previously the audit was blind to them and passed vacuously) but
 // remain advisory by default.
 // ---------------------------------------------------------------------------
+test('template residue (Status line + note, fully substituted) is reported advisory-only', () => {
+  const arch = '# Overview\n<a id="route-conventions"></a>\n## Route conventions\n';
+  const pack = [
+    '# Review pack',
+    '',
+    'Status: template — anchors must be mapped at adoption.',
+    '',
+    '## Sources',
+    '',
+    '> **Anchor placeholders:** map each at adoption.',
+    '',
+    '- `architecture.md#route-conventions`',
+    '',
+  ].join('\n');
+  const result = auditContextPacks({
+    packs: [{ path: 'review.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.equal(result.kind, 'ok', 'residue alone must not fail the pure audit (advisory)');
+  assert.ok(result.templateResidue, 'templateResidue array present');
+  assert.equal(result.templateResidue!.length, 2, 'Status line + note both reported');
+  assert.deepEqual(
+    result.templateResidue!.map((r) => r.marker).sort(),
+    ['Anchor placeholders note', 'Status: template']
+  );
+});
+
+test('no residue reported when the pack still has unmapped tokens (legit template)', () => {
+  const arch = '# Overview\n';
+  const pack = [
+    '# Review pack',
+    '',
+    'Status: template — anchors must be mapped at adoption.',
+    '',
+    '## Sources',
+    '',
+    '- `{{ARCHITECTURE_ANCHOR:route-conventions}}`',
+    '',
+  ].join('\n');
+  const result = auditContextPacks({
+    packs: [{ path: 'review.md', content: pack }],
+    architectureMarkdown: arch,
+  });
+  assert.ok(!result.templateResidue, 'a pack with tokens present is not residue');
+  assert.ok(result.unmapped && result.unmapped.length === 1, 'it is unmapped instead');
+});
+
 test('unmapped placeholder token is reported with pack, purpose, and line', () => {
   const arch = '# Overview\n';
   const pack = [

@@ -1,6 +1,6 @@
 ---
 name: fail-loud
-description: Use when writing error handling — catch blocks, fallbacks, defaults for failed lookups, fire-and-forget calls, external-provider failures, safety/permission checks, or anything that could report success without the underlying operation durably happening. Also use when deciding 4xx vs 5xx, retry vs dead-letter, or what a "cannot verify" outcome should do.
+description: "Use when writing error handling: catch blocks, fallbacks, defaults for failed lookups, fire-and-forget calls, provider failures, safety checks, or anything that could report success without the operation durably happening. Also for 4xx vs 5xx, retry vs dead-letter, and 'cannot verify' outcomes."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## fail-loud` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

@@ -10,13 +10,13 @@
  *   references/.watcher.pid                  — live-watcher marker (fast path
  *                                              for .claude/hooks/code-graph-freshness-check.js)
  *
- * Contract with the SessionStart hook (.claude/hooks/code-graph-freshness-check.js):
- *   - Hook spawns `npx tsx scripts/build-code-graph.ts` (no args) when
- *     references/.watcher.pid is absent or dead.
- *   - Default mode must: refresh shards incrementally, exit 0 on success
- *     (non-zero only on genuine build failure), and leave a live watcher
- *     behind where the platform supports one so subsequent session starts
- *     take the fast path.
+ * On-demand since v2.67.0 (FUQ-2): the code-graph cache is opt-in. The
+ * SessionStart freshness hook (.claude/hooks/code-graph-freshness-check.js) is
+ * no longer registered in the shipped settings.json, and a no-args run builds
+ * and EXITS rather than leaving a watcher. Consumers that want a live watcher
+ * pass --watch (build then watch) or --watch-only, and may re-add the hook.
+ *   - Default (no args): refresh shards incrementally, exit 0 on success
+ *     (non-zero only on genuine build failure), and EXIT — no watcher.
  *
  * Configuration (all optional):
  *   CODE_GRAPH_ROOT            — project root. Default: process.cwd()
@@ -45,9 +45,10 @@
  *   - a PID-file liveness check as the watcher singleton guard
  *
  * Usage:
- *   npx tsx scripts/build-code-graph.ts               # incremental build + spawn watcher
- *   npx tsx scripts/build-code-graph.ts --rebuild     # drop cache, kill watcher, cold build
- *   npx tsx scripts/build-code-graph.ts --no-watch    # build only (CI-friendly)
+ *   npx tsx scripts/build-code-graph.ts               # incremental build, then EXIT (no watcher — default since v2.67.0/FUQ-2)
+ *   npx tsx scripts/build-code-graph.ts --watch       # incremental build, then spawn the watcher
+ *   npx tsx scripts/build-code-graph.ts --rebuild     # drop cache, kill watcher, cold build (no watcher unless --watch also passed)
+ *   npx tsx scripts/build-code-graph.ts --no-watch    # build only (explicit synonym for the default)
  *   npx tsx scripts/build-code-graph.ts --watch-only  # skip build, spawn watcher
  */
 
@@ -462,6 +463,8 @@ async function writeDigest(
   const lines: string[] = [];
 
   lines.push('# Project Map');
+  lines.push('');
+  lines.push(`_Generated ${new Date().toISOString()} — rebuild: npx tsx scripts/build-code-graph.ts_`);
   lines.push('');
   lines.push(
     'This map covers static imports, named exports, and inverted import edges. ' +
@@ -994,7 +997,11 @@ async function main(): Promise<void> {
 
   await coldBuild();
 
-  if (!args.includes('--no-watch') && SCAN_DIRS.length > 0) {
+  // Watcher starts ONLY on an explicit --watch (build then watch); --watch-only
+  // is handled above. A no-args run builds and EXITS — no lingering watcher
+  // (FUQ-2, v2.67.0: the code-graph cache is on-demand, not always-on).
+  // --no-watch is retained as an explicit synonym for the new default.
+  if (args.includes('--watch') && !args.includes('--no-watch') && SCAN_DIRS.length > 0) {
     await spawnWatcher();
   }
 }

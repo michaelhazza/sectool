@@ -1,6 +1,6 @@
 ---
 name: logging-observability
-description: Use when adding logging, metrics, alerts, or instrumentation — structured logging, correlation IDs, log levels, lifecycle-event emission, counters, metric label design, alert thresholds, or deciding what to log where. What to emit, at which level, at which point in the code, what must never be logged, and how to design metrics and alerts that stay diagnosable.
+description: Use when adding logging, metrics, alerts, or instrumentation — structured logging, correlation IDs, log levels, lifecycle-event emission, counters, metric label design, alert thresholds, or deciding what to log where.
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## logging-observability` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

@@ -1,5 +1,5 @@
 ---
-description: Exhaustively audit and fix ALL CI gate debt at the root (production code, not the tests/baselines) until every PR-gating gate passes locally. A bounded audit→fix→re-audit loop. Un-gameable — acceptance is a read-only auditor script, not the model's judgement.
+description: "Audit and fix all CI gate debt at the root until every PR-gating gate passes locally; a bounded audit-fix-re-audit loop with a read-only auditor script as acceptance."
 argument-hint: "[optional: a single gate name to scope to, else all gates]"
 ---
 

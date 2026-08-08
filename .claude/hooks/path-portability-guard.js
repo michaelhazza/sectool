@@ -32,6 +32,7 @@
 const RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 // Backslashes are normalised to "/" before this runs, and the drive prefix
 // ("C:") is stripped — so any remaining colon is a genuine violation.
+// eslint-disable-next-line no-control-regex -- control chars are the Windows-invalid filename range being detected
 const INVALID_CHARS_RE = /[<>:"|?*\\\u0000-\u001f]/;
 
 function violations(rawPath) {

@@ -23,6 +23,15 @@
 //   - Present twice or more, or a mismatched/out-of-order pair: hard error,
 //     NO write (fail loud — never "use the first pair").
 //
+// Contract (control C2 — overwrite-not-append): the generated marker region is
+// the WHOLE file except the operator pointer block. Everything the generator
+// does not own is that single operator pointer block, which coordinators
+// OVERWRITE (never append history to). It is hard-capped at <= 50 lines / <= 4KB
+// and enforced by scripts/gates/verify-doc-size.mjs (which measures exactly the
+// non-generated region). Per-build history belongs in
+// tasks/builds/<slug>/handoff.md, never accreted here. See
+// references/doc-size-budgets.md.
+//
 // Fail-loud channel INSIDE the generated block (never a silent drop):
 //   - unparseable/unreadable status.json           -> INVALID: <dir> — <error>
 //   - missing required schema fields               -> INVALID: <dir> — missing required field(s): ...

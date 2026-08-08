@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "work-packet.schema.json",
+  "title": "WorkPacket",
+  "description": "Versioned dispatch contract (FR-2) for any role handed work by a coordinator, runtime-neutral. Contract version work-packet.v1. Formalises the fields already carried informally in Claude Code agent dispatch prompts; does not replace those prompts.",
+  "$comment": "Required set kept minimal (spec §12.A Chunk A1) so existing Claude Code dispatches map cleanly without every field being mandatory up front. role/runtime are additive fields recording the target role (per references/runtime-roles.md, when introduced) and the runtime executing it (e.g. claude-code, openclaw).",
+  "type": "object",
+  "required": [
+    "contract_version",
+    "packet_id",
+    "feature_slug",
+    "repo",
+    "branch",
+    "objective",
+    "role",
+    "runtime"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "const": "work-packet.v1"
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "initiative_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "feature_slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case build slug, matching the build-status.schema.json slug pattern."
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Bounded statement of what this dispatch must accomplish."
+    },
+    "governing_artefacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Paths to the spec, plan, or other artefacts governing this dispatch."
+    },
+    "allowed_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allowed_resources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "verification_commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "output_locations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "prohibited_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "execution_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Capability-REMOVING policy for this dispatch. Every field narrows what the executing role may do; no field can grant an authority the role did not already have. Absence of the object means no policy was declared, which is NOT the same as unrestricted — see references/execution-policy.md. A bare {} is invalid because it cannot be distinguished from an authoring mistake.",
+      "$comment": "This shape is duplicated between work-packet.schema.json (properties.execution_policy) and completion-packet.schema.json (definitions.executionPolicy) because validate-packet.mjs compiles each packet schema standalone with no addSchema, so a cross-file $ref would fail to resolve, be swallowed by the compile try/catch, and silently degrade that packet to the structural floor. validate-packet.test.mjs asserts every shared key stays identical and that allowed_files — folded into the echo so it is self-contained — is the only permitted divergence.",
+      "properties": {
+        "write_scope": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repo-relative glob patterns this dispatch may write. Conjunctive with allowed_files: a path must match BOTH when both are present. An empty array means nothing is writable."
+        },
+        "protected_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repo-relative glob patterns that must never be written, overriding allowed_files and write_scope."
+        },
+        "destructive_actions": {
+          "type": "string",
+          "enum": ["forbidden", "require_approval"]
+        },
+        "credential_access": {
+          "type": "string",
+          "enum": ["none", "read"]
+        },
+        "network_egress": {
+          "type": "string",
+          "enum": ["none", "allowlist"]
+        },
+        "egress_allowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Permitted egress hosts. Only meaningful with network_egress: allowlist."
+        },
+        "deploy_authority": {
+          "const": false,
+          "description": "The only expressible value is false. A policy can withhold deploy authority but can never confer it; deployment stays operator-owned."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Instant after which this policy must not be honoured. Expiry is evaluated at dispatch time by the coordinator, not by this schema."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "network_egress": { "const": "allowlist" } },
+            "required": ["network_egress"]
+          },
+          "then": {
+            "required": ["egress_allowlist"],
+            "properties": { "egress_allowlist": { "minItems": 1 } }
+          }
+        },
+        {
+          "if": { "required": ["egress_allowlist"] },
+          "then": {
+            "required": ["network_egress"],
+            "properties": { "network_egress": { "const": "allowlist" } }
+          }
+        }
+      ]
+    },
+    "resume_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Runtime-neutral role name (e.g. builder, reviewer, architect) per references/runtime-roles.md."
+    },
+    "runtime": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Executing runtime identifier (e.g. claude-code, openclaw)."
+    }
+  }
+}

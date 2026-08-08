@@ -1,6 +1,6 @@
 ---
 name: review-triage
-description: Use when adjudicating reviewer findings — accept, reject, or defer decisions on external or LLM code/spec/plan review output, duplicate re-raises, stale-context claims, and multi-round review loops. Encodes the measured false-positive taxonomy (posture violations, stateless re-raises, hallucinated premises, altitude/scope errors), the verification steps each claim type requires, and the loop-convergence signals; corpus statistics live in the intro paragraph.
+description: "Use when adjudicating reviewer findings: accept / reject / defer decisions on external or LLM review output, duplicate re-raises, stale-context claims, and multi-round review loops. Encodes the measured false-positive taxonomy and the verification each claim type requires."
 ---
 
 > **Repo-specific addenda:** if `.claude/context/skill-context.md` exists and has a `## review-triage` section, read it — it carries repo-specific failure modes, anti-patterns, and corrections for this skill.

@@ -1,11 +1,11 @@
 ---
 name: mockup-coordinator
-description: Inline playbook for the operator-driven mockup-design loop that runs BEFORE spec-coordinator. Takes a brief path + screen scope, loops mockup-designer ↔ mockup-reviewer until grounded and simplified, then enters an operator feedback loop. Used whenever the operator asks for mockups without having entered the spec-coordinator pipeline yet. Operator entry phrases — "create mockups for X", "mock up the X feature", "let's mock up Y" — trigger the main session to adopt this playbook. Runs INLINE in the main Claude Code session; not dispatched via the Agent tool.
+description: "INLINE playbook for the operator-driven mockup loop: dispatches mockup-designer and mockup-reviewer rounds until grounded and simplified, then runs operator feedback. Entry phrases like 'create mockups for X'; never dispatched via the Agent tool."
 tools: Read, Glob, Grep, Bash, Edit, Write, Agent, TodoWrite
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Spends operator attention only on visible product decisions (the prototype itself), never on prototype mechanics or grounding checks, which the reviewer loop automates.
 

@@ -186,6 +186,19 @@
     "summary": {
       "type": "string"
     },
+    "runtime": {
+      "type": "object",
+      "$comment": "OPTIONAL and additive (build-status.v2 unchanged — absent in pre-2.62.0 records, which stay valid). Build-level coordinating-runtime summary, distinct from the per-stage/per-commit stamp on log[] items below. See references/runtime-roles.md for the role-to-runtime vocabulary.",
+      "additionalProperties": false,
+      "properties": {
+        "coordinator_runtime": {
+          "type": "string"
+        },
+        "coordinator_role": {
+          "type": "string"
+        }
+      }
+    },
     "log": {
       "type": "array",
       "$comment": "OPTIONAL and additive (build-status.v2 unchanged — absent in pre-2.61.0 records, which stay valid). Append-only operator-facing activity log: coordinators append entries at every stage boundary (kind: start/done) and at notable mid-stage moments (kind: info). Entries are NEVER edited or removed once written. Rendered newest-first on the build's board card by board-sync.mjs so the operator can open the card at any time and read what the build has done without the session transcript. Language contract for note[] bullets is coordinator discipline (see the coordinators' § Status contract): plain-English operator-level dot points — what was built, what was found, how many issues were fixed — no file paths, no jargon, no transcripts.",
@@ -228,6 +241,14 @@
               "maxLength": 200
             },
             "description": "1-6 short plain-English dot points, each <=200 chars."
+          },
+          "runtime": {
+            "type": "string",
+            "description": "OPTIONAL and additive (build-status.v2 unchanged — absent in pre-2.62.0 records, which stay valid). The runtime that performed this stage transition or commit (e.g. 'claude-code', 'openclaw'). Per-stage/per-commit stamp — see references/runtime-roles.md."
+          },
+          "role": {
+            "type": "string",
+            "description": "OPTIONAL and additive. The role the runtime acted in for this entry (e.g. 'Coordinator', 'Builder'). See references/runtime-roles.md."
           }
         }
       }

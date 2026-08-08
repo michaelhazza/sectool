@@ -96,6 +96,10 @@ If the spec does introduce a feature flag, name the flag's **owner** and its **c
 
 > Origin-project examples: ClientPulse-GHL, session-1-foundation, skill-analyzer-v2.
 
+### Downstream enforcement (implementation plans)
+
+The reuse/extend/invent decision made here is the baseline for the implementation plan built from this spec. `architect.md § Per-Chunk Detail` requires every plan chunk to state a matching existing-component mapping (spec §6A) — the deployed component it builds on and its disposition (`reuse` / `extend` / `replace` / `new`). Re-implementing an existing capability under a new name at plan time is prohibited unless the plan records an explicit replacement decision; a plan chunk cannot silently upgrade this section's "reuse" or "extend" finding into a "new" primitive.
+
 ### Section 1.1 — Primitive↔target cross-check (when locking helpers and consumers in the same spec)
 
 For any spec that locks a set of helper primitives AND names the target consumers (gates, scripts, services) that will be built on them in the same spec, include a primitive↔target cross-check table showing that every named consumer's logic is expressible via the locked primitives.
@@ -575,6 +579,7 @@ Before invoking `spec-reviewer` on a draft spec, answer yes to all of the follow
 
 - [ ] **[Section 0]** Every cited deferred item verified as still open (or annotated as `verified closed by <commit>`)
 - [ ] Every new primitive has a "why not reuse" paragraph
+- [ ] **[Section 1]** The implementation plan built from this spec carries a matching existing-component mapping (spec §6A) per chunk, or an explicit recorded replacement decision where it diverges from this section's finding
 - [ ] **[Section 1]** Every new feature flag names its owner and cleanup/expiry date
 - [ ] Every new file / column / migration / endpoint is in the file inventory
 - [ ] Every data shape crossing a boundary has a Contracts entry with an example

@@ -13,7 +13,7 @@ When you (the agent) are about to recommend changes in a domain you have not Rea
 
 Produce a map of the relevant modules and callers using the project's domain vocabulary. Sources, in order — each is optional; skip gracefully to the next when a source is absent:
 
-1. `references/project-map.md` and `references/import-graph/<dir>.json` — the code-intelligence cache, if the project generates one (some document it in a `CLAUDE.md` fleet/tooling section).
+1. `references/project-map.md` and `references/import-graph/<dir>.json` — the on-demand code-intelligence map, when the project ships `scripts/build-code-graph.ts`. Check the map's generated-on stamp first; if stale or absent, EITHER rebuild it (npx tsx scripts/build-code-graph.ts, ~30s) or skip straight to Grep — do not trust a stale map.
 2. `architecture.md` for canonical domain conventions, if present.
 3. `CLAUDE.md` project-structure sections, if present.
 4. `Grep` and `Glob` for symbols and entry points the above do not cover (always available).

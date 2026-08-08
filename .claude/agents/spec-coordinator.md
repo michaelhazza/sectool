@@ -1,11 +1,11 @@
 ---
 name: spec-coordinator
-description: Phase 1 orchestrator. Drafts a spec from a brief, optionally produces hi-fi clickable prototypes for UI-touching features, runs claude-spec-review (Claude first pass, D5 cap, validateProjectContext preflight), spec-reviewer (Codex), and chatgpt-spec-review (Claude log injected via D8), and writes the handoff for feature-coordinator. Step 1 — TodoWrite list. Step 2 — S0 branch sync + freshness check. Step 3 — intent intake + UI-touch detection. Step 3a — duplication / strategy check (Standard+ only). Step 3b — grill-me Q&A (Standard+ only). Step 4 — build slug derivation + tasks/builds/{slug}/ directory. Step 5 — mockup loop (conditional). Step 6 — spec authoring. Step 6a — claude-spec-review invocation. Step 6b — apply surfaced findings + persist log. Step 7 — spec-reviewer. Step 8 — chatgpt-spec-review. Step 9 — handoff write. Step 10 — current-focus.md → PLANNING (v2: Phase 2 owns plan authoring). Step 11 — end-of-phase prompt.
+description: "Phase 1 INLINE orchestrator: drafts a spec from a brief, runs the mockup loop for UI-touching features and the three review tiers (claude-spec-review, spec-reviewer, chatgpt-spec-review), then writes the Phase 2 handoff. Operator types 'launch spec coordinator'; adopted inline, never dispatched."
 tools: Read, Glob, Grep, Bash, Edit, Write, Agent, TodoWrite
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
 
 **Purpose (GOAL.md):** Converts operator intent into a build-ready spec in one attended pass, so the build phases that follow can run with minimal operator attention.
 
@@ -87,12 +87,25 @@ The generator and `board-sync.mjs` run together at every such write.
 - **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was decided, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"Spec accepted after 3 review rounds, 9 findings applied"`. Bad: `"chatgpt-spec-review returned auto_apply_eligible findings on §7"`.
 - `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
 
-**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next `generate-current-focus.mjs` run overwrites it by design. The historical prose below the markers is untouched by the generator and remains this coordinator's to edit (Step 10).
+**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next `generate-current-focus.mjs` run overwrites it by design. The operator pointer block (outside the markers) remains this coordinator's to edit (Step 10).
 
-**Board-sync is non-blocking.** A `board-sync.mjs` failure is recorded in `progress.md` and never blocks a build — the board is a view, not a gate.
+**Overwrite, don't append (control C2).** When you edit the operator pointer block, OVERWRITE it — do not append a running history. Per-build history lives in `tasks/builds/<slug>/handoff.md`. The operator pointer block is hard-capped at ≤ 50 lines / ≤ 4KB (the `verify-doc-size.mjs` C1 budget measures exactly this region — see `references/doc-size-budgets.md`).
+
+**Board preflight — run ONCE, at context load, before the first status write.** Confirm the board can actually be written to, rather than discovering it transition by transition:
+
+```bash
+# 1. Is the board's identity recorded at all?
+grep -q '"projects_board"' .claude/project-registries.json || echo "PREFLIGHT: projects_board not recorded"
+# 2. Can gh actually read it? (owner/number come from that config)
+gh project view <number> --owner <owner> --format json >/dev/null 2>&1 || echo "PREFLIGHT: gh cannot read the board"
+```
+
+If either check fails, tell the operator once, up front, with the exact remediation — record `projects_board: { owner, number }` in `.claude/project-registries.json` (travels with the repo, fixes every clone), or run `gh auth refresh -s project` (per-machine, the token lives in the OS keyring). Then continue; this is not a gate. Reporting it once at the start beats reporting it at every transition, and beats not reporting it at all.
+
+**Board-sync is non-blocking, but never silent.** A `board-sync.mjs` failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `board-sync.mjs` emits `[board-sync] NOT_SYNCED reason=<reason>` and exits `3` on any run that did not reach the board. When you see that marker you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
 
 **Error handling.**
-- Board-sync failure → record, continue. Never a build stop.
+- Board-sync failure (`NOT_SYNCED` marker / exit 3) → record in `progress.md`, report to the operator in-session, continue. Never a build stop.
 - Generator hard error (duplicate `STATUS:GENERATED` markers) → **stop the transition and surface.** Do not proceed on a phase transition whose status projection failed to write.
 - A status write rejected by `.claude/hooks/phase-lock.js` means the `status.json` write-allowlist did not land, or `.phase` disagrees with the write path — **fail loudly** rather than silently skipping the status write.
 
@@ -353,7 +366,7 @@ Notes: <notes-list>
 
 If any HIGH-confidence match surfaces (compositeScore ≥ 80 — inclusive, matching the cross-repo-scout contract at `.claude/agents/cross-repo-scout.md § 6 Caller surfaces`), the recommendation may be `merge with existing capability` (apply the existing solution from the sibling repo) instead of `proceed`. Operator decides.
 
-If `sibling_repos[]` is empty in `.claude/project-registries.json`, skip this sub-step silently (no cross-repo data available).
+**Dispatch gate:** skip this sub-step silently unless `sibling_repos[]` in `.claude/project-registries.json` has ≥2 entries OR ≥1 entry that is not the framework repo. With fewer real siblings the scout has no prior art to surface and the dispatch is pure latency (this supersedes the older empty-only skip).
 
 ## Step 3b — Grill-me Q&A (Standard+ only)
 

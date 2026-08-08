@@ -32,6 +32,219 @@ Repos can stay on older versions intentionally. The framework is designed to be 
 
 ---
 
+## 2.67.1 — 2026-08-07
+
+**Highlights:** Defensive hardening of the v2.67.0 description-budget gate. No behavioural change for any current agent/skill/command file — a robustness + test-coverage patch surfaced by the v2.67.0 PR review.
+
+**Fixed:**
+- `scripts/gates/verify-description-budgets.mjs`: the block-scalar detector now recognises YAML block headers carrying indentation and/or chomping indicators (`>2`, `|-4`, `|2-`), so such a `description:` is measured as a block scalar instead of being mis-parsed as an inline plain scalar. Detection-only — the indent is still auto-derived from the content lines.
+- `scripts/gates/verify-description-budgets.test.mjs`: added coverage for the literal (`|`) block scalar (under + over budget), single-quoted inline unwrapping, escaped-double-quote unescaping, and the `>2` indent-indicator path, closing the gap between the extractor's implemented scalar styles and its tests (self-test now 12 cases).
+
+## 2.67.0 — 2026-08-07
+
+**Highlights:** Always-loaded and per-dispatch context-cost reductions measured at a live consumer (cryptotrackr, ~90-session transcript audit, 2026-08-07): agents read only their own agent-context.md section, description frontmatter is trimmed to WHEN-TO-INVOKE signals, the memory digest caps each recent-knowledge entry, the doc-size gate is wired into the cleanup surfaces, and the code-graph cache becomes opt-in. One new BLOCKING release gate (`verify-description-budgets.mjs`). No additions to the growth-gate behavioural surface (`.claude/{agents,skills,hooks,commands}`).
+
+**Added:** `scripts/gates/verify-description-budgets.mjs` (+ test) — BLOCKING frontmatter description-budget gate (agents 400B / skills 450B / commands 180B), registered in the /release gate step and `references/doc-size-budgets.md`. It lives under `scripts/gates/`, NOT the always-loaded surface, so no growth-gate declaration is required.
+
+**Changed:**
+- Sectioned agent-context read contract in all 29 agent files: each agent Greps `agent-context.md` for `## ` boundaries and reads only the binding preamble plus its own `## <name>` section, never the whole file (~27KB/dispatch saved at one consumer; 24 of 29 agents have no section). Template preamble, ADR-0006, `ADAPT.md`, and the local-override e2e read-instruction pin aligned.
+- 32 description trims (19 agents, 8 skills, 5 commands) to WHEN-TO-INVOKE signals; procedure stays in file bodies. Skill-routing eval regression-checked (0 errors, rank-1 at the 92% baseline).
+- memory-digest per-entry cap on the recent-knowledge block (`KNOWLEDGE_ENTRY_MAX_LINES = 12`, heading excluded), with a shared `### [` / `## ` entry predicate matching `verify-doc-size`'s live-entry census so a bare `### Subheading` no longer resets the cap or counts as a recent entry.
+- doc-size enforcement wired in: cleanfiles target 15 turns `[action-needed]` rows into archive actions; finalisation Step 8 archives todo.md debt and surfaces standing doc debt at every merge; `CLAUDE.md` joins the budget table (16KB / 400 lines, advisory).
+- code-graph demoted to on-demand (FUQ-2): the shipped `settings.json` no longer registers the SessionStart freshness hook (the hook ships as an opt-in library, allowlisted under `hookLibraries`), the no-args build exits without a watcher (`--watch` / `--watch-only` start one), `project-map.md` carries a generated-on stamp, and zoom-out treats the map as rebuild-first.
+
+**Breaking:** none. The code-graph default behaviour intentionally changes from always-on / session-start to opt-in; consumers relying on the previous watcher or SessionStart freshness check must explicitly opt back in (re-add the one `settings.json` SessionStart entry and use the `--watch` flag, documented in the hook header).
+
+**Fixed:** `validate-framework` hook-wiring no longer fails on the now-unregistered code-graph hook — it is declared under `hookLibraries` in `scripts/validate-framework-allowlist.json` (the opt-in-hook skip), and the allowlist comment now documents intentionally-unregistered opt-in entry hooks alongside require()d libraries.
+
+## 2.66.6 — 2026-08-07
+
+**Highlights:** patch — lint hygiene for the files shipped in 2.66.x. The framework repo has no lint lane, so a consuming repo's `eslint` CI was the first place these surfaced; they are dead initialisers only, no behaviour change.
+
+**Fixed:**
+- `scripts/gates/verify-doc-size.mjs` and `scripts/cleanfiles-audit-headless.test.mjs`: three `no-useless-assignment` errors — `entries`, `childAlive`, `grandchildAlive` were each initialised and then reassigned on BOTH the `try` and `catch` paths, so the initialiser could never be read. Declared without an initialiser.
+
+**Note for framework contributors:** shipped `.mjs`/`.js` under `scripts/` and `.claude/hooks/` is linted by consumers even though this repo has no lint gate. Until a lint lane exists here, run a consumer's `npx eslint <synced paths>` after touching shipped scripts.
+
+## 2.66.5 — 2026-08-07
+
+**Highlights:** patch — fifth review round on the F1 safety controls, closing two High lifecycle gaps (an unbounded number of hung background rebuilds; POSIX killing only the direct child) and two Medium hardenings. No behavioural-surface additions; no migration. The locking ACQUISITION protocol is unchanged from v2.66.4 — this release is about process lifecycle.
+
+**Fixed:**
+- `code-graph-freshness-check.js` (High): the rebuild lock directory now records `owner.pid` once `'spawn'` confirms, and a stale takeover KILLS that owner's process tree (POSIX process-group SIGKILL / Windows `taskkill /T /F`) before reaping. Moving the rebuild detached in v2.65.0 had removed the old synchronous `BUILD_TIMEOUT_MS` lifetime bound, so a rebuild that spawned and then hung would never touch the lock mtime, be reaped every 10 minutes, and accumulate hung processes without bound. Killing on reap bounds live rebuilds to AT MOST ONE: a takeover now implies its predecessor is dead. Test: a live ignore-SIGTERM owner is provably dead after the takeover.
+- `scripts/cleanfiles-audit-headless.mjs` (High): on POSIX the audit child is spawned `detached` so it leads its own process GROUP, and the timeout path signals the group (`kill(-pid)`) — graceful SIGTERM, then uncatchable SIGKILL. A headless Claude run spawns subprocesses; killing only the immediate child left those grandchildren orphaned for an unattended scheduler. Test: the stub spawns an ignore-SIGTERM grandchild and both pids are proven dead after the wrapper returns.
+- `code-graph-freshness-check.js` (Medium): context-pack inputs are now CONTENT-HASHED (sha1) in the audit fingerprint, so a same-size edit with a preserved mtime re-triggers the audit. `architecture.md` remains size+mtime as a deliberate, now explicitly documented, session-start latency tradeoff — the comment no longer claims "any edit" is detected.
+- `scripts/cleanfiles-audit-headless.mjs` (Medium): on Windows — the wrapper's primary scheduled deployment target — the command is invoked through the shell with explicit per-arg quoting, so an npm-installed `claude.cmd` shim actually runs (Node refuses to spawn `.cmd` directly since the CVE-2024-27980 hardening, and `shell: true` arg joining does not quote embedded spaces like `/cleanfiles audit`). A win32-gated `.cmd` fixture test proves shim execution and exit-code propagation; on POSIX it records an explicit skip rather than silently passing.
+
+## 2.66.4 — 2026-08-07
+
+**Highlights:** patch — fourth review round on the F1 safety controls: two High (the lock takeover was still raceable; the timed-out audit child was left as an orphan) and two Medium. No behavioural-surface additions; no migration.
+
+**Fixed:**
+- `code-graph-freshness-check.js` (High): the rebuild lock is now a DIRECTORY (mkdir is the atomically-exclusive filesystem primitive on POSIX and Windows), and stale takeover elects a SINGLE reaper via a second atomic mkdir, then RE-CHECKS staleness while holding the reaper lock. This closes the last takeover race (a contender acquiring the reaper after another reaper finished could otherwise reap the now-fresh lock). Provable invariant: the main lock is replaced only while holding the reaper lock, which admits exactly one holder. The concurrency test (6 simultaneous contenders → exactly one takeover) is deterministic across 75+ stress runs; the prior rename-quarantine variant reproduced two winners.
+- `scripts/cleanfiles-audit-headless.mjs` (High): after the graceful kill and grace window, the wrapper now FORCE-terminates the child — POSIX `SIGKILL` (uncatchable), Windows `taskkill /PID <pid> /T /F` (whole tree) — so a child that ignores termination is not left running as an orphan for an unattended monthly scheduler. The test records the child pid and asserts it is dead after the wrapper returns.
+- `scripts/gates/verify-growth-gate.mjs` (Medium): declaration-target ownership is now a whole-token match, not a substring. A target of `.claude/agents/foo.md.backup` no longer counts as declaring `.claude/agents/foo.md`, and the bare-name fallback no longer matches a stem embedded in a path (path-form targets are matched by full path only).
+- `code-graph-freshness-check.js` (Medium): the audit fingerprint is now `name:size:mtime`. A content change that preserves the mtime (coarse filesystem timestamp resolution, restore/copy tools, or explicitly-preserved timestamps) now re-triggers the audit instead of being skipped.
+
+## 2.66.3 — 2026-08-07
+
+**Highlights:** patch — third review round on the F1 safety controls: two High (a still-raceable lock takeover; declaration ownership matching the wrong field) and two Medium. No behavioural-surface additions; no migration.
+
+**Fixed:**
+- `code-graph-freshness-check.js` (High): stale-lock takeover is now genuinely atomic. The prior remove-then-exclusive-create was raceable — two contenders that both saw the stale lock could interleave so that one removes the other's freshly-created lock and both proceed. Takeover now RENAMES the exact stale inode to a unique quarantine name; `rename(2)` is atomic, so of N contenders only one rename of that inode succeeds and the rest get ENOENT and back off. A concurrency test (6 simultaneous contenders) asserts exactly one takeover.
+- `scripts/gates/verify-growth-gate.mjs` (High): declarations are parsed into structured `target — replaces: … ; footprint: …` fields, and a new file's ownership is matched ONLY against the target, never against the `replaces:`/`footprint:` values. A file whose name appears only inside another declaration's `replaces:` rationale is no longer treated as declared (adversarial two-addition test added).
+- `scripts/cleanfiles-audit-headless.mjs` (Medium): the per-run timeout is now HARD. After the kill signal, a bounded grace timer settles the wrapper as 124 even if the child ignores the signal or never emits `'close'`, so the wrapper's wall time stays bounded (test with an ignore-SIGTERM child). Note: on Windows `child.kill()` still terminates only the immediate child, not the whole tree.
+- `code-graph-freshness-check.js` (Medium): the spawn-settle timeout is a distinct third outcome, not success. If `child.pid` is set it is positive evidence the process was created (treat as spawned); otherwise the hook fails open — warns that spawn status is unconfirmed and releases the lock — rather than reporting a rebuild that may never have started.
+
+## 2.66.2 — 2026-08-07
+
+**Highlights:** patch — second focused review round on the F1 safety controls closed one High and four Medium residues left by v2.66.1. No behavioural-surface additions; no migration.
+
+**Fixed:**
+- `scripts/cleanfiles-audit-headless.mjs` (High): a failed spawn emits `'error'` AND then `'close'`; the wrapper ended/exited from each, racing a write-after-end on the log stream. Now a single `settled` flag owns settlement, a `log.on('error')` listener keeps a stream failure from crashing the wrapper, and the stdio pipes are guarded against a null-stream spawn failure. A non-existent executable now exits exactly `127` with a clean log (test added).
+- `scripts/gates/verify-growth-gate.mjs` (M1): `replaces:` must carry a real value — `replaces: ; footprint: 1200 bytes` no longer passes, because the `;` delimiter is not a value. The value is parsed and required to contain a word character (adversarial test added).
+- `scripts/gates/verify-doc-size.mjs` (M2/H4): doc-sync registration now reads the first-column backtick PATH of a registry table ROW, not any code span anywhere in the file — a backticked path mentioned in prose (e.g. "do not register …") no longer false-greens the megadoc gate (negative test added).
+- `code-graph-freshness-check.js` (M3): the hook previously `process.exit(0)`'d synchronously right after the detached spawn, so the async `'error'` was dropped (no crash, but also no cleanup or warning). It now defers exit to the `'spawn'`/`'error'` event (`unref()` only on `'spawn'`), so a failed spawn emits the visible fail-open warning and releases the rebuild lock; a bounded settle-timeout keeps session start from ever hanging (test asserts the warning + lock cleanup).
+- `scripts/gates/verify-growth-gate.mjs` (M4): the file header + config section now document the fail-CLOSED default for an unresolvable baseline and the `GATE_GROWTH_ADVISORY` escape hatch (they still described the removed fail-open behaviour).
+
+## 2.66.1 — 2026-08-07
+
+**Highlights:** patch — hardening of the F1/F1-growth safety controls after an external code review found seven real defects in the mechanisms v2.65.0 + v2.66.0 introduced. These are the classic ways a safety control lies: fail-open enforcement paths, non-atomic concurrency, an async error that could crash the very hook meant to fail open, a dedup that discards unique data, and a substring registration check that false-greens. No behavioural-surface additions; no migration.
+
+**Fixed:**
+- `code-graph-freshness-check.js` (H1): the detached rebuild now registers a `child.on('error')` handler, so an async `spawn` failure (e.g. `npx` not on PATH → ENOENT) is caught and the hook stays fail-open instead of crashing session start on an unhandled `error` event. The lock is cleared on the error.
+- `code-graph-freshness-check.js` (H2): stale-lock takeover is now atomic — remove the stale lock then re-create it with an exclusive `wx` write, which is the arbiter. Two sessions that both observe the same stale timestamp can no longer both "take over" and launch duplicate rebuilds.
+- `code-graph-freshness-check.js` (M2): the audit stamp is a membership fingerprint (`name:mtime` per input, sorted), not a max mtime. Deleting a context-pack now changes the fingerprint and re-triggers `audit-context-packs` instead of being silently skipped because the remaining max mtime fell below the stamp.
+- `memory-digest.js` (H3): index-matched entry dedup is now EXACT body equality (normalised body, title excluded), not "≥50% of lines already shown". The overlap heuristic could discard a genuinely-new entry that shared boilerplate/template lines with a shown one, silently losing unique knowledge.
+- `scripts/gates/verify-doc-size.mjs` (H4): docs/ root-file registration is matched against backtick-quoted PATH tokens in `doc-sync.md` (full repo-relative path or exact filename), not an arbitrary substring. `docs/plan.md` no longer counts as "registered" because the word "plan" appears somewhere in the registry prose.
+- `scripts/gates/verify-growth-gate.mjs` (H5): the growth gate now FAILS CLOSED (exit 1) when a previous version exists but its baseline ref is unresolvable (tagless/shallow checkout, bad ref, git failure). The first release (no previous version) still passes. `GATE_GROWTH_ADVISORY=1` opts into local advisory (warn, exit 0).
+- `scripts/gates/verify-growth-gate.mjs` (M1): declarations must carry a non-empty `replaces:` value and a conforming `footprint:` (`<N> bytes` or `not-always-loaded`); an empty `replaces: ; footprint:` no longer passes. A bare-name-only declaration shared across two additions is rejected in favour of the full path.
+
+**Not changed (reviewed, out of scope):** `board-sync.mjs`'s non-zero `EXIT_NOT_SYNCED` is v2.64.1's deliberate observable-but-non-blocking contract (coordinators record + report it, per that release); it predates this batch and is unchanged here.
+
+## 2.66.0 — 2026-08-07
+
+**Highlights:** minor — the F1 prevention batch's last guardrail (report C5 / plan I5). New always-loaded behavioural additions (agents, skills, hooks, commands) can no longer land in a release without justifying their footprint. This closes the anti-bloat loop that v2.65.0 opened: v2.65.0 cut the accumulated cost and added the doc-size gate; this release stops the fleet/skill/hook/command surface from quietly regrowing it. The enforcement point moved here from the retired `validate-setup` agent to a deterministic release-flow gate.
+
+**Added:**
+- `scripts/gates/verify-growth-gate.mjs` (+ test): diffs files ADDED under `.claude/{agents,skills,hooks,commands}/` since the previous release tag and fails (exit 1) if any lacks a `> growth-gate: <path> — replaces: <what|none: why>; footprint: <N bytes|not-always-loaded>` declaration in the current CHANGELOG section. Fails-open only when the previous tag is unresolvable (tagless/shallow checkout). Precision over recall: only the four behavioural file classes are diffed; new tiers / always-loaded doc sections are declared in prose per the release checklist.
+
+**Changed:**
+- `/release` (`.claude/commands/release.md`): step 5 now requires a `> growth-gate:` declaration line per new behavioural file; step 7 runs `verify-growth-gate.mjs` after the CHANGELOG is written, before the release commit.
+
+## 2.65.0 — 2026-08-07
+
+**Highlights:** minor — the F1 cost-optimization batch. A full-audit of the framework found the always-loaded and per-build context had grown far past what the work needed; this release cuts the safe, non-posture drivers and adds standing guardrails so the bloat cannot silently regrow. Three low-invocation agents retire, the session-start digest and context-pack loading get guard-rails, and a new doc-size gate plus overwrite-not-append conventions hold the line. Review-posture changes (reviewer-tier thinning, model demotions, playbook slimming) are deliberately NOT in this release — they ship as separately-gated staged releases. Migration `v2.65.0.js` ships (session-state gitignore).
+
+**Migration:** `v2.65.0.js` — appends `.claude/session-state/` to the consumer `.gitignore` when absent (idempotent, non-destructive), so the mtime-gated hook stamps + rebuild lock introduced in this release never dirty a consumer working tree. Auto-covered by the `migrations/v*.js` runner glob.
+
+**Deprecated:**
+- Retired three low-invocation agents to `.claude/agents/_retired/*.md.retired` (removed from the active `.claude/agents/*.md` fleet; `removedFiles` manifest entries warn consumers to drop the stale copies): `codebase-explainer` (human onboarding tour — overlaps `architecture.md` + repo docs), `validate-setup` (read-only health check — role now `/framework-doctor` + the deterministic gates; its aspirational build-failing enforcement was never a real CI gate, and genuine agent-divergence enforcement is `/claudeupdate`'s 6d2 guard), `experiment-runner` (metric-optimisation loop — never a required stage; its tested pure helper `scripts/experiment-runner-loopPure.ts` is retained). Reference cascade swept in the same change: rule-classification ledger rows, the dead `experiment-eligible` sections in `triage-agent`/`bug-fixer`, README/ADAPT FULL enumerations, enforcer claims repointed to the real mechanisms, and `check-profiles` fixture. The new-agent/skill/hook **growth gate** (report C5) moves to the release checklist (plan I5) now that `validate-setup` no longer hosts it.
+
+**Added:**
+- `scripts/gates/verify-doc-size.mjs` (+ test, + `references/doc-size-budgets.md`): control C1 — warning-level size budgets on the accretion-prone docs (current-focus operator portion, todo.md, KNOWLEDGE.md, architecture.md, capabilities.md, docs/ root new-megadoc prevention with a consumer grandfather baseline `.claude/doc-size-baseline.json`). Grace annotations on KNOWLEDGE/architecture/capabilities until their remediation chunks land.
+
+**Changed:**
+- `memory-digest.js` (control A8): hard ~8KB byte cap alongside the line cap, 200-char per-line truncation, focus block stops at `### Machine-readable`, body-hash dedupe, reduced entry caps — a real consumer's session-start digest dropped 22.3KB → 6.2KB.
+- `sync.js` (control A5): finalises a context pack's `Status: template` → `Status: mapped` and strips the adoption note only when zero unresolved `{{ARCHITECTURE_ANCHOR:` tokens remain; `architect`/`builder`/`pr-reviewer` fallback gates narrowed to unsubstituted anchors in the `## Sources` block; `audit-context-packs.ts` false-green fixed.
+- `code-graph-freshness-check.js` (control A10): mtime-gated `audit-context-packs` spawn, detached-with-atomic-lock rebuild on the watcher-dead cold path (no more blocking ≤120s), runtime state under gitignored `.claude/session-state/`.
+- Skill descriptions (control A9): trimmed 7 over-length framework descriptions (kept every trigger + NOT-for clause; `eval:routing` recall gate stays green at 92% rank-1).
+- Dispatch gates (control A11): `architect`/`spec-coordinator` skip the cross-repo-scout dispatch unless `sibling_repos[]` warrants it; the five grep-heavy agents exclude `.claude-framework/` by default.
+- `phase-lock.js` (control A4, framework half): removed the `docs/superpowers/specs/**` spec/plan allow-glob so new spec writes outside `tasks/builds/<slug>/` are blocked.
+- Coordinators (control C2): overwrite-not-append rule for the current-focus operator pointer block in `feature`/`spec`/`finalisation-coordinator`; `generate-current-focus.mjs` contract note.
+- `finalisation-coordinator` (control C4): Step 8a `.gitignore` review-logs check made fail-loud; dropped a dangling `review-logs/README § Retention` citation; post-merge step archives the merged build dir.
+- `cleanfiles.md` (control C6): target 14 reports any `context-load: full architecture.md` fallback in the most-recent build's logs (per-session budget regression signal).
+
+**Fixed:**
+- `check-migrations` version-ceiling + CHANGELOG-coverage findings for `v2.65.0.js` clear with this release (version bump + this entry's `v2.65.0.js` mention). The 4 pre-existing test-coverage findings (v2.8.0/2.12.0/2.13.0/2.27.0) predate this work and are unchanged.
+
+## 2.64.1 — 2026-08-06
+
+**Highlights:** patch — the build board could stop being written to and nothing would say so. `board-sync.mjs` now emits a stable `NOT_SYNCED` marker and a distinct exit code on any run that did not reach the board, and the three coordinators are required to report that to the operator in-session rather than only to `progress.md`. Found in a consuming repo where `projects_board` had never been recorded: `loadBoardConfig()` returned null, the script warned and exited 0, and every coordinator push was a silent no-op for an unknown number of builds. The only thing that eventually surfaced it was an operator opening the board and finding an empty column. The board remains a view, not a gate — this change buys observability, not enforcement.
+
+**Added:**
+- `board-sync.mjs`: `EXIT_NOT_SYNCED` (3), the frozen `NOT_SYNCED_REASONS` set, and the pure helpers `buildNotSyncedMarker()` / `notSyncedReasonFromDiagnostic()`, all exported so the did-not-sync contract is unit-testable without shelling out to `gh` (the thin I/O layer stays untested by design). Marker format `[board-sync] NOT_SYNCED reason=<reason>` is contract; callers grep `NOT_SYNCED reason=`.
+- Every did-not-reach-the-board path now signals: missing config, unresolvable repo identity, `gh` failure reading board state (carrying the existing permission diagnostic through to a typed reason), board-contract mismatch, per-card sync failure, and the top-level unexpected-error catch. A single stale card is the same class of bug as a run that never landed, so per-card failures set it too.
+- spec-, feature- and finalisation-coordinator: a **board preflight** at context load — check `projects_board` is recorded and that `gh` can actually read the board, and tell the operator once, up front, with the exact remediation for each (record the config, which travels with the repo; or `gh auth refresh -s project`, which is per-machine because the token lives in the OS keyring).
+- 9 tests covering marker format, the exit code being distinct from `--init`'s 1, diagnostic-to-reason mapping, unclassified failures degrading to `gh_failure` rather than being mislabelled a permission problem, and the reason set staying closed and frozen.
+
+**Changed:**
+- All three coordinators' § Status contract: "Board-sync is non-blocking" becomes "non-blocking, but never silent" — on the marker the coordinator MUST both record it and report it to the operator in the same message as the phase transition. The build still never stops.
+- `board-sync.mjs` header contract: the "always exits 0 on the sync path" clause is replaced by fail-open-but-observable, with `--init`'s exit 1 explicitly reserved for operator-input errors so the two codes are never confused.
+
+## 2.64.0 — 2026-08-05
+
+**Highlights:** minor — wire the finalisation learning loop into canon. The finalisation-coordinator now routes each extracted lesson to zero-to-many destinations (a skill overlay, an upstream queue) alongside its single `Target`, the KNOWLEDGE.md entry template is indexable by construction and enforced by the append guard, and `/cleanfiles audit` is genuinely read-only with a durable monthly clock. This is the first tracked run of the project-to-framework learning loop.
+
+**Added:**
+- `templates/framework-upstream-queue.template.md`: bootstrap for the consumer upstream-queue ledger the coordinator creates on first use.
+- `docs/examples/learning-routing-fixture.md`: the worked Step 7a routing fixture (three-effect example, two-cycle unattended-produce then attended-drain, duplicate-production no-double-append, and same-day/same-title/different-category identity cases).
+- `scripts/cleanfiles-audit-headless.mjs` (+ test): thin scheduler wrapper for `/cleanfiles audit` supplying cwd pinning, dated external-log redirection, a per-run timeout, and exit-code propagation the Windows Task Scheduler cannot express in a task action alone.
+- finalisation-coordinator Step 7a: `Overlay mirror?` and `Upstream queue?` destination-effect columns, recurrence escalation (Rule 2), overlay coverage check (Rule 3), pending-mirror drain (Rule 4), a worked-fixture reference, and a ninth `Target` enum value `required-parameter/type-contract`.
+- cleanfiles.md: a queue-staleness sweep target (target 13, read-only, 180-day) and a "Wire the clock" deployment section (operator-owned monthly Desktop scheduled task, external dated-log sink, repository-purity vs external-operational-output invariants).
+
+**Changed:**
+- finalisation-coordinator Step 7 KNOWLEDGE.md template is now the indexable `### [YYYY-MM-DD] [Category] -- [Pattern title]` form, and Step 7 closes with an index dry-run assertion. The v1 auto-apply prohibition is replaced by the normative destination write-authority truth table (`Target` stays todo-only in all contexts; queue rows are non-binding in-cycle bookkeeping; overlay mirrors are operator-gated, with an unattended pending-mirror path).
+- `knowledge-append-guard.js`: newly-appended KNOWLEDGE.md headings must match the indexable dated form, else block-with-guidance; scoped to the new content only, so legacy H2 entries never block an unrelated append.
+- `cleanfiles.md` target 11 uses the index generator's `--dry-run` path in audit mode; audit mode is now write-free by contract.
+
+**Fixed:**
+- `/cleanfiles audit` no longer regenerates the knowledge index (a header-timestamp rewrite) in audit mode, restoring the mode's read-only contract.
+
+## 2.63.1 — 2026-08-04
+
+**Highlights:** patch — one comment line upstreamed from automation-v1.
+
+**Fixed:**
+- `.claude/hooks/path-portability-guard.js`: carry the `eslint-disable-next-line no-control-regex` annotation on `INVALID_CHARS_RE` in canonical. automation-v1 lints its `.claude/hooks/` and added the comment locally (CI remediation #748), which made the hook diverge from canonical and trip the behavioural-divergence guard on every `/claudeupdate`. Consumers that lint hooks get a clean pass; consumers that do not are unaffected — the change is a comment.
+
+## 2.63.0 — 2026-08-03
+
+**Highlights:** Five contract additions distilled from the 2026-08-02 gstack cross-repository audit, shipped as one release because each is an additive schema change and separate releases would cost consumers five sync cycles. Reviewer findings gain evidence provenance and a review lens; work packets gain a capability-removing `execution_policy` with a normative composition contract and canonical hash; completion packets echo the effective policy, classify documentation impact, and attach release evidence. Everything here DECLARES — no enforcement authority, no merge or deploy capability, no external persistence, and nothing that can grant an authority a role did not already have.
+
+**Breaking:** none. Every field is optional and every `contract_version` is unchanged; a frozen pre-2.63.0 work packet and completion packet are asserted still-valid in the suite. Consumers need no migration — `sync.js` ships the schemas, two new helper modules and two new references, and nothing reads the new fields yet.
+
+**Added:**
+- `review-finding.schema.json`: optional `confidence`, `evidence_kind`, `verification_state` (the fable-mode `verified | inferred | assumed` vocabulary) and `lens`.
+- `work-packet.schema.json`: optional `execution_policy` — `write_scope`, `protected_paths`, `destructive_actions`, `credential_access`, `network_egress` + `egress_allowlist`, `deploy_authority` (a `const false`), `expires_at`.
+- `completion-packet.schema.json`: optional `effective_policy`, `effective_policy_hash`, `policy_evaluation` (`passed | violated | not_evaluated`), `policy_violations`, `documentation_impact`, `changed_docs`, `doc_exemption_reason`, `release_evidence`.
+- `references/execution-policy.md` — normative composition, normalization and hashing semantics, plus the explicit enforcement boundary.
+- `references/review-lenses.md` — the four plan-review lenses and the coverage-versus-tagging distinction.
+- `scripts/packet-contract/execution-policyPure.mjs` — `normalizeExecutionPolicy`, the single sanctioned computation of an effective policy and its hash.
+- `scripts/packet-contract/packet-semanticsPure.mjs` — bounded semantic invariants shared by both validator modes.
+
+**Changed:**
+- `validatePacket` now returns `{ok, errors, warnings}` (previously `{ok, errors}`) and runs the semantic layer after the structural check. The floor reads only top-level `required`/`enum`/`const`, so nested policy and release-evidence invariants would otherwise hold only where Ajv happens to be installed; deleting the semantic call fails 23 tests across both modes. Review closed six further fallback-only gaps across two rounds: undeclared keys inside the policy and release-evidence objects (the authority-shaped one), `Date.parse` accepting date-only, timezone-less and impossible-calendar `expires_at` values that `ajv-formats` rejects, `policy_evaluation: violated` passing when `policy_violations` was omitted rather than empty, and unvalidated array contents (non-string, empty-string and duplicate entries) in `policy_violations`, `changed_docs`, `evidence_paths` and `egress_allowlist`. The durable fix is a coverage guard: `SEMANTICALLY_COVERED_PATHS` plus a test that walks both schemas and fails when any value-level constraint has no semantic-layer counterpart and no documented legacy exemption — verified by adding a constrained property and watching the suite name it. `FLOOR_UNCOVERED_LEGACY_PATHS` inventories 26 pre-existing fields whose constraints the floor has never enforced; closing those changes validation of contracts consumers already emit and belongs in its own change.
+- `.claude/agents/builder.md`: the chunk verdict block gains Documentation impact / Changed docs / Doc exemption reason, with the classification convention. A contract field with no instructed producer is a field nobody fills in.
+- `.claude/agents/claude-plan-review.md`, `plan-reviewer.md`, `chatgpt-plan-review.md` and `SYSTEM_PROMPT_PLAN_V2`: a lens sweep on every plan review, plus a five-line decision brief in the prose logs. `prompt_version` deliberately stays `openai-plan-review.v2` — that identifier names the prompt tier, not each content revision.
+
+**Deliberately not adopted from the audit:** wholesale vendoring, an auto-update control plane, autonomous merge or deploy authority, external memory persistence, browser-cookie import, and duplicate generic personas. The browser-QA adapter, local learnings store and model-benchmark envelope are deferred pending a benchmark rather than built.
+
+## 2.62.0 — 2026-08-02
+
+**Highlights:** Runtime-neutral pilot, Phases A + C plus the non-live half of Phase B (`framework-runtime-neutral-v3`). Work-packet and completion-packet JSON Schemas formalise the existing builder dispatch/verdict shapes into a contract any runtime's Builder path can validate against, with a round-trip harness proving structural comparability across a Claude-path and an OpenClaw-path fixture. `build-status.v2` gains optional additive runtime-identity fields (a build-level `runtime` object plus per-`log[]`-entry `runtime`/`role` stamps) so a future OpenClaw Builder run is attributable without invalidating any existing `status.json`. `references/runtime-roles.md` is the one canonical config point recording the two supported runtime/role mappings. A writer-side transition validator, board-sync permission diagnostics, and a recovery-state detector round out the release. **Live OpenClaw enablement is deferred** — see Deferred below.
+
+**Added:**
+- `schemas/work-packet.schema.json`, `schemas/completion-packet.schema.json` — draft-07 contracts (`work-packet.v1` / `completion-packet.v1`) formalising the existing dispatch prompt and builder verdict block; `completion-packet`'s `status` enum matches the builder verdict set (`SUCCESS`, `PLAN_GAP`, `G1_FAILED`) exactly.
+- `scripts/packet-contract/validate-packet.mjs` (+ test) — `validatePacket(kind, obj)` round-trip harness (Ajv with a structural-floor fallback) plus fixtures (`work-packet.example.json`, `completion-packet.claude.json`, `completion-packet.openclaw.json`) proving the Claude and OpenClaw completion shapes are structurally comparable.
+- `references/runtime-roles.md` — canonical runtime/role mapping: Claude Code as Coordinator/Architect/Builder/Reviewer/Test-Author/Finaliser; OpenClaw as sequential Builder only, stopping at `MERGE_READY`; the per-stage/per-commit runtime-identity stamping contract.
+- `scripts/status/transition-validator.mjs` (+ test) — pure, never-throws `validateTransition(from, to, {hasBlocker})` encoding the `build-status.v2` forward path and its four blocker-gated back-edges, read from the schema enum so it cannot drift.
+- `scripts/status/recovery-checks.mjs` (+ test) — `detectRecoveryState({repo, slug})`: dirty branch, orphaned worktree, partial integration, stale status, missing CI, already-completed-work detection. Artefact/Git-driven, never mutates repo state.
+- `docs/pilots/openclaw-rejection-test-runbook.md`, `scripts/pilot/rejection-test.sh`, `scripts/pilot/classify-rejection.mjs` (+ test) — the live disposable-repo GitHub-enforcement rejection-test gate (fail-closed classification pure module + offline fixture tests; the live probe script itself carries no token literal and is operator/coordinator-run, not a CI step).
+- `templates/CODEOWNERS.template`, `templates/default-branch-ruleset.json`, `docs/openclaw-pilot-adoption.md` — consumer-facing assets for adopting the OpenClaw pilot's branch-protection posture, plus the Claude-only regression procedure an existing consumer runs to prove no regression.
+
+**Changed:**
+- `schemas/build-status.schema.json` — new OPTIONAL top-level `runtime` object (`coordinator_runtime`, `coordinator_role`) and new OPTIONAL `runtime`/`role` string keys on `log[]` items. `contract_version` unchanged at `build-status.v2`; additive only, no consumer migration. See `schemas/CHANGELOG.md`.
+- `.claude/agents/architect.md`, `docs/spec-authoring-checklist.md` — plan chunks now carry a mandatory existing-component mapping (spec §6A): the deployed component the chunk builds on and its disposition (`reuse` / `extend` / `replace` / `new`), citing `references/runtime-roles.md` for runtime/role vocabulary.
+- `scripts/status/board-sync.mjs` — `classifyBoardPermissionError` labels a swallowed `gh` failure as `MISSING_PROJECT_SCOPE` / `MISSING_BOARD_ACCESS` / `UNKNOWN` when the message matches a known permission shape. Purely informational: the board stays a non-blocking projection either way.
+
+**Fixed:**
+- `references/rule-classification.md` — added the missing ledger row for `.claude/hooks/path-portability-guard.js` (shipped in 2.61.3, ledger row omitted at the time).
+
+**Deferred:** the live OpenClaw Builder CLI adapter (Chunk B2) and the coordinator OpenClaw dispatch + `MERGE_READY` stop + API merge-verification wiring (Chunk B3) are quarantined pending a live disposable-repo rejection-gate run — no builder token or disposable repo was available this session. B1's tooling and B4's templates ship regardless (no live dependency); the live rejection evidence and the adapter/dispatch code are a follow-up run. `scripts/status/transition-validator.mjs` ships as a standalone module in this release; it is not yet called from any coordinator status-write site — wiring it in is also a follow-up.
+
+**Migration:** none. Every schema change is additive; no existing `status.json` or consumer file is invalidated.
+
 ## 2.61.3 — 2026-08-02
 
 **Highlights:** Patch. Filename portability enforcement, prompted by a live incident: a dual-review log written from a Linux session with colons in its ISO timestamp (`...2026-08-01T21:14:58Z.md`) made `git pull` fail on every Windows clone of the consuming repo — Windows cannot create paths containing colons, so the branch was un-checkout-able until the file was renamed via index plumbing. Three layers ship: a PreToolUse hook that blocks non-portable filenames at write time on every OS, a CI gate that scans all tracked paths as the backstop for files created outside `Write` (bash redirects, generators), and the root-cause doc fix in `dual-reviewer.md`.

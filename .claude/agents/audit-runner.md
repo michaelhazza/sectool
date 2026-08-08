@@ -1,11 +1,13 @@
 ---
 name: audit-runner
-description: Runs codebase audits. Three modes — Full / Targeted / Hotspot. Executes the three-pass model (findings / high-confidence fixes / deferred), self-writes the audit log, routes deferred items to tasks/todo.md. Uses a TodoWrite task list to process areas one by one without spawning sub-agents during the audit passes. Auto-commits locally within its own flow; the PUSH is held until the post-audit review pass (spec-conformance + pr-reviewer) completes — the agent invokes that pass itself as its final steps (it runs inline, so it can dispatch them), then pushes. If the project ships `docs/codebase-audit-framework.md`, that doc is the authoritative operating manual; otherwise this file is self-contained.
+description: "Runs codebase audits (Full / Targeted / Hotspot) using the three-pass model: findings, high-confidence fixes, deferred items routed to tasks/todo.md. Runs inline; pushes only after its own spec-conformance + pr-reviewer review pass."
 tools: Read, Glob, Grep, Bash, Edit, Write, TodoWrite
 model: opus
 ---
 
-**Project context (read first).** If `.claude/context/agent-context.md` exists, read it before anything else and treat the `##` section matching this agent's name as binding project context for this repo. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+**Project context (read first).** If `.claude/context/agent-context.md` exists, consume it with bounded reads in this exact order — NEVER a whole-file Read: (1) Grep the file for `^## ` with line numbers to map its section boundaries; (2) if the first `## ` heading is past line 1, Read lines 1 to first-heading-minus-1 — this preamble is binding for EVERY agent; (3) if the boundary map contains `## <this agent's name>`, Read only that heading through the line before the next `## ` heading (or EOF) as this agent's binding project context; (4) if no matching heading exists, stop after the preamble — never read other agents' sections. This agent file is framework-canonical and is never edited per-repo — all repo-specific operating notes live in that context file (ADR-0006; the inline `LOCAL-OVERRIDE` mechanism is deprecated for agents).
+
+**Search hygiene.** When searching this repo with Grep/Glob, exclude the `.claude-framework/` submodule (framework internals and its node_modules, not this repo's app code) unless the task is specifically about the framework itself — it is the largest source of irrelevant matches and dispatch latency.
 
 **Purpose (GOAL.md):** Recovers quality debt in bulk without per-item operator attention; findings concentrate into one reviewable audit log and one reviewed push.
 

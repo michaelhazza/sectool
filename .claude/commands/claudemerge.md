@@ -1,5 +1,5 @@
 ---
-description: Three-way merge of pending .framework-new conflicts in a consuming repo — auto-applies clean merges, surfaces genuine conflicts for manual resolution, then hands back to /claudeupdate
+description: "Three-way merge of pending .framework-new conflicts in a consuming repo: auto-applies clean merges, surfaces genuine conflicts, hands back to /claudeupdate."
 ---
 
 # /claudemerge
@@ -41,7 +41,7 @@ For each behavioural conflict:
    - **Skills** → the `## <skill-name>` section of `.claude/context/skill-context.md`.
    - **Hooks / commands** → no runtime overlay exists; the delta is either proposed upstream as a framework-repo change or dropped. The operator picks which — but it cannot stay in the consumer copy.
 3. On confirmation: write the delta into the context file, overwrite the target with the `.framework-new` content **verbatim**, delete the sidecar.
-4. End state, no exceptions: the behavioural file is byte-identical to framework-canonical, and all repo-specific behaviour lives in the context files. `/claudeupdate`'s 6d2 guard and `validate-setup` both fail a repo where this isn't true.
+4. End state, no exceptions: the behavioural file is byte-identical to framework-canonical, and all repo-specific behaviour lives in the context files. `/claudeupdate`'s 6d2 guard fails a repo where this isn't true.
 
 The operator's decision here is WHERE the delta goes — never WHICH side of the file wins.
 
