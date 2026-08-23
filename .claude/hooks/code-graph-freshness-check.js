@@ -58,7 +58,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, delimiter, isAbsolute } from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
@@ -94,6 +94,32 @@ const AUDIT_SCRIPT_FRAMEWORK = join(PROJECT_DIR, '.claude-framework', 'scripts',
 // sub-second. 60s leaves headroom for the rare cold start on a slow machine
 // without ever hanging a session indefinitely.
 const BUILD_TIMEOUT_MS = 60_000;
+
+/**
+ * Resolve a command to an existing executable on Windows using PATH + PATHEXT,
+ * or null if it cannot be found. The rebuild/audit spawns use `shell: true` on
+ * win32 (npm installs `npx` as npx.cmd, which Node cannot spawn directly since
+ * the CVE-2024-27980 hardening). Under shell:true a MISSING command still spawns
+ * cmd.exe successfully, so Node fires 'spawn' (not 'error') and a failed launch
+ * is mis-reported as a started rebuild (the lock is then never released). This
+ * pre-resolution detects the missing launcher up front so the failure path runs.
+ */
+function resolveWindowsExecutable(cmd) {
+  const exts = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const hasKnownExt = /\.[^.\\/]+$/.test(cmd);
+  const withExts = (base) => (hasKnownExt ? [base] : [base, ...exts.map((e) => base + e)]);
+  if (isAbsolute(cmd) || /[\\/]/.test(cmd)) {
+    return withExts(cmd).find((c) => existsSync(c)) || null;
+  }
+  for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
+    const hit = withExts(join(dir, cmd)).find((c) => existsSync(c));
+    if (hit) return hit;
+  }
+  return null;
+}
 
 function isPidAlive(pid) {
   try {
@@ -366,6 +392,14 @@ function clearRebuildLock() {
  */
 function spawnDetachedRebuild(onSpawn, onError, onUnknown) {
   if (!existsSync(BUILD_SCRIPT_PATH)) return { skipped: true, reason: 'build script missing' };
+  if (process.platform === 'win32' && !resolveWindowsExecutable('npx')) {
+    // Under shell:true a missing npx would spawn cmd.exe and fire 'spawn' (not
+    // 'error'), mis-reporting a failed launch as a started rebuild and leaving
+    // the lock held. Detect the missing launcher up front and route to onError,
+    // which releases the lock and warns (POSIX gets this via the 'error' event).
+    onError(Object.assign(new Error('npx not found on PATH'), { code: 'ENOENT' }));
+    return { deferred: true };
+  }
   let child;
   try {
     child = spawn('npx', ['tsx', BUILD_SCRIPT_PATH], {

@@ -32,6 +32,139 @@ Repos can stay on older versions intentionally. The framework is designed to be 
 
 ---
 
+## 2.73.0 — 2026-08-20
+
+**Highlights:** Status-sync hardening — the four defects observed firing together in a real finalisation (PR #828) turned from discipline rules into mechanism. Every status transition now runs ONE citable command, `scripts/status/sync-status.mjs --slug <slug>`, which validates the build's `status.json` record before projecting it to the board; the former generator + board-sync pair is an implementation detail and is unciteable (a CI grep-gate fails any direct reference in an agent file). board-sync reads the complete board inventory via paginated GraphQL and heals archived/stranded cards; a new CI authoritative-check resolver stops a superseded cancelled run reading as a failure; and every squash-merge now writes a durable, greppable post-merge handover (what shipped / what to enable / what's urgent next).
+
+**Added:**
+- `scripts/status/sync-status.mjs` — the one status-sync command coordinators cite (target validation, `--expect-status`, `--require-handover`, injectable-deps test seam) + tests.
+- `scripts/ci/resolve-authoritative-checks.mjs` — pure CI run-identity resolver (cancelled-superseded rule, per-producer judgment, registration fence) + 11 fixtures.
+- `scripts/ci/label.sh apply` subcommand — routes the ready-to-merge label add through the resolver registration fence; fails closed without a configured `ci_workflow_files.ci_workflow`.
+- W6 post-merge handover contract (fixed heading + three subheads + triage ledger), enforced at write time by `sync-status --require-handover`.
+- CI step: status-sync citation gate (no direct generator/board-sync references in `.claude/agents/*.md`).
+
+**Changed:**
+- `scripts/status/status-contract.mjs` — the Ajv-unavailable structural floor is now genuinely recursive (nested `properties`, schema-valued `additionalProperties`, `additionalProperties:false`, `minItems`/`maxItems`/`maxLength`/`pattern`), so a schema-invalid record (e.g. a numeric `run_ids`) is caught in a bare consumer, not just where Ajv is installed.
+- `scripts/status/board-sync.mjs` — importable `runBoardSync()` returning a target-aware `{exitCode, reasons, target, records}` contract (the core never touches `process.exitCode`); complete-inventory GraphQL read (zero mutations when completeness is unprovable); `_archive` scan; bounded lazy backfill; archived-card state machine with honest failure compensation.
+- The three coordinators' § Status contract sections now define one command + one exit-contract table; finalisation Step 12.4 is a single ordered write→handover→sync→archive sequence with quoted `run_ids`, and Step 11 gains resolver-first phantom handling.
+- `.claude/commands/cleanfiles.md` target 4 syncs before archiving a merged build (audit reports, apply syncs then moves only on a satisfying target outcome).
+
+**Breaking (label-add only):** `scripts/ci/label.sh apply` and `restore` now REQUIRE two consumer-config keys and fail closed without them — `ci_workflow_files.ci_workflow` (which workflow) and `ci_workflow_files.ci_workflow_trigger` (`push` | `pull_request` | `none`: which event a push to a feature branch fires for it, or that it fires nothing). Set both during adoption; every other subcommand (`pull`, `parity`, `refile`, `reconcile`) is unchanged. The trigger is DECLARED because the fence must never infer "no run is coming" from how long it has waited: a registration timeout now BLOCKS the add (it proves nothing), and the genuine nothing-to-race case is `trigger: "none"`.
+
+**Fixed:** a schema-invalid status write is refused at write time instead of stranding a board card silently (D2); a merged build's record can no longer become invisible to board-sync by being archived (D3); a cancelled duplicate CI run no longer masquerades as a failure and triggers a wasteful label pull (D4); an external required check whose name is emitted by two different apps no longer lets the newest one decide the verdict (it fails safe to WAIT); `gh api --paginate` over a commit's check-runs is parsed with `--slurp`, so a SHA with more than one page of checks no longer throws.
+
+## 2.72.0 — 2026-08-12
+
+**Highlights:** Doc-retrieval tooling ported from automation-v1 (its doc-token-reduction build, 4 external review rounds): `scripts/architecture-search.ts` gives every consumer ranked section retrieval over `architecture.md` (`--toc` for the section map, telemetry with fail-closed accounting), and `scripts/doc-read-audit.ts` measures reference-doc Read cost from session transcripts with event-time windowing and a fail-closed decision-grade metric. The canonical agent fleet now prefers sliced `architecture.md` reads everywhere (the pack-sliced pattern generalised: 10 agent definitions updated; `context-pack-loader.md` Step 2 mechanics now front-ended by `architecture-search --toc`).
+
+**Breaking:** none. Migration v2.72.0 appends three gitignore lines (arch-search telemetry + audit reports) to consumers and removes consumer-side orphans of the four `.cjs` script renames below (diverged copies conflict, never deleted).
+
+**Added:**
+- `scripts/architecture-search.ts` + `scripts/lib/architectureSearchPure.ts` (+ test) — ranked `architecture.md` section retrieval; anchor/alias/fence-aware parser; request telemetry (agent/manual origin via `CLAUDECODE`) with durable gap marker and refuse-to-deliver on unrecordable telemetry.
+- `scripts/doc-read-audit.ts` + `scripts/lib/docReadAuditPure.ts` (+ test) — transcript-mined requested-Read token audit over the standard reference docs; half-open event-time windows; per-active-session headline metric that fails closed on malformed or un-windowable evidence.
+- `migrations/v2.72.0.js` — consumer `.gitignore` lines for the tools' runtime artifacts.
+
+**Changed:**
+- Slice-first `architecture.md` wording in: `feature-coordinator.md` (architect plan prompt), `plan-reviewer.md`, `spec-reviewer.md` (read lists + "Never skip" rules), `chatgpt-pr-review.md` (first-recommendation rule), `adversarial-reviewer.md`, `audit-runner.md`, `dual-reviewer.md`, `spec-conformance.md`, `verify-phase.md` (read lists), `context-pack-loader.md` (Step 2 anchor mechanics; `architect.md`/`builder.md`/`pr-reviewer.md` inherit by reference).
+- `scripts/run-migrations.js` → `scripts/run-migrations.cjs`, `scripts/framework-merge.js` → `scripts/framework-merge.cjs`, and the shipped smoke tests `scripts/__tests__/local-override-{smoke,e2e}.js` → `.cjs` (ESM-consumer safety, 2.43.3 precedent; migration `v2.72.0.js` cleans up consumer-side orphans of all four pairs; `SYNC.md` / `/claudeupdate` / `/claudemerge` invocation paths updated; historical CHANGELOG entries keep the old names by design).
+
+**Fixed:** (pre-existing issues surfaced while driving the full `npm test` suite green on Windows; unrelated to the port)
+- `scripts/cleanfiles-audit-headless.mjs` — on Windows `shell:true` masked a missing command as a successful `cmd.exe` spawn: resolve the executable via PATH+PATHEXT so a missing launcher maps to exit 127, and drive the timeout tree-kill through `taskkill /T` (never `child.kill()`, which orphaned the worker + grandchild and left the repo cwd locked → EBUSY).
+- `.claude/hooks/code-graph-freshness-check.js` — same `shell:true`/npx-ENOENT masking left the rebuild lock held and falsely reported a background rebuild; pre-resolve npx and route a miss to the existing lock-release path.
+- Test infra: Windows-safe teardown for the spawn-based code-graph hook test; `status-vocabulary` allowlist for new non-status schema-prose words; `check-shipped-source` test reads the gate source once in-process (removes a redundant per-case spawn); vitest `maxWorkers` 8→12 so per-worker file chains stay under the 60s birpc deadline on 16-CPU hosts.
+- README/ADAPT profile-inventory reconciliation with disk (30 agents, 14 hooks; FULL profile enumerations completed in both docs; stale "known pre-existing drift" parentheticals retired) — `check:profiles` green.
+- `check-shipped-source` engine-file governance correction: framework-executed files (engine scripts not manifest-shipped, plus `migrations/v*.js`, whose consumer copies are inert — the runner requires them only from the framework checkout) resolve module-system governance against the framework root `package.json`, fail-closed (only an explicit `"type": "commonjs"` is clean) — `check:shipped-source` green.
+- doc-read-audit target attribution (external review, blocking): `matchTarget` was basename-suffix based, so a Read of `docs/architecture.md`, `vendor/*/architecture.md`, or another repo's `architecture.md` was silently valued at the root target's size and contaminated the decision-grade metric with no completeness signal. Attribution now binds by canonical absolute-path equality under the repo root (separators/casing normalised, `.`/`..` resolved, relative Read paths resolved against the root), with regressions proving nested and foreign-repo paths never match.
+- doc-read-audit report filename (external review, minor): a date-only name made two same-day runs — exactly the documented baseline/post comparison workflow — overwrite each other. Filenames now embed the window identifiers plus the generation timestamp (still matched by the shipped `references/.doc-read-audit-*.md` gitignore glob), with tests proving two same-date windows and identical-window re-runs all keep distinct artifacts.
+- arch:search gap marker atomicity (external review, blocking): the "first telemetry gap" marker was written behind an `existsSync` check — two concurrently-losing processes could race it and the later one would move `firstGapTs` FORWARD, letting the audit call a window complete that already contained the earlier loss. The marker is now created atomically (`flag: 'wx'`, EEXIST = success, never overwritten), with spawn-based regressions: an existing marker stays byte-identical through later losses, and concurrent losing bursts yield exactly one valid marker that later bursts cannot replace.
+- doc-read-audit case folding (external review, blocking): the round-1 exact-path fix lowercased ALL paths, silently re-attributing a distinct `/repo/Architecture.md` to the tracked `/repo/architecture.md` on case-sensitive filesystems — the same false-attribution class, via case folding instead of suffixes. Canonicalisation is now path-shape aware: drive-letter/UNC (Windows-contract) paths fold, POSIX absolute paths stay case-exact, relative paths inherit the resolved root's shape, and UNC `//server` prefixes stay distinct from POSIX `/server`. POSIX case-variant negative regressions added alongside the retained Windows positives.
+
+## 2.71.0 — 2026-08-11
+
+**Highlights:** R2 of the fresh-context UAT acceptance gate — the enforcement wiring, shipping DISABLED by default (`uat_rollout_mode` absent = disabled; a consumer that syncs for unrelated reasons runs ZERO UAT lanes and refusal rows 9-10 stay inert). Wires acceptance into finalisation at Step 8c.5 (after G5, before merge readiness) under the plan's §10 enforcement-conditional transition matrix, adds merge-refusal rows 9-10, the `gate_evidence` UAT projection schema delta, the `uat_rollout_mode` flag, the expected-remote-head merge precondition, and a post-merge/post-abort scratch-cleanup step. The §10 matrix and rows 9-10 also ship as EXECUTABLE, tested policy (`scripts/uat/enforcement.mjs`) rather than prose alone. `enforcement` is the single downstream control everywhere — never the raw rollout mode. Enforcement stays dormant until a consumer explicitly flips to `shadow` after the plan §9 forward-validation battery passes (that battery + consumer adoption are the next session's work).
+
+**Added:**
+- `scripts/uat/enforcement.mjs` — the §10 enforcement matrix (`deriveEnforcement`, `pipelineAction`, `escalate`) and refusal rows 9-10 (`row9Passes`, `row10Passes`, `baseFreshnessRequired`) as executable policy, with the strict-protection conditioning pair and override rejection tested mechanically.
+- `scripts/uat/__tests__/enforcement.test.mjs` + `finalisation-source-contract.test.mjs` — 45 new tests (transition matrix, shadow-fail/incomplete never machine-blocking, strict-protection pair, rows 9-10, ordering, certification tail, disabled-default, manifest coverage). The UAT suite is now 122 tests.
+- `uat_rollout_mode` in `.claude/project-registries.json.template` (`disabled | shadow | high-risk | default`; **absent = disabled**).
+
+**Changed:**
+- `finalisation-coordinator.md`: inserted **Step 8c.5** (fresh-context UAT acceptance, after G5, before Step 9) with the enforcement-conditional transitions (shadow writes `uat_advisories`, never the blocker field), the `code_candidate_sha`/`certification_head_sha` identity + operation-aware certification tail validated against `certification-commit-manifest.json`; added **refusal rows 9-10** (enforcement+verdict together with override rejection; evidence-binding + staleness always + four-fact strict-protection base-freshness iff `enforcement: blocking`); Step 9/10 preconditions now require a valid UAT gate; the merge command carries `--match-head-commit` (expected-remote-head precondition, always); added **Step 12.6** post-merge/post-abort UAT scratch cleanup (evidence-tier retention preserved); TodoWrite skeleton and row-count updated to 10.
+- `schemas/build-status.schema.json`: additive `gate_evidence` UAT projection `{evidence_sha256, code_candidate_sha, enforcement}` (`schemas/CHANGELOG.md` in lockstep; `contract_version` unchanged at `build-status.v2`; nothing to migrate).
+
+## 2.70.0 — 2026-08-11
+
+**Highlights:** R1 of the fresh-context UAT acceptance gate — the reusable machinery, shipping DISABLED by default (absent `uat_rollout_mode` = disabled lands in R2; no consumer runs a UAT lane until it explicitly opts in). Closes the gap where `verify-phase` only *reports* UAT readiness and nothing between final review and merge executes real user workflows — the class of gap that let a `2^53` money-precision defect survive 7,195 green tests. Ships a deterministic evidence contract, a three-class change classifier, the `acceptance-testing` skill, the `acceptance-phase` agent with sealed blind-stage tooling and a hermetic blind-planner runtime contract, a narrower Codex acceptance invocation mode, and the version-controlled Codex `run-final-uat` skill package with an installer. Enforcement wiring (finalisation Step 8c.5, refusal rows, rollout flag) lands in R2. Built to plan `fresh-context-uat-gate` (v8, amendments A1–A10); R1 covers the machinery, not enforcement.
+
+> growth-gate: .claude/agents/acceptance-phase.md — replaces: none — no existing agent runs a fresh-context, evidence-bound pre-merge UAT gate, and verify-phase authors tests in its own context so it cannot run a blind first pass (the calibration defect survived exactly that same-context verification); footprint: 383 bytes
+> growth-gate: .claude/skills/acceptance-testing/SKILL.md — replaces: none — test-discipline covers unit/mock test authoring, whereas this skill covers fresh-context real-workflow acceptance reasoning, a distinct failure mode; footprint: 382 bytes
+
+**Added:**
+- Evidence contract: `schemas/uat-evidence.schema.json` (candidate/harness identity split, dual risk inventories, structured anti-vacuity, artifact hashes, planner/execution identities, plan digests) + `scripts/uat/validate-uat-evidence.mjs` (deterministic: full §8.6 rejection list, the blind ⊆ final-required ⊆ executed set invariant, risk-baseline superset, recomputed artifact sha256/bytes, secret scan, realpath containment, two-sided plan-digest identity, and rejection of any `uat_enforcement_override` field) + `scripts/uat/canonicalize.mjs` (RFC 8785 / JCS, golden-vector tested) + `scripts/uat/risk-to-scenario-policy.json`.
+- Change classifier: `scripts/uat/classify-change.mjs` (three staleness classes — application/harness/inert, unknown→application-impacting; plus independent domain-risk tags) + `classification-registry.example.json`.
+- `acceptance-testing` skill (SKILL.md + `scenario-matrix.md`, `evidence-contract.md`, `freshness-and-applicability.md`), routing eval, rule-ledger rows.
+- `acceptance-phase` agent + deterministic security-boundary builders `scripts/uat/build-blind-snapshot.mjs` (source export with no `.git`, fail-closed submodule materialisation, hash-bound input manifest), `build-harness-manifest.mjs` (`harness_manifest_sha256` completeness boundary), `build-certification-manifest.mjs` (out-of-band certification tail) + canonical carriers `schemas/uat-plan-blind.schema.json` / `uat-plan.schema.json` + `references/blind-planner-runtime.md` (hermetic contract: isolated CODEX_HOME, web-search/memories off, no resume, clean env allowlist, five-escape adversarial fixture).
+- Codex acceptance mode in `references/codex-invocation-contract.md`; third carve-out in `references/test-gate-policy.md`; `references/iteration-caps.md` row 23 (acceptance fix cap 3); `references/runtime-roles.md`, `references/autonomy-ladder.md`, `docs/agent-selection.md` updates.
+- Codex `run-final-uat` skill package at `templates/codex-skills/run-final-uat/` (built with the Codex skill-creator; `quick_validate` clean) + `scripts/uat/install-codex-skill.mjs` (installs to consumer `.agents/skills/run-final-uat/` with a drift check). 77 new Vitest tests across `scripts/uat/__tests__/`.
+
+**Changed:**
+- `docs/agent-selection.md`: corrected the stale "the one exception is finalisation's G5" — there are now three test-gate carve-outs (G5, verify-phase, acceptance).
+
+**Removed:**
+- `tasks/builds/fresh-context-uat-gate/` build-planning docs (bundle-hygiene: only `_example/` may ship under `tasks/builds/`; canonical copies live in the source project).
+
+## 2.69.1 — 2026-08-10
+
+**Highlights:** Consumer-compatibility hotfix for v2.69.0's new preflight test. `scripts/__tests__/review-preflight.test.ts` shipped in `node:test` style, which this repo's runner accepts — but consuming repos collect `**/__tests__/**/*.test.ts` with Vitest AND run a quality gate that REJECTS `node:test`/`node:assert` in any `*.test.ts`. It would therefore have failed every consumer's CI on adoption. Converted to Vitest (19 tests, unchanged coverage). Same class of producer-side blind spot as v2.68.1, now closed for tests as well as lint.
+
+**Fixed:**
+- `scripts/__tests__/review-preflight.test.ts`: `node:test` + `node:assert` → Vitest `test`/`expect`; `{ skip }` option → `test.skipIf`. Behaviour and assertions identical; 19/19 pass.
+
+**Changed:**
+- `.claude/commands/release.md` step 5b: the consumer gate now covers **test shape** as well as lint — new `*.test.ts` must be Vitest (the standalone-node shape stays valid only for `.claude/hooks/*.test.js`, which consumers run directly), with a grep check that no `node:test`/`node:assert` import ships. Lint alone cannot catch this class.
+
+## 2.69.0 — 2026-08-10
+
+**Highlights:** Completes the ci-efficiency-hardening framework track (F2 + F3, after v2.68.0's F1). The `ready-to-merge` label discipline is now enforced at the point of failure rather than documented: a `git push` on a labelled PR is INTERRUPTED with an executable remediation, so the wasted full-suite re-run cannot happen by accident. Review transports are now probed BEFORE a coordinator commits to a review path, so a missing Codex binary or a capped OpenAI org surfaces at Step 0 instead of halfway through a pipeline. The release protocol also gains the consumer-lint gate that v2.68.1 was needed to undo.
+
+> growth-gate: .claude/hooks/ci-push-guard.js — replaces: none: the label-pull discipline existed only as coordinator prose, and prose cannot stop a push; the sibling `bash-config-guard.js` guards config paths, not push semantics, so no existing hook covers this trigger; footprint: 12333 bytes
+
+**Added:**
+- `.claude/hooks/ci-push-guard.js` (hook, PreToolUse `Bash`): blocks `git push` when the pushed branch's PR currently carries `ready-to-merge`. **The predicate is the live label state and nothing else** — an unlabelled branch is never blocked, even with CI in flight (the "block on any run in flight" shape is what gets a guard disabled); in-flight run info appears only as advisory context. The block message names the executable remediation (`label.sh pull --pr N --reason pre-push`, no `--run-id`, no `--slug`). Override is the framework's one-shot HITL sentinel ONLY — deliberately no agent-settable env var. Fails OPEN on absent/unauthenticated/slow `gh` (>3s). Supported refspecs: plain push, `origin <branch>`, `src:dst`; `--all`/`--mirror`/multi-refspec are advisory allows rather than wrong blocks.
+- `.claude/hooks/ci-push-guard.test.js`: 30 checks — block/allow matrix, the allow-with-CI-in-flight regression, fail-open paths, one-shot sentinel (including that a different branch's sentinel does not authorise), refspec edges, malformed stdin, and the end-to-end proof that the remediation the guard PRINTS actually succeeds against a fake `gh`.
+- `scripts/review-preflight.sh` (helper-script): review-tier transport preflight. Composes the EXISTING `scripts/codex/resolve-codex-bin.sh` and `scripts/verify-chatgpt-model.ts` rather than reimplementing them, so the probe exercises the same code the real reviewers use. Emits one machine-readable line — `REVIEW TIER PREFLIGHT: codex=... openai-api=...` with `PASS|FAIL|UNAVAILABLE|SKIPPED` — and never the reserved `REVIEW_GAP` token. Exit 0 whenever the preflight ran and produced a well-formed block; probe results are DATA, not the script's verdict. The Codex exec probe inherits the mandatory `-s read-only` sandbox from `references/codex-invocation-contract.md` (no unsandboxed fallback: a health probe has no authority to write to the checkout). A capped OpenAI organisation is reported explicitly.
+- `scripts/review-preflightPure.ts` + `scripts/__tests__/review-preflight.test.ts` (19 tests): the CALLER side is unit-tested, not just the probes — `parseStatusBlock`, the status→action mapping, `buildRequiredTiers` (mode-aware), and the rule that a non-zero exit and an exit-0-with-unparseable-block are treated IDENTICALLY as `UNAVAILABLE` for every required tier (a crashed preflight must not be softer than a failed probe).
+
+**Changed:**
+- `spec-coordinator.md`, `feature-coordinator.md`, `finalisation-coordinator.md`: Step 0 now runs the preflight with a `--require` set built AFTER task class AND review mode are resolved. Capabilities are TRANSPORTS, not review tiers: `openai-api` probes the Responses API, which manual ChatGPT-web review never touches, so manual mode reports `SKIPPED` instead of manufacturing a gap. `codex` is required for Standard+ in Phases 1-2 (feature-coordinator's Step 3c `plan-reviewer` is unconditional) and ALWAYS in Phase 3 (Codex-owned `verify-phase`). A completed transport fallback is recorded as `transport fallback: automated→manual`, **not** a `REVIEW_GAP` — that artifact stays reserved for a review genuinely skipped.
+- `.claude/settings.json`: `ci-push-guard.js` appended to the PreToolUse `Bash` group (settings-merge, verified duplicate-free).
+- `.claude/commands/release.md`: NEW step 5b — **consumer-lint gate**. Every `.js`/`.mjs`/`.cjs`/`.ts` added or modified since the previous tag must be linted with a CONSUMING repo's ESLint config before the release commit. Framework CI does not run consumers' rule sets, which is exactly how v2.68.0 shipped a `no-useless-assignment` error that turned automation-v1's trunk red and made v2.68.1 necessary. Fixes go upstream, never as a local edit to a synced file. (The gate caught two real errors in this very release's test file.)
+- `manifest.json`: sync entries for all five new files.
+
+## 2.68.1 — 2026-08-09
+
+**Highlights:** Consumer-lint hotfix for the v2.67.0 description-budget gate. `scripts/gates/verify-description-budgets.mjs` used the `let x = []; try { x = … } catch { x = [] }` idiom in three places; the dead initialiser trips ESLint's `no-useless-assignment` **as an error** under a consuming repo's config, so the file failed `npm run lint` in every consumer that adopted v2.67.0+ with that rule enabled — turning a green framework release into a red consumer trunk. Caught by automation-v1's labelled CI immediately after the v2.68.0 adoption.
+
+**Fixed:**
+- `scripts/gates/verify-description-budgets.mjs`: drop the dead `= []` initialisers (`let entries;` + the existing `catch { entries = []; }` fallback). Behaviour identical — the gate still reports `violations=0` and its 12 self-tests pass.
+
+**Process note (producer-side rule this release enforces):** every new or modified framework `.mjs`/`.js` file must be linted with a CONSUMING repo's ESLint config before release, not just the framework's own. Framework CI does not run the consumers' rule sets, so a rule enabled downstream (here `no-useless-assignment`) is invisible upstream until it breaks a consumer's trunk.
+
+## 2.68.0 — 2026-08-09
+
+**Highlights:** First slice of the ci-efficiency-hardening framework track (F1): the `ready-to-merge` label-pull discipline is now mechanised. `scripts/ci/label.sh` is an audited state machine around the merge-label lock — journalled pull/restore with durable intent records and crash recovery, a shared slug resolver, and a restore that fails closed on three-way SHA agreement (local HEAD == PR head == journal parity SHA) plus evidence-class match, HITL-overridable. The finalisation coordinator's Step 11 first-failure action is now a numbered sequence with the label pull as command #1, and check→class mapping fails closed on unrecognised check names (`CLASS_UNRESOLVED`). F2 (push-guard hook) and F3 (review-tier preflight) follow in a later release.
+
+**Added:**
+- `scripts/ci/label.sh` (helper-script, sync): subcommands `pull` / `restore` / `parity` / `refile` / `reconcile`; journal + lock under `$(git rev-parse --git-dir)/ci-label/` (untracked, per-worktree); typed outcomes (PULLED / ALREADY_ABSENT / RESTORED / ALREADY_PRESENT / RECOVERED_AUDIT / SLUG_UNRESOLVED / NO_PARITY_EVIDENCE / SHA_MISMATCH / NO_OPEN_PR); input validation (numeric ids, slug path-containment, single-line bounded values); `GH_BIN` test seam; `LABEL_HITL_OVERRIDE` for the human bypass.
+- `scripts/ci/label.test.mjs` (helper-script-test, sync): 13 fake-`gh` Vitest cases — all typed outcomes, pre-push pull + fail-closed restore, SHA-mismatch, HITL override, crash reconciliation, stale-lock reclaim, and the terminal-state proof (label present + heads equal + journal parity present).
+
+**Changed:**
+- `finalisation-coordinator.md` Step 11 label-pull discipline: numbered sequence (pull via label.sh as command #1 → fix → one push → journal parity evidence → fail-closed restore → re-watch); caller-side KNOWN-CHECK class mapping with fail-closed `CLASS_UNRESOLVED` on unknown names (per-repo table lives in the consuming repo's `agent-context.md`); pre-adoption `gh pr edit` fallback preserved. The journal (never a tracked file) carries audit + parity records, so the loop closes porcelain-clean and the progress.md summary is informational, never a merge prerequisite.
+- `feature-coordinator.md`: label batching rule on every push — while `ready-to-merge` is present, pull first (no in-flight-fix exception); docs-only commits ride the next functional push.
+- `manifest.json`: sync entries for both new files.
+
+(No new agents, skills, hooks, or commands — no growth-gate declarations required; the two additions are non-always-loaded helper scripts.)
+
 ## 2.67.1 — 2026-08-07
 
 **Highlights:** Defensive hardening of the v2.67.0 description-budget gate. No behavioural change for any current agent/skill/command file — a robustness + test-coverage patch surfaced by the v2.67.0 PR review.

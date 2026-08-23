@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "uat-plan-blind.schema.json",
+  "title": "UatPlanBlind",
+  "description": "Canonical carrier for the FROZEN blind scenario plan (plan A6, round-3 finding 6). The blind planner emits this JSON in a hermetic runtime BEFORE reading any prior conclusion; the `.md` view is generated from it. All digests operate on this canonical JSON via RFC 8785, never on rendered Markdown. `document_sha256` is the whole-document digest computed over this object with the `document_sha256` field EXCLUDED (a document never contains its own hash); each scenario carries its own excluded-self `digest`. Once frozen, the blind scenario set can only be added to (augmentation), never mutated, deleted, or downgraded — the evidence validator enforces blind ⊆ final-required ⊆ executed against this frozen set.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "slug", "code_candidate_sha", "base_sha", "input_manifest_sha256", "frozen_at", "risk_baseline", "scenarios", "document_sha256"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "uat-plan-blind.v1" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "code_candidate_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "input_manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Digest of the hash-bound blind input package the planner was given." },
+    "frozen_at": { "type": "string", "format": "date-time" },
+    "risk_baseline": { "$ref": "#/definitions/risk_inventory", "description": "The independently-derived layer-1 baseline (classifier), hash-bound. The planner may add risks but never remove one." },
+    "scenarios": { "type": "array", "minItems": 0, "items": { "$ref": "#/definitions/plan_scenario" } },
+    "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "definitions": {
+    "risk_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risks", "sha256"],
+      "properties": {
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "source"],
+            "properties": {
+              "tag": { "type": "string", "minLength": 1 },
+              "source": { "type": "string", "enum": ["classifier", "behavior-spec", "coordinator", "tester", "augmentation", "late"] }
+            }
+          }
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "plan_scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "origin", "required", "risk_tags", "families", "oracle", "anti_vacuity_contract", "digest"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "origin": { "type": "string", "enum": ["blind"], "description": "Every scenario in the blind plan has origin=blind." },
+        "required": { "type": "boolean" },
+        "risk_tags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "families": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fixtures": { "type": "array", "items": { "type": "string" } },
+        "oracle": { "type": "string", "minLength": 1 },
+        "anti_vacuity_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The structured proof the executed scenario MUST later produce (record count, seeded id/value, branch marker, response field).",
+          "properties": {
+            "requires_observed_records": { "type": "boolean" },
+            "seeded_id": { "type": "string" },
+            "seeded_value": { "type": "string" },
+            "branch_marker": { "type": "string" },
+            "response_field": { "type": "string" }
+          }
+        },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "RFC 8785 digest of this scenario with its own `digest` field excluded." }
+      }
+    }
+  }
+}

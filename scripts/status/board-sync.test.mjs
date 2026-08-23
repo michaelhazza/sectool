@@ -8,29 +8,43 @@
  * a clock is involved so nothing depends on the real wall clock.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   ACTIVITY_RENDER_CAP,
   BOARD_FIELDS_TO_CREATE,
+  BOARD_OUTCOMES,
   buildCardBody,
   buildCardKey,
   buildDraftContentEditArgs,
   buildNotSyncedMarker,
   canonicaliseRepo,
+  CARD_ACTIONS,
+  cardProjectionEqual,
   checkBoardContract,
   checkBoardHygiene,
   chooseSurvivor,
   classifyBoardPermissionError,
+  decideActionType,
+  decideArchivedCardAction,
   decideCardAction,
+  executeCardAction,
   EXIT_NOT_SYNCED,
   extractKeyFromBody,
   extractUpdatedAtFromBody,
+  isArchivedRaceError,
+  isInventoryComplete,
+  isTerminalStatus,
   mapRecordToCard,
   neutraliseCardText,
   normaliseItem,
   NOT_SYNCED_REASONS,
   notSyncedReasonFromDiagnostic,
   parseOwnerRepoFromGitUrl,
+  planBoardActions,
   REPO_FIELD_NAME,
+  runBoardSync,
   shouldArchive,
   shouldSkipStale,
   validateSlugMatchesDir,
@@ -920,11 +934,13 @@ describe('did-not-sync signalling', () => {
     expect(Object.values(NOT_SYNCED_REASONS).sort()).toEqual([
       'board_contract_mismatch',
       'gh_failure',
+      'inventory_incomplete',
       'missing_board_access',
       'missing_project_scope',
       'no_config',
       'no_repo_identity',
       'unexpected_error',
+      'unrecovered',
     ]);
   });
 
@@ -932,5 +948,490 @@ describe('did-not-sync signalling', () => {
     for (const reason of Object.values(NOT_SYNCED_REASONS)) {
       expect(buildNotSyncedMarker(reason)).toMatch(/^\[board-sync\] NOT_SYNCED reason=[a-z_]+$/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runBoardSync — the importable core contract (W1.4).
+//
+// These exercise ONLY the paths that never shell out to gh (no config, no
+// records, all-refused), which is enough to pin the two contract guarantees:
+// (1) the return shape is target-aware, and (2) the core NEVER mutates
+// process.exitCode — the sticky-state bug that markNotSynced caused. The
+// gh-touching paths stay the thin I/O layer, untested here by design.
+// ---------------------------------------------------------------------------
+
+describe('runBoardSync — importable core contract', () => {
+  const boardConfig = JSON.stringify({ projects_board: { owner: 'acme', number: 7 } });
+
+  async function tempRoot(files = {}) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'board-sync-core-'));
+    for (const [rel, contents] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      await mkdir(path.dirname(full), { recursive: true });
+      await writeFile(full, contents);
+    }
+    return dir;
+  }
+
+  it('no config → exitCode 3, reason no_config, and the target pins as absent', async () => {
+    const root = await tempRoot();
+    const result = await runBoardSync({ root, targetSlug: 'my-build' });
+    expect(result.exitCode).toBe(EXIT_NOT_SYNCED);
+    expect(result.reasons).toEqual([NOT_SYNCED_REASONS.NO_CONFIG]);
+    expect(result.target).toEqual({ slug: 'my-build', outcome: 'absent' });
+    expect(result.records).toEqual({});
+  });
+
+  it('config present + repo injected + no builds → exitCode 0, target absent', async () => {
+    const root = await tempRoot({ '.claude/project-registries.json': boardConfig });
+    const result = await runBoardSync({ root, repo: 'acme/widgets', targetSlug: 'my-build' });
+    expect(result.exitCode).toBe(0);
+    expect(result.target).toEqual({ slug: 'my-build', outcome: 'absent' });
+  });
+
+  it('a refused target record pins the target outcome as refused, without touching gh', async () => {
+    // slug inside the file disagrees with the directory name → collectStatusRecords
+    // refuses it before any board mutation. records.length is then 0, so the run
+    // returns before a single gh call, yet the target outcome is known.
+    const record = { ...baseRecord({ slug: 'not-my-build' }) };
+    const root = await tempRoot({
+      '.claude/project-registries.json': boardConfig,
+      'tasks/builds/my-build/status.json': JSON.stringify(record),
+    });
+    const result = await runBoardSync({ root, repo: 'acme/widgets', targetSlug: 'my-build' });
+    expect(result.exitCode).toBe(0); // a refused record is not a board-unreachable failure
+    expect(result.target).toEqual({ slug: 'my-build', outcome: 'refused' });
+  });
+
+  it('NEVER mutates process.exitCode — the sticky-state regression (fail then succeed in one process)', async () => {
+    const before = process.exitCode;
+    try {
+      process.exitCode = undefined;
+
+      // A failure first: the old markNotSynced would have stuck exitCode at 3.
+      const failRoot = await tempRoot();
+      const failed = await runBoardSync({ root: failRoot });
+      expect(failed.exitCode).toBe(EXIT_NOT_SYNCED);
+      expect(process.exitCode, 'core must not set process.exitCode on failure').toBeUndefined();
+
+      // A success second, same process: no sticky 3 leaks in from the failure.
+      const okRoot = await tempRoot({ '.claude/project-registries.json': boardConfig });
+      const ok = await runBoardSync({ root: okRoot, repo: 'acme/widgets' });
+      expect(ok.exitCode).toBe(0);
+      expect(process.exitCode, 'core must not have left the failure exit state behind').toBeUndefined();
+    } finally {
+      process.exitCode = before;
+    }
+  });
+});
+
+// ===========================================================================
+// C2 — complete board inventory + archived-card state machine (W3/W5).
+//
+// Same discipline as the rest of this file: NOTHING here shells out to gh. The
+// pure decision functions (decideArchivedCardAction, cardProjectionEqual,
+// decideActionType, planBoardActions, isInventoryComplete) are exercised
+// directly, and the executor (executeCardAction) is driven by a RECORDING FAKE
+// gh so the true item-edit/item-archive SEQUENCE — and the failure-compensation
+// branches — are asserted without a live board.
+// ===========================================================================
+
+/** Classifies one recorded gh argv into the mutation kind the sequence tests
+ *  assert on. Mirrors how the real gh subcommands are shaped. */
+function ghKind(args) {
+  if (args.includes('item-create')) return 'create';
+  if (args.includes('item-archive')) return args.includes('--undo') ? 'unarchive' : 'archive';
+  if (args.includes('item-edit')) return args.includes('--field-id') ? 'field-edit' : 'content-edit';
+  if (args.includes('api') && args.includes('graphql')) return 'graphql';
+  return 'other';
+}
+
+/**
+ * Recording fake gh. Records every call, returns an id for item-create, and can
+ * be told to throw on the Nth call of a given kind (failAt) or on every call of
+ * a kind (failKinds). `message` overrides the thrown text (used for the
+ * is-archived race).
+ */
+function fakeGh({ failKinds = {}, failAt = {}, message } = {}) {
+  const calls = [];
+  const counts = {};
+  const gh = (args) => {
+    calls.push(args);
+    const kind = ghKind(args);
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    if (failKinds[kind] || failAt[kind] === counts[kind]) {
+      throw new Error(message ?? `simulated ${kind} failure`);
+    }
+    if (kind === 'create') return { id: 'DI_new' };
+    return {};
+  };
+  gh.calls = calls;
+  gh.kinds = () => calls.map(ghKind);
+  return gh;
+}
+
+const BOARD_CTX = { owner: 'acme', number: 7, projectId: 'PVT_board' };
+
+/** An archived existing-card projection whose title/body/status/phase equal
+ *  exactly what `record` would write (so cardProjectionEqual is true). */
+function equalArchivedCard(record, repo = 'acme/widgets') {
+  const desired = mapRecordToCard(record, repo);
+  return {
+    id: 'PVTI_1', contentId: 'DI_1', isArchived: true,
+    repo: canonicaliseRepo(repo), slug: record.slug,
+    title: desired.title, body: desired.body,
+    status: desired.fields.Status, phase: desired.fields.Phase,
+    updated_at: record.updated_at,
+  };
+}
+
+describe('isInventoryComplete', () => {
+  it('is true only when every card was provably retrieved', () => {
+    expect(isInventoryComplete(3, 3, false)).toBe(true);
+  });
+  it('is false when a page still reported hasNextPage, even if counts match', () => {
+    expect(isInventoryComplete(3, 3, true)).toBe(false);
+  });
+  it('is false when the retrieved count fell short of totalCount', () => {
+    expect(isInventoryComplete(2, 3, false)).toBe(false);
+  });
+  it('is false when totalCount is unknown (no numeric total)', () => {
+    expect(isInventoryComplete(3, null, false)).toBe(false);
+    expect(isInventoryComplete(3, undefined, false)).toBe(false);
+  });
+});
+
+describe('isTerminalStatus', () => {
+  it('MERGED and ABANDONED are terminal; nothing else is', () => {
+    expect(isTerminalStatus('MERGED')).toBe(true);
+    expect(isTerminalStatus('ABANDONED')).toBe(true);
+    for (const s of ['SPECIFYING', 'PLANNING', 'BUILDING', 'REVIEWING', 'TESTING', 'FINALISING', 'MERGE_READY']) {
+      expect(isTerminalStatus(s)).toBe(false);
+    }
+  });
+});
+
+describe('cardProjectionEqual (full projection, W5)', () => {
+  it('is true when title, body, Status and Phase all match what the record writes', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-26T00:00:00Z' });
+    expect(cardProjectionEqual(equalArchivedCard(record), record)).toBe(true);
+  });
+
+  it('is false on a Status/column drift even when updated_at + body would look equal enough', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-26T00:00:00Z' });
+    const drifted = { ...equalArchivedCard(record), status: 'REVIEWING' };
+    expect(cardProjectionEqual(drifted, record)).toBe(false);
+  });
+
+  it('is false against a null card', () => {
+    expect(cardProjectionEqual(null, baseRecord())).toBe(false);
+  });
+});
+
+describe('decideArchivedCardAction — the archived-card state machine (W5)', () => {
+  it('(a) archived + fully-equal terminal record -> SKIP_EQUIVALENT', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-26T00:00:00Z' });
+    expect(decideArchivedCardAction(equalArchivedCard(record), record).type).toBe(CARD_ACTIONS.SKIP_EQUIVALENT);
+  });
+
+  it('(b) archived + drifted terminal record -> UNARCHIVE_UPDATE_REARCHIVE', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-26T00:00:00Z' });
+    const drifted = { ...equalArchivedCard(record), status: 'REVIEWING', title: 'stale: title' };
+    expect(decideArchivedCardAction(drifted, record).type).toBe(CARD_ACTIONS.UNARCHIVE_UPDATE_REARCHIVE);
+  });
+
+  it('(c) archived + NON-terminal record (resurrection) -> UNARCHIVE_UPDATE, never re-archive', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'BUILDING', updated_at: '2026-07-26T00:00:00Z' });
+    const card = { ...equalArchivedCard(record), isArchived: true };
+    expect(decideArchivedCardAction(card, record).type).toBe(CARD_ACTIONS.UNARCHIVE_UPDATE);
+  });
+});
+
+describe('executeCardAction — sequence + failure compensation (recording fake gh)', () => {
+  const boardFields = liveFields();
+
+  function archivedDriftAction(record, overrides = {}) {
+    return {
+      type: CARD_ACTIONS.UNARCHIVE_UPDATE_REARCHIVE,
+      terminal: true,
+      item: { id: 'PVTI_1', contentId: 'DI_1', isArchived: true },
+      card: mapRecordToCard(record, 'acme/widgets'),
+      fields: boardFields,
+      boardCtx: BOARD_CTX,
+      ...overrides,
+    };
+  }
+
+  const terminalRecord = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-26T00:00:00Z' });
+
+  it('(a) SKIP_EQUIVALENT performs ZERO mutations', () => {
+    const gh = fakeGh();
+    const result = executeCardAction({ type: CARD_ACTIONS.SKIP_EQUIVALENT, card: {}, boardCtx: BOARD_CTX, fields: boardFields }, gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.EQUIVALENT);
+    expect(gh.calls).toHaveLength(0);
+  });
+
+  it('(b) UNARCHIVE_UPDATE_REARCHIVE fires unarchive -> each field edit -> title/body -> re-archive, in exact order', () => {
+    const gh = fakeGh();
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.APPLIED);
+    expect(gh.kinds()).toEqual([
+      'unarchive', 'field-edit', 'field-edit', 'field-edit', 'field-edit', 'content-edit', 'archive',
+    ]);
+  });
+
+  it('(c) UNARCHIVE_UPDATE (non-terminal) unarchives + updates and NEVER re-archives', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'BUILDING', updated_at: '2026-07-26T00:00:00Z' });
+    const gh = fakeGh();
+    const action = archivedDriftAction(record, { type: CARD_ACTIONS.UNARCHIVE_UPDATE, terminal: false });
+    const result = executeCardAction(action, gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.APPLIED);
+    expect(gh.kinds()).toEqual(['unarchive', 'field-edit', 'field-edit', 'field-edit', 'field-edit', 'content-edit']);
+    expect(gh.kinds()).not.toContain('archive');
+  });
+
+  it('(d) an "is archived" item-edit rejection routes to race-recovery, NEVER the gh_failure classifier', () => {
+    // A card we read as NOT archived was archived between read and write: every
+    // item-edit throws until an unarchive lands. The UPDATE must recover via the
+    // archived flow, not classify gh_failure.
+    let archived = true;
+    const calls = [];
+    const gh = (args) => {
+      calls.push(args);
+      const kind = ghKind(args);
+      if (kind === 'unarchive') { archived = false; return {}; }
+      if (kind === 'archive') { archived = true; return {}; }
+      if ((kind === 'field-edit' || kind === 'content-edit') && archived) {
+        throw new Error('GraphQL: The item is archived and cannot be updated');
+      }
+      return {};
+    };
+    gh.kinds = () => calls.map(ghKind);
+    const action = {
+      type: CARD_ACTIONS.UPDATE, terminal: true,
+      item: { id: 'PVTI_1', contentId: 'DI_1', isArchived: false },
+      card: mapRecordToCard(terminalRecord, 'acme/widgets'), fields: boardFields, boardCtx: BOARD_CTX,
+    };
+    const result = executeCardAction(action, gh);
+    expect(result.outcome).not.toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.APPLIED);
+    expect(gh.kinds()).toContain('unarchive'); // recovery happened, not a classification
+  });
+
+  it('isArchivedRaceError only matches the archive-race message', () => {
+    expect(isArchivedRaceError(new Error('The item is archived and cannot be updated'))).toBe(true);
+    expect(isArchivedRaceError(new Error('HTTP 403: forbidden'))).toBe(false);
+  });
+
+  it('(e) unarchive fails -> gh_failure, card left archived (no field edits, no re-archive)', () => {
+    const gh = fakeGh({ failKinds: { unarchive: true } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(gh.kinds()).toEqual(['unarchive']);
+  });
+
+  it('(f) first field edit fails -> re-archive still attempted, outcome gh_failure', () => {
+    const gh = fakeGh({ failAt: { 'field-edit': 1 } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(gh.kinds()).toEqual(['unarchive', 'field-edit', 'archive']);
+  });
+
+  it('(g) a middle field edit fails -> re-archive still attempted, outcome gh_failure', () => {
+    const gh = fakeGh({ failAt: { 'field-edit': 3 } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(gh.kinds()).toEqual(['unarchive', 'field-edit', 'field-edit', 'field-edit', 'archive']);
+  });
+
+  it('(h) title/body edit fails -> re-archive still attempted, outcome gh_failure', () => {
+    const gh = fakeGh({ failKinds: { 'content-edit': true } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(gh.kinds()).toEqual([
+      'unarchive', 'field-edit', 'field-edit', 'field-edit', 'field-edit', 'content-edit', 'archive',
+    ]);
+  });
+
+  it('(i) compensating re-archive fails (update ok) -> UNRECOVERED, one diagnostic', () => {
+    const gh = fakeGh({ failKinds: { archive: true } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.UNRECOVERED);
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it('(j) update AND compensating re-archive both fail -> UNRECOVERED, BOTH diagnostics preserved', () => {
+    const gh = fakeGh({ failKinds: { 'content-edit': true, archive: true } });
+    const result = executeCardAction(archivedDriftAction(terminalRecord), gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.UNRECOVERED);
+    expect(result.diagnostics).toHaveLength(2);
+  });
+
+  it('(k) draft-content-id resolution fails -> partial (fields written, title/body not)', () => {
+    const gh = fakeGh();
+    const action = {
+      type: CARD_ACTIONS.UPDATE, terminal: false,
+      item: { id: 'PVTI_1', contentId: null, isArchived: false },
+      card: mapRecordToCard(baseRecord({ slug: 'my-build', status: 'BUILDING' }), 'acme/widgets'),
+      fields: boardFields, boardCtx: BOARD_CTX,
+    };
+    const result = executeCardAction(action, gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.PARTIAL);
+    expect(gh.kinds()).toEqual(['field-edit', 'field-edit', 'field-edit', 'field-edit']); // no content-edit
+  });
+
+  it('non-terminal resurrection whose update fails restores the archived state (gh_failure, not unrecovered)', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'BUILDING', updated_at: '2026-07-26T00:00:00Z' });
+    const gh = fakeGh({ failKinds: { 'content-edit': true } });
+    const action = archivedDriftAction(record, { type: CARD_ACTIONS.UNARCHIVE_UPDATE, terminal: false });
+    const result = executeCardAction(action, gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.GH_FAILURE);
+    expect(gh.kinds()).toContain('archive'); // archived state restored
+  });
+});
+
+describe('planBoardActions — duplicate safety, target-first, bounded backfill (W3c/W3d)', () => {
+  const now = new Date('2026-07-27T00:00:00Z');
+
+  function normalisedCardFor(record, repo, overrides = {}) {
+    const desired = mapRecordToCard(record, repo);
+    return {
+      id: 'PVTI_match', contentId: 'DI_match', isArchived: false,
+      repo: canonicaliseRepo(repo), slug: record.slug,
+      title: desired.title, body: desired.body,
+      status: desired.fields.Status, phase: desired.fields.Phase,
+      updated_at: record.updated_at, ...overrides,
+    };
+  }
+
+  it('>=201-item inventory with the match AFTER position 200 -> NO duplicate created', () => {
+    const record = baseRecord({ slug: 'target', status: 'BUILDING', updated_at: '2026-07-26T00:00:00Z' });
+    const filler = Array.from({ length: 200 }, (_, i) => ({
+      id: `PVTI_${i}`, contentId: `DI_${i}`, isArchived: false,
+      repo: 'other/repo', slug: `foreign-${i}`, title: 'x', body: '', status: 'BUILDING', phase: 'x',
+      updated_at: '2026-01-01T00:00:00Z',
+    }));
+    const match = normalisedCardFor(record, 'acme/widgets');
+    const existingItems = [...filler, match]; // the match sits at index 200
+
+    const { actions } = planBoardActions({ records: [record], existingItems, repository: 'acme/widgets', now });
+    expect(actions).toHaveLength(1);
+    expect(actions[0].type).not.toBe(CARD_ACTIONS.CREATE);
+    expect(actions[0].type).not.toBe(CARD_ACTIONS.CREATE_AND_ARCHIVE);
+    expect(actions[0].survivor).toBe(match);
+  });
+
+  it('an active terminal record with no card -> CREATE (visible); an _archive one -> CREATE_AND_ARCHIVE', () => {
+    const active = baseRecord({ slug: 'fresh-merge', status: 'MERGED', source: 'active', updated_at: '2026-07-27T00:00:00Z' });
+    const archived = baseRecord({ slug: 'old-merge', status: 'MERGED', source: '_archive', updated_at: '2026-01-01T00:00:00Z' });
+    const { actions } = planBoardActions({ records: [active, archived], existingItems: [], repository: 'acme/widgets', now });
+    const byslug = Object.fromEntries(actions.map((a) => [a.record.slug, a.type]));
+    expect(byslug['fresh-merge']).toBe(CARD_ACTIONS.CREATE);
+    expect(byslug['old-merge']).toBe(CARD_ACTIONS.CREATE_AND_ARCHIVE);
+  });
+
+  it('bounded backfill: stops at the budget and reports the remainder', () => {
+    const records = Array.from({ length: 25 }, (_, i) =>
+      baseRecord({ slug: `arch-${String(i).padStart(2, '0')}`, status: 'MERGED', source: '_archive', updated_at: '2026-01-01T00:00:00Z' }));
+    const { actions, deferred } = planBoardActions({ records, existingItems: [], repository: 'acme/widgets', now, budget: 20 });
+    expect(actions.filter((a) => a.type === CARD_ACTIONS.CREATE_AND_ARCHIVE)).toHaveLength(20);
+    expect(deferred).toHaveLength(5);
+  });
+
+  it('the target is processed FIRST and OUTSIDE the budget (never starved by history)', () => {
+    // target + exactly `budget` other backfill records. If the target counted
+    // against the shared budget, one record would defer; it must not.
+    const target = baseRecord({ slug: 'load-bearing', status: 'MERGED', source: '_archive', updated_at: '2026-02-02T00:00:00Z' });
+    const others = Array.from({ length: 20 }, (_, i) =>
+      baseRecord({ slug: `hist-${String(i).padStart(2, '0')}`, status: 'MERGED', source: '_archive', updated_at: '2026-01-01T00:00:00Z' }));
+    const { actions, deferred } = planBoardActions({
+      records: [...others, target], existingItems: [], repository: 'acme/widgets', now, targetSlug: 'load-bearing', budget: 20,
+    });
+    expect(actions[0].record.slug).toBe('load-bearing'); // first
+    expect(deferred).toHaveLength(0); // target did not consume a budget slot
+    expect(actions.filter((a) => a.type === CARD_ACTIONS.CREATE_AND_ARCHIVE)).toHaveLength(21);
+  });
+
+  it('W3b _archive no-op: an archived, equal terminal record -> SKIP_EQUIVALENT, and executes zero mutations', () => {
+    const record = baseRecord({ slug: 'archived-history', status: 'MERGED', source: '_archive', phase: 'done', updated_at: '2026-01-01T00:00:00Z' });
+    const card = equalArchivedCard(record, 'acme/widgets');
+    const { actions } = planBoardActions({ records: [record], existingItems: [card], repository: 'acme/widgets', now });
+    expect(actions).toHaveLength(1);
+    expect(actions[0].type).toBe(CARD_ACTIONS.SKIP_EQUIVALENT);
+
+    const gh = fakeGh();
+    const result = executeCardAction({ ...actions[0], terminal: true, item: card, fields: liveFields(), boardCtx: BOARD_CTX }, gh);
+    expect(result.outcome).toBe(BOARD_OUTCOMES.EQUIVALENT);
+    expect(gh.calls).toHaveLength(0);
+  });
+});
+
+describe('decideActionType — non-archived SKIP_EQUIVALENT + archive routing', () => {
+  const now = new Date('2026-07-27T00:00:00Z');
+
+  it('an already-equal, non-aged active card -> SKIP_EQUIVALENT (mutations only on drift)', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'BUILDING', updated_at: '2026-07-26T00:00:00Z' });
+    const survivor = { ...equalArchivedCard(record), isArchived: false };
+    expect(decideActionType(survivor, record, now).type).toBe(CARD_ACTIONS.SKIP_EQUIVALENT);
+  });
+
+  it('an already-equal, aged terminal card -> ARCHIVE_ONLY (no redundant rewrite)', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-01T00:00:00Z' });
+    const survivor = { ...equalArchivedCard(record), isArchived: false };
+    expect(decideActionType(survivor, record, now).type).toBe(CARD_ACTIONS.ARCHIVE_ONLY);
+  });
+
+  it('a drifted, aged terminal card -> UPDATE_AND_ARCHIVE', () => {
+    const record = baseRecord({ slug: 'my-build', status: 'MERGED', phase: 'done', updated_at: '2026-07-01T00:00:00Z' });
+    const survivor = { ...equalArchivedCard(record), isArchived: false, status: 'REVIEWING' };
+    expect(decideActionType(survivor, record, now).type).toBe(CARD_ACTIONS.UPDATE_AND_ARCHIVE);
+  });
+});
+
+describe('buildCardBody — source-aware truncated-log pointer (W3b)', () => {
+  const many = Array.from({ length: ACTIVITY_RENDER_CAP + 2 }, (_, i) => ({
+    at: `2026-07-29T00:00:${String(i % 60).padStart(2, '0')}Z`, stage: 'Build', kind: 'info', note: [`entry ${i}`],
+  }));
+
+  it('an _archive-sourced record points at tasks/builds/_archive/<slug>/status.json', () => {
+    const body = buildCardBody(baseRecord({ slug: 'old-build', source: '_archive', log: many }));
+    expect(body).toContain('tasks/builds/_archive/old-build/status.json');
+  });
+
+  it('an active (default) record still points at tasks/builds/<slug>/status.json', () => {
+    const body = buildCardBody(baseRecord({ slug: 'live-build', log: many }));
+    expect(body).toContain('tasks/builds/live-build/status.json');
+    expect(body).not.toContain('_archive');
+  });
+});
+
+// runBoardSync-level: the _archive non-terminal REFUSAL path is reachable
+// without gh (a refused record leaves records.length 0 -> early return), so it
+// pins the _archive scan + the distinct non_terminal_archive reason end-to-end.
+describe('runBoardSync — _archive scan refuses a non-terminal record', () => {
+  const boardConfig = JSON.stringify({ projects_board: { owner: 'acme', number: 7 } });
+
+  async function tempRoot(files = {}) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'board-sync-c2-'));
+    for (const [rel, contents] of Object.entries(files)) {
+      const full = path.join(dir, rel);
+      await mkdir(path.dirname(full), { recursive: true });
+      await writeFile(full, contents);
+    }
+    return dir;
+  }
+
+  it('a non-terminal record in _archive/ is refused with the non_terminal_archive reason, never published', async () => {
+    const record = baseRecord({ slug: 'mis-archived', status: 'BUILDING' });
+    const root = await tempRoot({
+      '.claude/project-registries.json': boardConfig,
+      'tasks/builds/_archive/mis-archived/status.json': JSON.stringify(record),
+    });
+    const result = await runBoardSync({ root, repo: 'acme/widgets', targetSlug: 'mis-archived' });
+    // Refused -> no board-unreachable failure, and the target's outcome is known
+    // without a single gh call (records.length is 0 after the refusal).
+    expect(result.exitCode).toBe(0);
+    expect(result.target).toEqual({ slug: 'mis-archived', outcome: 'refused' });
   });
 });

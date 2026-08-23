@@ -2,7 +2,7 @@
 
 > Single source of truth for how every Codex tier (`spec-reviewer`, `plan-reviewer`, `brief-reviewer`, `dual-reviewer`, `verify-phase`) shells out to the Codex CLI. Agent files **cite** this document; none embeds a divergent command line. When an agent file and this contract disagree, THIS CONTRACT WINS — fix the agent file in the same commit.
 
-Two named modes. Review tiers use read-only; the verify phase's test-authoring step alone uses write-enabled. No tier infers write access from the read-only shape below, and no reader should treat "Codex writes the tests" as a contradiction of "Codex tiers are read-only."
+Three named modes. Review tiers use read-only; the verify phase's test-authoring step alone uses write-enabled; the fresh-context UAT acceptance gate uses a narrower evidence-only acceptance mode (below). No tier infers write access from the read-only shape below, and no reader should treat "Codex writes the tests" as a contradiction of "Codex tiers are read-only."
 
 ## Review mode (read-only) — spec / plan / brief / dual tiers
 
@@ -23,6 +23,19 @@ Used exclusively by the verify phase's step 2 (author) when it writes new test f
 - **Patch-emit-and-apply** — Codex runs in read-only mode and emits a patch (diff) in its output; Claude reviews and applies it via `Edit`/`Write`. Preferred when the invoking playbook wants an explicit apply step between Codex's output and the working tree.
 
 Write-enabled mode never governs a review tier. A review tier that needs write-enabled mode for anything is out of contract — route it back to plan-time as a gap, not a workaround.
+
+## Acceptance mode (evidence-only) — acceptance-phase / run-final-uat
+
+Used exclusively by the fresh-context UAT acceptance gate (`.claude/agents/acceptance-phase.md` dispatching the Codex `run-final-uat` skill). Its authority is NARROWER than write-enabled mode: it may read and execute and write, but only into UAT artifact roots — never production source. Concretely:
+
+- **Read** application source, spec artifacts, manifests, routes, migrations, and test infrastructure.
+- **Execute** allowed test, application, database, browser, and artifact commands (with environment parity — migrations applied to head — exactly as the test-executing precondition below requires).
+- **Create** ONLY acceptance artifacts (`uat-plan*.json`/`.md`, `uat-report.md`, `uat-evidence.json`, `uat-fix-plan.md`) and disposable scratch/evidence under `.test-runs/<slug>-uat/<run_id>/`.
+- **Never** edit production source, committed migrations, normal automated tests, configuration, or existing review conclusions.
+- **Never** deploy, push, merge, file issues, or contact external users unless a separate explicit workflow grants that exact action.
+- **Return `incomplete`** when required execution authority or capability is missing — a missing lane is never a pass.
+
+The invocation uses a FRESH context and an isolated workspace input set; the prompt must not contain expected defect diagnoses (blind first). The blind-planning stage runs under the additional hermetic runtime contract in [`references/blind-planner-runtime.md`](blind-planner-runtime.md) — isolated `CODEX_HOME`, web search off, memories off, no session resume, clean environment allowlist — which seals context channels the OS command sandbox does not. The environment-parity precondition below is mandatory for the execution stage.
 
 ## Binary resolution
 

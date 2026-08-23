@@ -28,6 +28,7 @@ commit.
 | 20 | plan-reviewer (Codex) iterations | 5 | lifetime per plan | `.claude/agents/plan-reviewer.md` |
 | 21 | brief-reviewer rounds | single-round | per brief revision — one Codex + one ChatGPT pass, no loop; a revised brief may be re-reviewed once | `.claude/agents/brief-reviewer.md` |
 | 22 | verify-phase fix loop | 5 | per verify-phase invocation — exceed escalates to the operator with the failure set; recorded as REVIEW_GAP-style entry in `progress.md` (blocks merge) | `.claude/agents/verify-phase.md` |
+| 23 | acceptance fix cycles | 3 | per build — on the third repeated failure or the same blocking condition twice with the same diagnosis, stop and escalate with evidence rather than looping. Each cycle is a fresh execution on a new SHA, never a replayed conversation (brief §11) | `.claude/agents/acceptance-phase.md` |
 
 Auto-fix guardrails AF1–AF4 (`finalisation-coordinator` Step 11) are rules, not
 loops — they are intentionally not in this table.

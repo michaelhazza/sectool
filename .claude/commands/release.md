@@ -41,6 +41,26 @@ Cut a framework release from the `claude-code-framework` repo itself. Given a bu
 
    This is enforced mechanically at step 7 (`verify-growth-gate.mjs`). A new tier or a new always-loaded doc section is the same class of growth — declare its replacement rationale and footprint in prose even though the mechanical gate only diffs the four file classes.
 
+5b. **Consumer-lint gate (mandatory when the release touches `.js`/`.mjs`/`.cjs`/`.ts`).** Framework CI does not run the CONSUMERS' ESLint rule sets, so a rule enabled downstream but not here ships green and turns a consumer's trunk red on adoption. This is not hypothetical: v2.68.0 shipped `verify-description-budgets.mjs` with a dead `let x = []` initialiser that automation-v1's config treats as an ERROR (`no-useless-assignment`), and v2.68.1 existed only to undo it.
+
+   For every JS/TS file added or modified since the previous release tag, lint it with a consuming repo's config before committing:
+
+   ```bash
+   # from a consuming repo that mounts this framework
+   git -C <framework> diff --name-only v<previous-version>..HEAD -- '*.js' '*.mjs' '*.cjs' '*.ts' \
+     | while read -r f; do cp "<framework>/$f" "scripts/.lintcheck-$(basename "$f")"; done
+   npx eslint scripts/.lintcheck-*        # must exit 0
+   rm -f scripts/.lintcheck-*
+   ```
+
+   Any error stops the release: fix it HERE (upstream), never as a local edit in the consumer — a local patch to a manifest-managed file is overwritten by the next sync and shows up as divergence. Record the check in the release report. If no consuming repo is reachable from this machine, say so explicitly in the report rather than skipping silently.
+
+   **Test-shape compatibility (same gate, second half).** A new or modified `*.test.*` file must also satisfy the CONSUMERS' test conventions, which are stricter than this repo's. Consuming repos typically collect `**/__tests__/**/*.test.ts` with Vitest AND run a quality gate that REJECTS `node:test` / `node:assert` / `process.exit` in any `*.test.ts`. This framework accepts both node:test and Vitest, so a node:test file passes here and breaks every consumer's CI on adoption — a failure mode lint cannot see. **Default to Vitest for `*.test.ts`**; use the standalone-node shape only for `.claude/hooks/*.test.js`, which consumers run directly. Verify by grepping the new test files:
+
+   ```bash
+   grep -l "from 'node:test'\|from 'node:assert'" <changed *.test.ts files>   # must print nothing
+   ```
+
 6. **Migration scaffold (ask).** If the release contains structural changes a consumer must react to (file renames/moves, state-schema changes, template seeds, retired files), ask the operator whether it needs `migrations/v<new-version>.js`. If yes: scaffold from `migrations/_template.js` when present, otherwise model on the most recent `migrations/v*.js` per `migrations/README.md` § *Authoring a new migration* (idempotent, non-destructive on conflict, returns `{ status, notes }`). The `migrations/v*.js` manifest glob picks it up automatically. Reference it from the CHANGELOG entry: `Migration: v<new-version>.js — <what and why>`.
 
 7. **Re-run the version-consistency check** from step 3 against the bumped files (including the new CHANGELOG heading). **Then run the growth gate** — `node scripts/gates/verify-growth-gate.mjs` — which diffs new behavioural files since the previous release tag and fails (exit 1) if any lacks its `> growth-gate:` CHANGELOG declaration (control C5). Fix the CHANGELOG entry before proceeding; the gate fails-open only when the previous tag is unresolvable. **Then run the description-budget gate** — `node scripts/gates/verify-description-budgets.mjs` — a BLOCKING gate (exit 1) if any agent/skill/command `description:` frontmatter exceeds its per-surface budget (agents 400B / skills 450B / commands 180B). Those descriptions load into every session's system prompt, so an over-budget one is held out of the release; trim it to a WHEN-TO-INVOKE signal (procedure belongs in the body) per `references/doc-size-budgets.md`. Then commit:

@@ -34,8 +34,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, createWriteStream } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, createWriteStream, existsSync } from 'node:fs';
+import { join, delimiter, isAbsolute } from 'node:path';
 
 const REPO = process.env.CLEANFILES_AUDIT_REPO || process.cwd();
 const LOCALAPPDATA =
@@ -73,6 +73,32 @@ function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Resolve a command to an existing executable on Windows using PATH + PATHEXT,
+ * or null if it cannot be found. Under `shell: true`, cmd.exe spawns SUCCESSFULLY
+ * for a missing command and then reports "not recognized" with a locale-specific
+ * message and an ambiguous exit code (1) — so Node never emits an 'error'/ENOENT
+ * event and the wrapper cannot tell "command not found" from a real exit 1. This
+ * pre-resolution restores the documented ENOENT -> 127 contract deterministically
+ * and locale-independently, without giving up the shell (needed for .cmd shims).
+ */
+function resolveWindowsExecutable(cmd) {
+  const exts = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((e) => e.trim())
+    .filter(Boolean);
+  const hasKnownExt = /\.[^.\\/]+$/.test(cmd);
+  const withExts = (base) => (hasKnownExt ? [base] : [base, ...exts.map((e) => base + e)]);
+  if (isAbsolute(cmd) || /[\\/]/.test(cmd)) {
+    return withExts(cmd).find((c) => existsSync(c)) || null;
+  }
+  for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
+    const hit = withExts(join(dir, cmd)).find((c) => existsSync(c));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function main() {
   mkdirSync(LOG_DIR, { recursive: true });
   const logPath = join(LOG_DIR, `audit-${isoDate(new Date())}.log`);
@@ -83,6 +109,14 @@ function main() {
 
   let child;
   if (process.platform === 'win32') {
+    // ENOENT parity: under shell:true a missing command still spawns cmd.exe
+    // cleanly (no 'error' event), so resolve the executable ourselves first and
+    // settle as 127 on a miss — matching the POSIX spawn-failure contract.
+    if (!resolveWindowsExecutable(COMMAND[0])) {
+      log.write(`\n[wrapper] spawn error: command not found: ${COMMAND[0]} -> wrapper exit 127\n`);
+      log.end(() => process.exit(127));
+      return;
+    }
     // The scheduled deployment target. An npm-installed `claude` is a .cmd shim,
     // which Node refuses to spawn directly since the CVE-2024-27980 hardening —
     // go through the shell with explicit per-arg quoting (spawn's own shell:true
@@ -107,13 +141,20 @@ function main() {
     });
   }
 
-  /** Signal the child's whole tree (POSIX group / Windows taskkill on force). */
+  /** Signal the child's whole tree (POSIX process group / Windows taskkill /T). */
   function killTree(signal) {
     if (!child.pid) return;
     try {
       if (process.platform === 'win32') {
-        if (signal === 'SIGKILL') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-        else child.kill(); // graceful path; the force path above takes the tree
+        // ALWAYS target the tree via taskkill /T. child.kill() would
+        // TerminateProcess only cmd.exe (the shell:true root) and orphan the real
+        // worker + its grandchildren; the later force pass would then find no tree
+        // under child.pid to kill, leaving orphans holding the repo cwd. /T keeps
+        // the tree rooted at cmd.exe; /F (force) is added only on the hard kill.
+        const args = signal === 'SIGKILL'
+          ? ['/PID', String(child.pid), '/T', '/F']
+          : ['/PID', String(child.pid), '/T'];
+        spawnSync('taskkill', args, { windowsHide: true });
       } else {
         try { process.kill(-child.pid, signal); } catch { child.kill(signal); }
       }

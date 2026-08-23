@@ -1,7 +1,7 @@
 'use strict';
 // Smoke test for the v2.10.0 LOCAL-OVERRIDE mechanism in sync.js.
 // Standalone Node assertion script — no test framework, no CI gates.
-// Run with: node scripts/__tests__/local-override-smoke.js
+// Run with: node scripts/__tests__/local-override-smoke.cjs
 
 const assert = require('assert');
 const path = require('path');

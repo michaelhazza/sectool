@@ -18,8 +18,8 @@
  *   6. On throw, stop and propagate.
  *
  * Invocation:
- *   node scripts/run-migrations.js <consumerRoot> <fromVersion> <toVersion>
- *   node scripts/run-migrations.js --help
+ *   node scripts/run-migrations.cjs <consumerRoot> <fromVersion> <toVersion>
+ *   node scripts/run-migrations.cjs --help
  *
  * Output:
  *   Per-migration line to stdout: `MIGRATION v<version> status=<applied|skipped|conflict>`
@@ -82,7 +82,7 @@ async function writeStateAtomic(consumerRoot, state) {
 
 function printHelp() {
   process.stdout.write(
-    'Usage: node scripts/run-migrations.js <consumerRoot> <fromVersion> <toVersion>\n' +
+    'Usage: node scripts/run-migrations.cjs <consumerRoot> <fromVersion> <toVersion>\n' +
     '\n' +
     '  consumerRoot   Absolute path to the consuming repo root\n' +
     '  fromVersion    Semver of the framework BEFORE this update\n' +

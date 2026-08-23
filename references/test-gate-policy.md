@@ -6,7 +6,7 @@ This file replaces ~10 duplicated copies of the same rule across the agent fleet
 
 ## Rule
 
-**Continuous integration runs the complete test/gate suite as the final pre-merge confirmation.** No local agent or development session runs the full battery. This applies to every agent in `.claude/agents/`, every skill, every review loop iteration, and every main-session task — with exactly TWO carve-outs: the finalisation G5 local CI-parity gate, and the verify-phase stage-6 gating checkpoint (see below).
+**Continuous integration runs the complete test/gate suite as the final pre-merge confirmation.** No local agent or development session runs the full battery. This applies to every agent in `.claude/agents/`, every skill, every review loop iteration, and every main-session task — with exactly THREE carve-outs: the finalisation G5 local CI-parity gate, the verify-phase stage-6 gating checkpoint, and the fresh-context UAT acceptance gate (all three below).
 
 ## Forbidden locally
 
@@ -44,6 +44,12 @@ Whichever mode runs records one line in `tasks/builds/<slug>/progress.md`: `G5 m
 `verify-phase` Step 3 (Run) and Step 4 (Fix loop re-runs) run the full CI suite locally, once per stage-6 invocation — this is full-suite gating checkpoint **#1** and the stage-6 exit condition (spec §7.2 step 3). `verify-phase` is the **sole additional agent** permitted to run the full suite locally beyond the G5 carve-out above; no other agent, skill, plan, spec, review loop, or main-session task gains this permission by association. Scope is strict in the same way as G5: it applies ONLY while executing `verify-phase`'s own Step 3 and Step 4 — every other agent, including `builder` and `feature-coordinator`, remains bound by "Forbidden locally" in full.
 
 Verify-phase's local run is distinct from, and does not replace, the G5 carve-out above: verify-phase authors and runs the build's OWN new test coverage during construction (full-suite run #1 in the build's lifecycle, gated on `status.json.gates.verify`); G5 is the later pre-merge parity confirmation that runs on the finalised branch after review (a separate, later full-suite run). Full contract: `.claude/agents/verify-phase.md`.
+
+## Fresh-context UAT acceptance carve-out (the THIRD exception — residual real-workflow lanes only)
+
+`acceptance-phase` (finalisation Step 8c.5, after G5) dispatches a fresh Codex context to run RESIDUAL real-workflow lanes the earlier gates do not prove: real browser, real-database, migration, async-retry, export/email/artifact, and environment-parity scenarios risk-scoped to the candidate diff. This is NOT a general third full-suite run — acceptance does not re-run the whole unit suite a third time (brief invariant 7). It runs only the lanes and cross-boundary risks not already proved by verify-phase and G5. A production defect discovered by acceptance re-enters `verify-phase`, which owns the full suite; acceptance never authors around a gap.
+
+Scope is strict in the same way as G5 and verify-phase: it applies ONLY while executing the `acceptance-phase` playbook (finalisation Step 8c.5) and its dispatched `run-final-uat` executor — every other agent, skill, plan, spec, and main-session task remains bound by "Forbidden locally" in full. Full contract: `.claude/agents/acceptance-phase.md`, `.claude/skills/acceptance-testing/SKILL.md`.
 
 ## Why
 

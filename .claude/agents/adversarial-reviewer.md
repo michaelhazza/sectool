@@ -57,7 +57,7 @@ The branch diff — **the caller provides the changed-file set**, same posture a
 
 Before reviewing, read in order:
 1. `CLAUDE.md` — project principles and conventions.
-2. `architecture.md` — the project's agent/auth model, tenant-isolation model, route conventions, and permission system. Read if present; skip when the repo has not authored one.
+2. `architecture.md` — the project's agent/auth model, tenant-isolation model, route conventions, and permission system. Read if present; skip when the repo has not authored one. Prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (ranked sections with `architecture.md:LINE` anchors; `--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or the doc's anchors are absent, or the task genuinely spans most sections.
 3. `DEVELOPMENT_GUIDELINES.md` — read if present and the changes touch migrations, schema, services, routes, shared libs, tenant-isolation policies, or LLM-routing code. Skip when absent OR when changes are pure frontend / pure docs.
 4. The specific files changed (provided by the caller).
 

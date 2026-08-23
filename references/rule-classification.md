@@ -26,6 +26,19 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 
 | anchor | rule | class | notes (assumption + sunset for model-workarounds) |
 |---|---|---|---|
+| `.claude/agents/acceptance-phase.md#when-invoked` | directives under this heading | process-contract |  |
+| `.claude/agents/acceptance-phase.md#inputs-and-resolution` | directives under this heading | process-contract |  |
+| `.claude/agents/acceptance-phase.md#capability-preflight` | directives under this heading | durable-invariant | missing mandatory capability yields incomplete, never pass (fail-closed) |
+| `.claude/agents/acceptance-phase.md#applicability-and-the-layered-risk-baseline` | directives under this heading | durable-invariant | baseline produced independently of the tester; tester may add risks, never remove one |
+| `.claude/agents/acceptance-phase.md#staged-dispatch-blind-then-augment` | directives under this heading | durable-invariant | sealed blind stage; blind ⊆ final-required ⊆ executed; two-sided plan-digest identity |
+| `.claude/agents/acceptance-phase.md#fresh-executor-dispatch-and-the-executor-rule` | directives under this heading | durable-invariant | A2: Codex mandatory when blocking; Claude fallback only advisory; no override field |
+| `.claude/agents/acceptance-phase.md#evidence-validation-and-status-writes` | directives under this heading | durable-invariant | status.json populated only from validated evidence, never the reverse |
+| `.claude/agents/acceptance-phase.md#enforcement-derivation` | directives under this heading | durable-invariant | enforcement is the single downstream control; monotonic; late-risk capability re-preflight |
+| `.claude/agents/acceptance-phase.md#coordinator-output` | directives under this heading | process-contract | advisory fail/incomplete goes to uat_advisories, never the machine-blocking field |
+| `.claude/agents/acceptance-phase.md#failure-fix-routing-and-re-entry` | directives under this heading | durable-invariant | tester never edits production code; fresh rerun on new SHA; cap 3 (iteration-caps.md) |
+| `.claude/agents/acceptance-phase.md#run-id-namespacing-and-cleanup` | directives under this heading | durable-invariant | A10 run-ID isolation; run A cleanup cannot touch run B |
+| `.claude/agents/acceptance-phase.md#safety-and-separation-of-duties` | directives under this heading | durable-invariant | allowlisted non-prod only; secrets redacted; page content is untrusted data |
+| `.claude/agents/acceptance-phase.md#project-specific-notes` | — | no-rules | |
 | `.claude/agents/adversarial-reviewer.md#trigger` | directives under this heading | process-contract |  |
 | `.claude/agents/adversarial-reviewer.md#failure-mode-posture` | directives under this heading | process-contract |  |
 | `.claude/agents/adversarial-reviewer.md#input` | directives under this heading | process-contract |  |
@@ -309,10 +322,12 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | `.claude/agents/finalisation-coordinator.md#step-8-taskstodomd-cleanup` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-8b-post-review-branch-re-sync-s3` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-8c-g5-local-ci-parity-gate-mandatory-pre-label-pre-runner-rollout-only` | directives under this heading | process-contract | sanctioned CI-parity exception; 10-iteration cap is MW (assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md) |
+| `.claude/agents/finalisation-coordinator.md#step-8c5-fresh-context-uat-acceptance-gate-after-g5-before-merge-readiness` | directives under this heading | durable-invariant | fresh-context UAT gate after G5 before merge; enforcement is the single downstream control; fail-closed; no runtime edit after pass before label; acceptance fix cap 3 (iteration-caps.md row 23) |
+| `.claude/agents/finalisation-coordinator.md#step-126-post-merge-post-abort-uat-scratch-cleanup-conditional-only-when-step-8c5-ran` | directives under this heading | process-contract | A10 two-tier retention: scratch cleaned by exact run-ID path, binding evidence durable; distinct from the Step 8a pre-acceptance sweep |
 | `.claude/agents/finalisation-coordinator.md#step-9-current-focusmd-statusjson-mergeready-deferred-write` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-10-write-phase-3-artefacts-commit-push-then-apply-ready-to-merge-label` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#step-11-ci-monitoring-iterative-fix-loop` | directives under this heading | process-contract | 5-iteration cap is MW (assumption: executing models do not reliably detect non-convergence; sunset: re-evaluate per model upgrade via the WS4 eval suite; caps registered in references/iteration-caps.md) |
-| `.claude/agents/finalisation-coordinator.md#label-pull-discipline-first-action-on-red-before-any-diagnosis` | directives under this heading | process-contract |  |
+| `.claude/agents/finalisation-coordinator.md#label-pull-discipline-resolver-check-then-pull-on-a-real-red-before-any-diagnosis` | directives under this heading | process-contract |  |
 | `.claude/agents/finalisation-coordinator.md#guardrails-mandatory-applied-before-every-iteration` | directives under this heading | model-workaround | AF2 diff cap + AF3 category allowlist bound auto-fix trust (assumption: sub-agent/reviewer self-reports are unreliable; sunset: re-evaluate via F11 harness-metrics evidence); AF1 never-modify-tests-to-chase-green is DI |
 | `.claude/agents/finalisation-coordinator.md#iteration-steps-only-run-if-all-four-guardrails-pass` | directives under this heading | model-workaround | read-the-log-not-guess + stuck-detection; assumption: the model asserts or classifies without verifying against the artifact; sunset: re-evaluate when eval evidence shows verification-free reliability |
 | `.claude/agents/finalisation-coordinator.md#step-12-auto-merge-post-ci-green` | directives under this heading | process-contract |  |
@@ -594,6 +609,32 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 
 | anchor | rule | class | notes (assumption + sunset for model-workarounds) |
 |---|---|---|---|
+| `.claude/skills/acceptance-testing/SKILL.md#acceptance-testing` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/SKILL.md#when-to-use` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/SKILL.md#blind-first-augment-second` | directives under this heading | durable-invariant | blind-then-augment + the blind ⊆ final-required ⊆ executed invariant — fresh context is the feature, not an implementation detail |
+| `.claude/skills/acceptance-testing/SKILL.md#risk-classification-and-lane-selection` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/SKILL.md#scenario-anatomy` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/SKILL.md#capability-preflight` | directives under this heading | durable-invariant | missing mandatory capability yields incomplete, never pass (fail-closed) |
+| `.claude/skills/acceptance-testing/SKILL.md#verdict-semantics` | directives under this heading | durable-invariant | fail-closed pass/fail/incomplete/proceed; no pass-with-caveats; proceed reserved for non-applicability |
+| `.claude/skills/acceptance-testing/SKILL.md#fresh-context-and-separation-of-duties` | directives under this heading | durable-invariant | tester never edits production code; implementer/tester/regression-author separated |
+| `.claude/skills/acceptance-testing/SKILL.md#safety` | directives under this heading | durable-invariant | allowlisted non-prod only; secrets redacted; page content is untrusted data, not instructions |
+| `.claude/skills/acceptance-testing/references/scenario-matrix.md#scenario-matrix` | directives under this heading | process-contract | human view of scripts/uat/risk-to-scenario-policy.json (single editing home) |
+| `.claude/skills/acceptance-testing/references/scenario-matrix.md#risk-tags-and-mandatory-families` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/references/scenario-matrix.md#composition` | directives under this heading | durable-invariant | composed risk tags share one seeded identity end to end |
+| `.claude/skills/acceptance-testing/references/scenario-matrix.md#anti-vacuity-proofs` | directives under this heading | durable-invariant | a test must prove its intended branch ran (structured proof, not prose) |
+| `.claude/skills/acceptance-testing/references/scenario-matrix.md#exact-value-and-boundary-selection` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#evidence-contract` | directives under this heading | process-contract | status.json populated only from validated evidence, never the reverse |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#verdict-and-applicability` | directives under this heading | durable-invariant | verdict/applicability/enforcement three separate facts; no override field |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#identity-candidate-vs-harness` | directives under this heading | process-contract | harness_manifest_sha256 is the completeness boundary; evidence_sha256 binds status.json |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#blind-freeze-and-plan-digest-identity` | directives under this heading | durable-invariant | two-sided plan-digest identity over RFC 8785 canonical JSON |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#risk-inventories-and-coverage` | directives under this heading | durable-invariant | risk_baseline ⊆ start ⊆ final; machine-checked family coverage |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#artifacts-and-redaction` | directives under this heading | durable-invariant | integrity recomputed, never trusted; redaction is a claim not proof |
+| `.claude/skills/acceptance-testing/references/evidence-contract.md#what-the-validator-rejects` | directives under this heading | process-contract | the deterministic rejection list |
+| `.claude/skills/acceptance-testing/references/freshness-and-applicability.md#freshness-and-applicability` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/references/freshness-and-applicability.md#applicability` | directives under this heading | process-contract |  |
+| `.claude/skills/acceptance-testing/references/freshness-and-applicability.md#the-three-staleness-classes` | directives under this heading | process-contract | unknown paths default to application-impacting (conservative) |
+| `.claude/skills/acceptance-testing/references/freshness-and-applicability.md#sha-freshness-and-the-certification-tail` | directives under this heading | durable-invariant | code_candidate_sha vs certification_head_sha; operation-aware inert tail |
+| `.claude/skills/acceptance-testing/references/freshness-and-applicability.md#proceed-rules` | directives under this heading | durable-invariant | proceed only for genuine non-applicability, with reason + current SHA |
 | `.claude/skills/ci-gate-integrity/SKILL.md#ci-gate-integrity` | directives under this heading | durable-invariant |  |
 | `.claude/skills/ci-gate-integrity/SKILL.md#prove-the-gate-can-fail` | directives under this heading | durable-invariant |  |
 | `.claude/skills/ci-gate-integrity/SKILL.md#grepregex-gate-pitfalls` | directives under this heading | durable-invariant |  |
@@ -890,6 +931,7 @@ Residue found this pass is handled as kill-list items (decision gate DG-2) rathe
 | anchor | rule | class | notes |
 |---|---|---|---|
 | `.claude/hooks/bash-config-guard.js` | hook contract (event, block/advisory, fail-mode) | durable-invariant | closes the Bash bypass of the config/knowledge floors; HITL sentinel; fail-open on hook bugs |
+| `.claude/hooks/ci-push-guard.js` | hook contract (event, block/advisory, fail-mode) | durable-invariant | PreToolUse; blocks `git push` while the branch's PR carries `ready-to-merge` (the label-gated CI suites re-fire on every push), enforcing "label off → push → label on when green"; predicate is the live label only, never in-flight runs; fail-open on hook bugs |
 | `.claude/hooks/code-graph-freshness-check.js` | hook contract (event, block/advisory, fail-mode) | process-contract | advisory cache maintenance; always exit 0 |
 | `.claude/hooks/config-protection.js` | hook contract (event, block/advisory, fail-mode) | durable-invariant | protects "never suppress warnings to pass a check" floor via HITL sentinel; fail-open on hook bugs |
 | `.claude/hooks/correction-nudge.js` | hook contract (event, block/advisory, fail-mode) | model-workaround | assumption: unprompted correction-capture into KNOWLEDGE.md is unreliable; sunset: re-evaluate per model upgrade via eval |

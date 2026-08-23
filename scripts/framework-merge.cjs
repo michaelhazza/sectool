@@ -2,7 +2,7 @@
 'use strict';
 
 /**
- * framework-merge.js — three-way merge helper for `.framework-new` conflicts.
+ * framework-merge.cjs — three-way merge helper for `.framework-new` conflicts.
  *
  * When sync.js detects that a managed file was customised locally, it writes the
  * new framework content to a `<path>.framework-new` sibling and leaves the merge
@@ -22,8 +22,8 @@
  * maintenance pass rebaselines the merged content hash into `.framework-state.json`.
  *
  * Invocation:
- *   node .claude-framework/scripts/framework-merge.js [consumerRoot] [--dry-run]
- *   node .claude-framework/scripts/framework-merge.js --help
+ *   node .claude-framework/scripts/framework-merge.cjs [consumerRoot] [--dry-run]
+ *   node .claude-framework/scripts/framework-merge.cjs --help
  *
  * consumerRoot defaults to process.cwd(). The framework checkout is expected at
  * `<consumerRoot>/.claude-framework` (the standard submodule mount).
@@ -308,7 +308,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(
-      'Usage: node framework-merge.js [consumerRoot] [--dry-run]\n\n' +
+      'Usage: node framework-merge.cjs [consumerRoot] [--dry-run]\n\n' +
       'Three-way merges every <path>.framework-new conflict in the consumer repo.\n' +
       'Clean merges are applied and the .framework-new sibling deleted; conflicts\n' +
       'are left untouched and reported for manual resolution.\n'

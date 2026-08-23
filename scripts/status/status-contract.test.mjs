@@ -65,6 +65,18 @@ function validBlocker(overrides = {}) {
   };
 }
 
+/** A schema-valid gate_evidence entry. run_ids items are STRINGS — the D2
+ *  defect wrote a number here and the one-level floor accepted it. */
+function validGateEvidenceEntry(overrides = {}) {
+  return {
+    sha: 'deadbeef',
+    run_ids: ['32310798762'],
+    url: null,
+    completed_at: '2026-08-19T00:00:00Z',
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.resetModules();
 });
@@ -274,6 +286,89 @@ describe('validateRecordShape — Ajv unavailable (the structural floor)', () =>
     });
     expect(await validateRecordShape(record)).toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  // W2.1 (framework-status-sync-hardening) — the recursive floor. These are
+  // the constraints the ONE-LEVEL floor could not reach, and every one is the
+  // exact defect class observed in the PR #828 finalisation (D2) or its
+  // neighbours. gate_evidence entries are typed via schema-valued
+  // additionalProperties two levels down; note[] carries maxItems/maxLength;
+  // the whole record and each gate_evidence entry are additionalProperties:false.
+  // -------------------------------------------------------------------------
+
+  it('rejects a numeric run_id nested in a gate_evidence entry — the D2 defect', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const error = await validateRecordShape(validRecord({
+      gate_evidence: { merge_gate: validGateEvidenceEntry({ run_ids: [32310798762] }) },
+    }));
+    expect(error, 'a number where the schema demands string items must be rejected').toBeTruthy();
+    expect(error).toContain('run_ids');
+  });
+
+  it('accepts a stringified run_id in a gate_evidence entry', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    expect(await validateRecordShape(validRecord({
+      gate_evidence: { merge_gate: validGateEvidenceEntry({ run_ids: ['32310798762'] }) },
+    }))).toBeNull();
+  });
+
+  it('rejects a note bullet over the 200-char maxLength', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const error = await validateRecordShape(validRecord({
+      log: [{ at: '2026-08-19T00:00:00Z', stage: 'Build', kind: 'info', note: ['x'.repeat(201)] }],
+    }));
+    expect(error).toBeTruthy();
+    expect(error).toContain('note');
+  });
+
+  it('rejects a note with more than 6 items (maxItems)', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const error = await validateRecordShape(validRecord({
+      log: [{ at: '2026-08-19T00:00:00Z', stage: 'Build', kind: 'info', note: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }],
+    }));
+    expect(error).toBeTruthy();
+    expect(error).toContain('note');
+  });
+
+  it('rejects an evidence_sha256 that violates the 64-hex pattern', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const error = await validateRecordShape(validRecord({
+      gate_evidence: { uat: validGateEvidenceEntry({ evidence_sha256: 'not-a-valid-digest' }) },
+    }));
+    expect(error).toBeTruthy();
+    expect(error).toContain('evidence_sha256');
+  });
+
+  it('rejects an unknown key inside a gate_evidence entry (additionalProperties: false)', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const error = await validateRecordShape(validRecord({
+      gate_evidence: { merge_gate: validGateEvidenceEntry({ bogus_key: 'x' }) },
+    }));
+    expect(error).toBeTruthy();
+    expect(error).toContain('bogus_key');
+  });
+
+  it('rejects an unknown top-level key (additionalProperties: false)', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    const record = validRecord();
+    record.an_unknown_key = 'x';
+    const error = await validateRecordShape(record);
+    expect(error).toBeTruthy();
+    expect(error).toContain('an_unknown_key');
+  });
+
+  it('accepts a full gate_evidence UAT entry with all optional fields', async () => {
+    const { validateRecordShape } = await loadWithoutAjv();
+    expect(await validateRecordShape(validRecord({
+      gate_evidence: {
+        uat: validGateEvidenceEntry({
+          evidence_sha256: 'a'.repeat(64),
+          code_candidate_sha: 'b'.repeat(40),
+          enforcement: 'blocking',
+        }),
+      },
+    }))).toBeNull();
+  });
 });
 
 describe('validateRecordShape — Ajv available', () => {
@@ -308,6 +403,16 @@ describe('validateRecordShape — Ajv available', () => {
       validRecord({ phase: 'not-a-phase' }),
       validRecord({ classification: 'Enormous' }),
       validRecord({ blockers: [validBlocker({ text: '' })] }),
+      // Recursive-floor constraints (W2.1) — the two paths must agree on every
+      // one, or which validator loaded becomes a correctness variable.
+      validRecord({ gate_evidence: { merge_gate: validGateEvidenceEntry({ run_ids: [32310798762] }) } }),
+      validRecord({ gate_evidence: { merge_gate: validGateEvidenceEntry({ run_ids: ['32310798762'] }) } }),
+      validRecord({ log: [{ at: '2026-08-19T00:00:00Z', stage: 'Build', kind: 'info', note: ['x'.repeat(201)] }] }),
+      validRecord({ log: [{ at: '2026-08-19T00:00:00Z', stage: 'Build', kind: 'info', note: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] }] }),
+      validRecord({ gate_evidence: { uat: validGateEvidenceEntry({ evidence_sha256: 'nope' }) } }),
+      validRecord({ gate_evidence: { uat: validGateEvidenceEntry({ evidence_sha256: 'a'.repeat(64), enforcement: 'blocking' }) } }),
+      validRecord({ gate_evidence: { merge_gate: validGateEvidenceEntry({ bogus_key: 'x' }) } }),
+      (() => { const r = validRecord(); r.an_unknown_key = 'x'; return r; })(),
       // Formats — promoted out of the known-divergence pin in round 6, where
       // the pin turned out to be encoding a real defect as intended behaviour.
       validRecord({ updated_at: 'zzzz' }),
@@ -319,6 +424,13 @@ describe('validateRecordShape — Ajv available', () => {
       // Calendar rollover: Date.parse accepts this (it becomes 3 March) but
       // ajv-formats rejects it, so a Date.parse-only floor would diverge.
       validRecord({ updated_at: '2026-02-31T00:00:00Z' }),
+      // Out-of-range time-of-day — an unbounded \d{2} floor accepted these while
+      // Ajv rejects them (the floor-vs-Ajv divergence fixed by bounding the
+      // hour/minute/second ranges).
+      validRecord({ updated_at: '2026-01-01T00:75:00Z' }),
+      validRecord({ updated_at: '2026-01-01T25:00:00Z' }),
+      validRecord({ updated_at: '2026-01-01T00:00:99Z' }),
+      validRecord({ updated_at: '2026-01-01T12:30:45+15:00' }),
     ];
     const ajvVerdicts = [];
     for (const record of cases) ajvVerdicts.push(await withAjv.validateRecordShape(record) === null);
@@ -331,26 +443,23 @@ describe('validateRecordShape — Ajv available', () => {
   });
 });
 
-describe('known divergences between Ajv and the floor', () => {
-  // The floor implements required, type, oneOf/anyOf, enum, const and
-  // minLength. It does NOT implement `format` or `additionalProperties: false`.
-  // Pinned here rather than left as a comment: if someone later assumes the two
-  // paths are equivalent, this names exactly where they are not — and if a
-  // future change closes one of these gaps, this test fails and tells them to
-  // move the case up into the agreement set.
-  it('the floor does not enforce additionalProperties: false', async () => {
-    const withAjv = await loadWithAjv();
+describe('no remaining divergences between Ajv and the floor', () => {
+  // Every keyword this schema uses is now implemented by BOTH paths: the floor
+  // was made genuinely recursive in W2.1 (framework-status-sync-hardening), so
+  // `additionalProperties: false`, schema-valued `additionalProperties`,
+  // maxLength/maxItems/pattern and nested `properties` are no longer floor
+  // blind-spots. This block is the tripwire: if a future schema edit introduces
+  // a keyword the floor does not implement (allOf, if/then, $ref, numeric
+  // bounds), the agreement test above fails on the case that exercises it and
+  // sends the author here to teach the floor before shipping.
+  it('the floor now enforces additionalProperties: false', async () => {
     const record = validRecord();
     record.an_unknown_key = 'x';
+    const withAjv = await loadWithAjv();
     expect(await withAjv.validateRecordShape(record)).toBeTruthy();
-
     const withoutAjv = await loadWithoutAjv();
-    expect(
-      await withoutAjv.validateRecordShape(record),
-      'floor now rejects unknown keys — move this case into the agreement set'
-    ).toBeNull();
+    expect(await withoutAjv.validateRecordShape(record)).toBeTruthy();
   });
-
 });
 
 // ---------------------------------------------------------------------------

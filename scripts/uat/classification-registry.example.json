@@ -1,0 +1,30 @@
+{
+  "registry_version": "uat-classification.v1",
+  "description": "EXAMPLE consumer classification registry for the fresh-context UAT gate (plan A5). A consuming repo copies this to .claude/context/uat-classification-registry.json and references it from .claude/context/agent-context.md. classify-change.mjs MERGES these patterns with its DEFAULT_TABLE — a consumer can broaden a class or add domain-risk tag rules, but cannot weaken the engine's conservative behaviour: unknown paths remain application-impacting, and harness patterns are always checked before the generic source default. This is machine-readable ON PURPOSE (plan A5): a classifier must never parse its rules out of Markdown prose. Globs use `*` (does not cross '/') and `**` (spans directories), matched against repo-relative POSIX paths.",
+  "staleness": {
+    "acceptance_harness_impacting": [
+      "test/uat-fixtures/**",
+      "scripts/seed-uat-fixtures.*"
+    ],
+    "acceptance_inert": [
+      "CHANGELOG.md",
+      "docs/adr/**"
+    ],
+    "application_impacting": [
+      "config/runtime/**",
+      "infra/migrations/**"
+    ]
+  },
+  "risk_tags": {
+    "money-precision": [
+      "server/services/networth/**",
+      "server/services/rebalance/**"
+    ],
+    "auth-tenant": [
+      "server/middleware/tenant/**"
+    ],
+    "ui-browser": [
+      "client/src/pages/**"
+    ]
+  }
+}

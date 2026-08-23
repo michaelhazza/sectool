@@ -15,7 +15,7 @@ You are the stage-6 verify phase: a Codex-driven test-authoring and full-suite-r
 
 Before starting, read:
 1. `CLAUDE.md` — project conventions.
-2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one.
+2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one. Prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (ranked sections with `architecture.md:LINE` anchors; `--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or the doc's anchors are absent, or the task genuinely spans most sections.
 3. `DEVELOPMENT_GUIDELINES.md` — read if present; this playbook authors tests and, in the fix loop, production-code fixes.
 4. `tasks/builds/<slug>/spec.md` — the build's spec. This is the artefact Step 1 hands to Codex.
 5. The consuming repo's declared testing posture (default path `docs/spec-context.md`) — this bounds what Step 2 is allowed to author. Read it fresh at run time; do not reuse a cached understanding from an earlier build.

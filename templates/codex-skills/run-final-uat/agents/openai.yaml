@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run final UAT"
+  short_description: "Fresh-context user-acceptance testing gate"
+  default_prompt: "Run the final UAT for this build in a fresh context"

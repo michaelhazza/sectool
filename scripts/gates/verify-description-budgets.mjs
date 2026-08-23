@@ -122,7 +122,7 @@ function check(rel, budget) {
 // ── .claude/agents/*.md (top-level only; _retired/ subdir excluded) ─────────
 {
   const dir = path.join(ROOT, '.claude/agents');
-  let entries = [];
+  let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
   for (const e of entries) {
     if (e.isFile() && e.name.endsWith('.md')) check(`.claude/agents/${e.name}`, 400);
@@ -132,7 +132,7 @@ function check(rel, budget) {
 // ── .claude/skills/*/SKILL.md ──────────────────────────────────────────────
 {
   const dir = path.join(ROOT, '.claude/skills');
-  let entries = [];
+  let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
   for (const e of entries) {
     if (e.isDirectory()) check(`.claude/skills/${e.name}/SKILL.md`, 450);
@@ -142,7 +142,7 @@ function check(rel, budget) {
 // ── .claude/commands/*.md ──────────────────────────────────────────────────
 {
   const dir = path.join(ROOT, '.claude/commands');
-  let entries = [];
+  let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { entries = []; }
   for (const e of entries) {
     if (e.isFile() && e.name.endsWith('.md')) check(`.claude/commands/${e.name}`, 180);

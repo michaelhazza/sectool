@@ -1,0 +1,63 @@
+{
+  "policy_version": "uat-risk-policy.v1",
+  "description": "Machine-readable form of the risk-to-scenario matrix (codex-brief §9.3, plan A8). Maps each domain-risk tag to the scenario families that must be covered for a change carrying that tag. The evidence validator's coverage cross-check reads this file: for every risk tag in risk_inventory_at_execution_start, every family with \"required\": true must be covered by at least one executed, passing, required scenario declaring that family. Families with \"required\": false are context-conditional (\"when relevant\" in the brief) — recorded and encouraged, never a hard coverage failure. Risk tags COMPOSE: a money route rendered in a browser and exported exercises money-precision + ui-browser + export-email-artifact against the SAME seeded identity, not four toy fixtures. This is the ONE editing home for the matrix; the framework skill references and the Codex skill references render human views of it, never a divergent copy.",
+  "risk_families": {
+    "ui-browser": [
+      { "family": "navigation", "required": true, "label": "Real navigation to the changed surface" },
+      { "family": "loading", "required": true, "label": "Loading state (distinct from empty/zero)" },
+      { "family": "success", "required": true, "label": "Populated success state" },
+      { "family": "empty", "required": true, "label": "Genuinely empty collection" },
+      { "family": "zero", "required": true, "label": "Real zero value (distinct from loading)" },
+      { "family": "failure-fallback", "required": true, "label": "Failure / fallback presentation" },
+      { "family": "responsive-interaction", "required": false, "label": "Responsive or interaction-critical states (when relevant)" },
+      { "family": "console-network-errors", "required": true, "label": "No unexpected console / network errors" }
+    ],
+    "database-route-migration": [
+      { "family": "migrate-empty-db", "required": true, "label": "Apply every migration to an empty disposable DB" },
+      { "family": "upgrade-prior-state", "required": true, "label": "Upgrade a realistic prior DB state" },
+      { "family": "real-route-stored-rows", "required": true, "label": "Real route response against stored rows" },
+      { "family": "constraints-rls-conflicts", "required": true, "label": "Constraints / RLS / ON CONFLICT behaviour" },
+      { "family": "backup-restore", "required": false, "label": "Backup / restore (when relevant)" }
+    ],
+    "async-state-retry": [
+      { "family": "state-transitions", "required": true, "label": "Lease / lock / state transitions" },
+      { "family": "failure", "required": true, "label": "Failure path" },
+      { "family": "retry", "required": true, "label": "Retry path" },
+      { "family": "timeout", "required": true, "label": "Timeout path" },
+      { "family": "duplicate-request", "required": true, "label": "Duplicate request handling" },
+      { "family": "stale-job-recovery", "required": true, "label": "Stale-job recovery" },
+      { "family": "honest-api-status", "required": true, "label": "Honest API status reporting" }
+    ],
+    "money-precision": [
+      { "family": "exact-zero", "required": true, "label": "Exact zero" },
+      { "family": "dust", "required": true, "label": "Dust / sub-cent amounts" },
+      { "family": "exponent-forms", "required": true, "label": "Exponent-form values" },
+      { "family": "negative-values", "required": true, "label": "Negative values" },
+      { "family": "above-2-53", "required": true, "label": "Values above 2^53 (safe-integer boundary)" },
+      { "family": "zero-decimal-currencies", "required": true, "label": "Zero-decimal currencies" },
+      { "family": "fx-fallback", "required": true, "label": "FX fallback" },
+      { "family": "display-execution-separation", "required": true, "label": "Display / execution value separation" },
+      { "family": "aggregate-to-route-to-screen-identity", "required": true, "label": "Aggregate -> route -> screen exact-value identity" }
+    ],
+    "auth-tenant": [
+      { "family": "authenticated-success", "required": true, "label": "Authenticated success" },
+      { "family": "unauthorized-denial", "required": true, "label": "Unauthenticated / unauthorized denial" },
+      { "family": "cross-tenant-negative", "required": true, "label": "Cross-tenant negative control" },
+      { "family": "credential-isolation", "required": true, "label": "Credential isolation" },
+      { "family": "session-behavior", "required": true, "label": "Session behaviour" }
+    ],
+    "export-email-artifact": [
+      { "family": "machine-usable-types", "required": true, "label": "Machine-usable content types" },
+      { "family": "display-values", "required": true, "label": "Display values in the artifact" },
+      { "family": "screen-to-export-identity", "required": true, "label": "Screen-to-export value identity" },
+      { "family": "locale-currency-metadata", "required": true, "label": "Locale / currency metadata" },
+      { "family": "generated-content-attachments", "required": true, "label": "Generated content and attachments" }
+    ],
+    "external-provider": [
+      { "family": "recorded-sandbox-contract", "required": true, "label": "Recorded / sandbox contract" },
+      { "family": "outage-timeout-ratelimit-fallback", "required": true, "label": "Outage / timeout / rate-limit / fallback" },
+      { "family": "no-real-financial-action", "required": true, "label": "No real financial action taken" },
+      { "family": "no-secret-leakage", "required": true, "label": "No secret leakage" }
+    ]
+  }
+}

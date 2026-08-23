@@ -36,7 +36,7 @@ When triggered with a merge-intent phrase, ALL of the following run to completio
 2. **Run every relevant CI check locally until green** — Step 8c (G5 local CI-parity gate; skipped entirely when the repo declares `runner_live: true`). Loop: fix → re-run the full selected parity set → repeat until one clean uninterrupted pass.
 3. **Apply the `ready-to-merge` label** — Step 10.3, only after 8c is green or validly skipped.
 4. **Confirm it passes in GitHub Actions** — Step 11. If any labeled check fails: immediately remove the label (label-pull discipline) → fix locally → re-verify against the failing check's parity command → re-add the label → re-watch. Loop until all required checks are green (cap 5 iterations, then escalate).
-5. **Pass the merge-gate refusal table** — Step 11.5, all applicable rows of spec §13's 8-row table, re-checked against the current head SHA immediately before the merge command.
+5. **Pass the merge-gate refusal table** — Step 11.5, all applicable rows of spec §13's refusal table (8 base rows + UAT rows 9-10), re-checked against the current head SHA immediately before the merge command.
 6. **Squash-merge the PR** — Step 12 (`--admin` squash), once CI is green, mergeable, and Step 11.5 passed.
 7. **Provide the summary report** — Step 13 / the Phase 3 handoff section: what merged, the squash sha, CI outcome, and any deferrals.
 
@@ -105,16 +105,37 @@ no-op — finalisation touches to `KNOWLEDGE.md`, `docs/capabilities.md`,
 not benefit from its own enforcement — the hook is not yet deployed during this
 build. New builds post-v2.13.0 adoption get the markers automatically.
 
-## Status contract (status.json)
-
-At each phase transition this coordinator owns — `REVIEWING → TESTING` (Step 4a), `TESTING → FINALISING` (Step 5), `FINALISING → MERGE_READY` (composed Step 9, written Step 10.1, before the label) and `MERGE_READY → MERGED` (Step 12.4, the post-merge main-patch) — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run:
+**Review-tier preflight (forecast).** Phase 3 depends on review transports at two points (Step 4a `verify-phase`, Step 5 `chatgpt-pr-review`), so check them at Step 0 rather than discovering a dead transport mid-finalisation:
 
 ```bash
-node scripts/status/generate-current-focus.mjs
-node scripts/status/board-sync.mjs
+bash scripts/review-preflight.sh --require <tiers>
 ```
 
-The generator and `board-sync.mjs` run together at every such write, including the back-edge write in Step 11.5.
+- `codex` — **always required** here, regardless of task class: `verify-phase` (Step 4a) is Codex-owned. Step 4b's conditional confirmation pass is additional, not the only Codex use.
+- `openai-api` — required ONLY when `chatgpt-pr-review` resolves to `automated` or `parallel`. This coordinator invokes it in **manual** mode today, so the expected reading is `SKIPPED` — and a `SKIPPED` non-required tier needs one `progress.md` line and no action.
+
+Statuses are `PASS | FAIL | UNAVAILABLE | SKIPPED`. A required tier reporting `FAIL`/`UNAVAILABLE` is recorded in `progress.md` AND surfaced to the operator with the printed remediation; the pipeline continues, but never silently. Treat a non-zero exit or an unparseable block exactly like `UNAVAILABLE` for every required tier — a crashed preflight must not be softer than a failed probe. At the review boundary, re-check: still red → one bounded retry → then the existing per-tier fallback; **a completed fallback is not a gap** (record `transport fallback: automated→manual`), and the canonical `REVIEW_GAP` is reserved for a review that is genuinely skipped. If the script is absent (pre-adoption), record one line and continue.
+
+## Status contract (status.json)
+
+At each phase transition this coordinator owns — `REVIEWING → TESTING` (Step 4a), `TESTING → FINALISING` (Step 5), `FINALISING → MERGE_READY` (composed Step 9, written Step 10.1, before the label) and `MERGE_READY → MERGED` (Step 12.4, the post-merge main-patch) — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run the ONE status-sync command:
+
+```bash
+node scripts/status/sync-status.mjs --slug {slug} --expect-status <STATUS> [--require-handover]
+```
+
+This single command is the only status-sync mechanism you ever cite. It replaces the former two-command pair (a current-focus generator plus a board-sync) — those are now implementation details it calls, and are unciteable: a CI grep-gate fails the build on any direct reference to either script in an agent file. The wrapper runs the current-focus generator, then **validates THIS build's `status.json` record before projecting it to the board** (the part prose could never do — a schema-invalid write like a numeric `run_ids` value is refused at write time instead of silently downstream), then syncs the board card. It runs at every status write this coordinator owns, including the back-edge write in Step 11.5.
+
+**Exit contract (the wrapper's, defined once here; every step below just cites the command):**
+
+| exit | meaning | your action |
+|---|---|---|
+| 0 | local projection succeeded AND this build's card was applied / already equivalent / created | continue |
+| 1 | generator hard error | STOP the transition and surface — do not proceed past the step |
+| 2 | THIS build's `status.json` is invalid or unresolvable (`missing` / `unreadable` / `invalid_json` / `schema_invalid` / `slug_mismatch` / `status_mismatch` / `handover_incomplete` / `non_terminal_archive` / usage); marker `[sync-status] INVALID_TARGET slug=<slug> reason=<reason>` | STOP; fix the record (or handover / invocation) and re-run. This is the D2 class: a schema-invalid write is refused here instead of stranding a card downstream |
+| 3 | board not synced (unreachable / permissions / gh failure, OR this build's card present but not projected); `[sync-status] board reason=<reason> — remediation: <…>` names each cause | record in `progress.md`, tell the operator in-session with the printed remediation, continue — never a build stop (board is a view, not a gate). Archive eligibility keys on the printed target outcome (Step 12.4 table) |
+
+`--expect-status <STATUS>` asserts the record's status equals this transition's target (use it on every write; it also stops an `ABANDONED` record satisfying a merge path). `--require-handover` is added only at the terminal `MERGED` write (Step 12.4), where it additionally refuses (exit 2) unless the W6 post-merge handover is complete.
 
 **Precedence.** `status.json` is **authoritative** for build state. `.phase` is a **derived projection** — its content equals `status.phase` — written in the **same coordinator step** as the `status.json` write. On disagreement, `status.json` wins and the coordinator **rewrites `.phase`** to match. This coordinator's `.phase` value stays `finalise` throughout Phase 3 (set at Step 0) — only `status` moves.
 
@@ -135,7 +156,7 @@ The generator and `board-sync.mjs` run together at every such write, including t
 - Notable mid-stage moment that already carries a status write (suite result, fix loop opened or closed, CI red/green on the label watch) → one `kind: "info"` entry.
 - Entry shape (`log[]` in `schemas/build-status.schema.json`): `{ "at": "<ISO 8601 UTC now>", "stage": "<Spec|Plan|Build|Review|Testing|Finalisation|Merge>", "kind": "start|done|info", "note": ["<dot point>", ...] }`.
 - **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was tested, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"All tests green: 214 passed"` · `"CI failed once, fixed and re-run, now green"` · `"Merged as PR #741"`. Bad: `"G5 g5-scoped.sh exit 1 on workspace-actor-coverage"`.
-- `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
+- The board card renders `log[]` newest-first as its `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
 
 **Board preflight — run ONCE, at context load, before the first status write.** Confirm the board can actually be written to, rather than discovering it transition by transition:
 
@@ -148,7 +169,7 @@ gh project view <number> --owner <owner> --format json >/dev/null 2>&1 || echo "
 
 If either check fails, tell the operator once, up front, with the exact remediation — record `projects_board: { owner, number }` in `.claude/project-registries.json` (travels with the repo, fixes every clone), or run `gh auth refresh -s project` (per-machine, the token lives in the OS keyring). Then continue; this is not a gate. Reporting it once at the start beats reporting it at every transition, and beats not reporting it at all.
 
-**Board-sync is non-blocking, but never silent.** A `board-sync.mjs` failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `board-sync.mjs` emits `[board-sync] NOT_SYNCED reason=<reason>` and exits `3` on any run that did not reach the board. When you see that marker you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
+**Status sync is non-blocking on the board, but never silent.** A board sync failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `sync-status.mjs` exits `3` and prints `[sync-status] board reason=<reason> — remediation: <…>` for any run that did not reach the board, surfacing the underlying `[board-sync] NOT_SYNCED reason=<reason>` signal with its remediation attached. When you see exit 3 you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
 
 **Error handling.**
 - Board-sync failure (`NOT_SYNCED` marker / exit 3) → record in `progress.md`, report to the operator in-session, continue. Never a build stop.
@@ -172,11 +193,13 @@ Emit a TodoWrite list before doing any other work. Update items in real time as 
 8. tasks/todo.md cleanup
 8b. Post-review branch re-sync (S3)
 8c. G5 local CI-parity gate — loop until green (conditional — skipped when runner_live: true)
+8c.5. Fresh-context UAT acceptance gate (conditional — skipped when uat_rollout_mode: disabled/absent)
 9. tasks/current-focus.md + status.json → MERGE_READY + clear active fields
-10. Apply ready-to-merge label to PR (only after G5 green, or after Step 8c is validly skipped)
+10. Apply ready-to-merge label to PR (only after G5 green + acceptance valid, or after both are validly skipped)
 11. CI watch + label-pull fix loop
-11.5. Merge-gate refusal table (pre-merge enforcement of record) — loop until all 8 rows pass
+11.5. Merge-gate refusal table (pre-merge enforcement of record) — loop until all 10 rows pass
 12. Auto-merge
+12.6. Post-merge/post-abort UAT scratch cleanup (evidence-tier retention preserved)
 12.5. Release-note block (advisory)
 13. End-of-phase prompt
 
@@ -343,7 +366,7 @@ PR: https://github.com/.../<number>
 
 **Insertion point (spec §7.2):** after S2 sync (Step 2) + G4 regression guard (Step 3), before `chatgpt-pr-review` (Step 5).
 
-**FIRST, write the status transition `REVIEWING → TESTING`** — before invoking `verify-phase`, not after. Upsert `status.json` with `status: TESTING` per § Status contract, then run the generator and `board-sync.mjs`. This is deliberately the first action of the step: test design, authoring and the suite fix loop are frequently the longest single stretch of a build, and a board that only updates on completion would show `REVIEWING` for hours of test work. Writing it up front is what makes the column honest.
+**FIRST, write the status transition `REVIEWING → TESTING`** — before invoking `verify-phase`, not after. Upsert `status.json` with `status: TESTING` per § Status contract, then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status TESTING`. This is deliberately the first action of the step: test design, authoring and the suite fix loop are frequently the longest single stretch of a build, and a board that only updates on completion would show `REVIEWING` for hours of test work. Writing it up front is what makes the column honest.
 
 Dispatch `verify-phase` as a sub-agent, passing the build slug from the handoff:
 
@@ -378,7 +401,7 @@ Record the outcome as one line in `tasks/builds/{slug}/progress.md`: `Codex conf
 
 ## Step 5 — chatgpt-pr-review
 
-**FIRST, write the status transition `TESTING → FINALISING`.** Precondition: Step 4a reported the verify-phase gate green **and** any required Codex confirmation pass (Step 4b) has completed. Upsert `status.json` with `status: FINALISING` per § Status contract, then run the generator and `board-sync.mjs`. Do NOT make this write if the verify gate did not pass — a build whose suite is not green has not left `TESTING`, and moving it on would be the board asserting something untrue.
+**FIRST, write the status transition `TESTING → FINALISING`.** Precondition: Step 4a reported the verify-phase gate green **and** any required Codex confirmation pass (Step 4b) has completed. Upsert `status.json` with `status: FINALISING` per § Status contract, then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status FINALISING`. Do NOT make this write if the verify gate did not pass — a build whose suite is not green has not left `TESTING`, and moving it on would be the board asserting something untrue.
 
 Invoke `chatgpt-pr-review` as a sub-agent. MODE = **manual**. **INVOCATION CONTEXT = `coordinator-invoked` — state this explicitly in the kickoff message.** In this context the sub-agent's own finalisation steps 10–12 (merge main, `ready-to-merge` label, CI monitor/auto-merge) are forbidden per its INVOCATION CONTEXT contract — THIS coordinator owns branch sync (Step 8b), the label (Step 10), CI watching (Step 11), and the merge (Step 12). If the sub-agent's return message claims it merged or labelled the PR, treat that as a contract violation: verify actual PR state with `gh pr view` before proceeding, and record the violation in progress.md.
 
@@ -659,11 +682,35 @@ The old G5 third full-suite run disappears **only** on runner-live repos — thi
 
 Commit fixes locally as you go (normal commit discipline; never `--no-verify`). **Do not push during the loop** — pushes happen once, at Step 10.2.
 
-**Hard rule: Step 10.3 (label apply) is unreachable until G5 reports green.** Applying the ready-to-merge label with a failing, partial, or skipped G5 is a policy violation. If the operator explicitly overrides (e.g. the suite genuinely cannot run on this machine), record a `REVIEW_GAP` line for `G5-local-parity` in `progress.md` with `operator-override: yes-<ISO-timestamp>`.
+**Hard rule: Step 10.3 (label apply) is unreachable until G5 reports green AND Step 8c.5 (acceptance) is valid.** Applying the ready-to-merge label with a failing, partial, or skipped G5 — or without a valid `uat` gate under the derived enforcement — is a policy violation. If the operator explicitly overrides G5 (e.g. the suite genuinely cannot run on this machine), record a `REVIEW_GAP` line for `G5-local-parity` in `progress.md` with `operator-override: yes-<ISO-timestamp>`.
+
+## Step 8c.5 — Fresh-context UAT acceptance gate (after G5, before merge readiness)
+
+**Rollout conditional.** Read `uat_rollout_mode` from `.claude/project-registries.json` (**absent key = `disabled`**). On `disabled` this step is SKIPPED entirely and refusal rows 9-10 are inert — record one line in `tasks/builds/{slug}/progress.md`: `Step 8c.5 skipped — uat_rollout_mode: disabled.` and proceed to Step 9. On `shadow | high-risk | default` it runs.
+
+**Order is load-bearing (spec order-reversal per the fresh-context-uat-gate plan §12.1).** Acceptance runs AFTER G5 (Step 8c) — or after G5 was validly skipped on `runner_live: true` — and BEFORE Step 9. It is the final substantive local gate: **after it passes, NO runtime edit is permitted before the label** (any such edit invalidates the evidence and routes back through verify + fresh acceptance). Running expensive fresh-context UAT before the cheap deterministic G5 would risk invalidating that UAT for nothing.
+
+**Invoke `acceptance-phase` with the build slug.** It owns the capability preflight, applicability/risk classification, sealed blind-plan-then-augment dispatch to a FRESH executor, and deterministic evidence validation; it returns a compact result: `verdict` (`pass|fail|incomplete|proceed`), `enforcement` (`advisory|blocking`), `code_candidate_sha`, evidence/report paths, scenario counts, failed IDs, missing capabilities. This coordinator consumes the validated result — it never dispatches the executor or re-derives the verdict itself.
+
+**`enforcement` is the single downstream control — never read `uat_rollout_mode` here directly.** `acceptance-phase` derives `enforcement` from the final risk inventory + rollout mode and records it in evidence; this step and the refusal rows consume only that validated projection. Transitions (the plan's §10 enforcement-conditional matrix):
+
+| Verdict | `enforcement: advisory` (shadow, ungraduated risk classes) | `enforcement: blocking` (graduated high-risk / default) |
+|---|---|---|
+| `pass` / valid `proceed` | record; continue to Step 9 | continue to Step 9 |
+| `fail` | record the real verdict; surface as **advisory** (`uat_advisories` + a `kind: "info"` log entry); **no** `FINALISING → TESTING` back-edge, **no** merge refusal | `FINALISING → TESTING` back-edge with a blocker + halt for a separate fix loop |
+| `incomplete` | record; surface as advisory; **no** halt, **no** label block | halt without applying the merge-ready label |
+
+**Shadow surfacing is presentational, never the machine-blocking record.** Under `enforcement: advisory`, a `fail`/`incomplete` writes to `uat_advisories` in the report/evidence plus a `kind: "info"` progress entry — NEVER a `status.json.blockers[]` entry and NEVER the normal blocker field. A real blocker under advisory would make an existing non-UAT refusal rule refuse the merge that shadow mode promised not to block.
+
+**Status write (from validated evidence only).** Populate `status.json.gates.uat` and `status.json.gate_evidence.uat` with the minimal merge-control projection `{evidence_sha256, code_candidate_sha, enforcement}` — ONLY from evidence `acceptance-phase` validated with `scripts/uat/validate-uat-evidence.mjs`, never an independently authored value. Run `node scripts/status/sync-status.mjs --slug {slug}` with this write (per § Status contract). Note `run_ids` items in any `gate_evidence` entry are STRINGS — quote them, or sync-status exits 2.
+
+**Candidate / certification identity (fresh-context-uat-gate plan A7).** The tested SHA is `code_candidate_sha = X`. Step 10 commits the Phase-3 artifacts (report, status, evidence) AFTER acceptance, so the head at merge legitimately differs: `certification_head_sha = Y`, where the tail `X..Y` must consist ENTIRELY of permitted certification-only changes. Validate the certification commit against a pre-generated `certification-commit-manifest.json` (`scripts/uat/build-certification-manifest.mjs`, produced BEFORE the commit and retained out-of-band as evidence-tier storage — never committed with a self-entry) — not classified after the fact. Any change outside the manifest's allowed paths, or any later modification/deletion/rename of binding UAT evidence, is invalidating and routes back through verify + fresh acceptance. `certification_head_sha` is derived from git AFTER the commit exists; no committed file contains its own commit SHA.
+
+**On `fail` under `enforcement: blocking`:** remove any merge-ready label if present, write the `FINALISING → TESTING` back-edge and blocker (same write shape as Step 11.5), and halt. A separate `builder` makes the smallest sound production fix plus an automated regression at the lowest layer that would have caught the defect; verify-phase reruns; the review/doc/S3 steps refresh as required; and a BRAND-NEW fresh acceptance execution runs on the new SHA (never a replayed conversation). Acceptance fix cycles cap at 3 (`references/iteration-caps.md` row 23). If G5 or any later loop changes runtime-impacting files, `uat` is invalidated (per the A5 classifier's `application-impacting` / `acceptance-harness-impacting` classes) and the build returns through verify plus fresh acceptance before the label.
 
 ## Step 9 — current-focus.md + status.json → MERGE_READY (deferred write)
 
-**Precondition: Step 8c (G5) reported green, OR Step 8c was validly skipped (`runner_live: true`, recorded per its own conditional).** Do not compose MERGE_READY state for a build whose applicable pre-runner-mode local parity gate has not passed.
+**Precondition: Step 8c (G5) reported green (or validly skipped on `runner_live: true`), AND Step 8c.5 (acceptance) is valid for the candidate — `gates.uat` is `pass`, a valid non-applicable `proceed`, or any current schema-valid verdict under `enforcement: advisory` (or `uat_rollout_mode: disabled`, in which case 8c.5 was skipped).** Do not compose MERGE_READY state for a build whose applicable local parity or acceptance gate has not passed.
 
 Also compose — in memory only, same deferred-write rule as below — the new `tasks/builds/{slug}/status.json` content: `status: MERGE_READY` (per § Status contract above). This is the write-site named in that section as the "Forward: `FINALISING → MERGE_READY`" transition.
 
@@ -695,7 +742,7 @@ Compose the matching prose body for the same file. Status enum transitions `FINA
 
 **Order is load-bearing — never invert.** The ready-to-merge label triggers CI. If it is applied before the Phase 3 commit lands on the remote, CI runs against the pre-Phase-3 HEAD, the Phase 3 commit then lands and re-fires CI from scratch, and the first run becomes wasted compute. Operator-locked 2026-05-09.
 
-**Equally load-bearing: the label is applied ONLY after Step 8c (G5) reported green, or was validly skipped per its `runner_live` conditional.** The labeled run is the final confirmation of a locally-verified tree, never the first execution of the suite.
+**Equally load-bearing: the label is applied ONLY after Step 8c (G5) reported green (or validly skipped per `runner_live`) AND Step 8c.5 acceptance is valid (or validly skipped per `uat_rollout_mode: disabled`).** The labeled run is the final confirmation of a locally-verified, acceptance-gated tree, never the first execution of the suite. After acceptance passes, no runtime edit is permitted before the label — any such edit invalidates `uat` and routes back through verify + fresh acceptance.
 
 **Step 10.1 — Write artefacts (no commit yet).**
 
@@ -711,7 +758,7 @@ Then write in this order (abort-write-order invariant):
 
 1. Append the Phase 3 handoff section to `tasks/builds/{slug}/handoff.md` (with `LABEL_TIMESTAMP_PLACEHOLDER` recorded as "ready-to-merge label applied at").
 2. Write the new mission-control block + prose body to `tasks/current-focus.md` (composed in Step 9).
-3. Upsert `tasks/builds/{slug}/status.json`: `status: MERGE_READY` (composed in Step 9, per § Status contract above), then run `node scripts/status/generate-current-focus.mjs` and `node scripts/status/board-sync.mjs`. This is the **terminal-fact write location** for pre-merge status (spec §13) — landing on the branch BEFORE the label, so the labeled head SHA already contains it; no new SHA is created between the gate run and the merge.
+3. Upsert `tasks/builds/{slug}/status.json`: `status: MERGE_READY` (composed in Step 9, per § Status contract above), then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status MERGE_READY`. This is the **terminal-fact write location** for pre-merge status (spec §13) — landing on the branch BEFORE the label, so the labeled head SHA already contains it; no new SHA is created between the gate run and the merge.
 
 **Step 10.2 — Commit + push Phase 3 files in a single commit.**
 
@@ -732,15 +779,23 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 Push to branch. This single push also publishes the held S3 merge commit (Step 8b) and any G5 fix commits (Step 8c) — the first push since the review loop, so CI sees exactly one `synchronize` event for the whole finalisation tail. Never `--no-verify`, never `--amend`. **Wait for the push to complete before proceeding to 10.3.**
 
-**Step 10.3 — Apply the ready-to-merge label.**
+**Step 10.3 — Apply the ready-to-merge label (through the registration fence).**
 
 ```bash
-gh pr edit <pr-number> --add-label "ready-to-merge"
+bash scripts/ci/label.sh apply --pr {N}
 ```
+
+Route the ADD through `label.sh apply`, never a bare `gh pr edit --add-label` (W4). `apply` runs the authoritative-check **registration fence** before the label lands: it captures the pushed SHA, reads BOTH `ci_workflow_files.ci_workflow` and `ci_workflow_files.ci_workflow_trigger` from consumer config (`apply` and `restore` both fail closed with a remediation line when either is unset — never a default, never a guess), then POLLS the resolver (bounded, with backoff) until that SHA's run registers and reaches a decision. Without the fence, `gh run list` can return nothing in the instant after a push — "no run in flight" is indistinguishable from "not yet registered" — and adding the label then produces exactly the two-runs-one-group cancellation this build exists to stop (the D4 phantom); the poll is what closes the `[] → [] → registered` race, not a single read.
+
+**A fence timeout is a BLOCK, not a pass.** Waiting cannot prove a negative: "no run registered in N seconds" is not "no run is coming", and treating it as such is the slow-registration tail of the same race. So when a run is expected and none resolves before the window closes, `apply` emits `RESOLVER_BLOCKED` and exits non-zero. The legitimate "there is nothing to race" case is DECLARED, not inferred: a consumer whose pushes fire no run of the gated workflow sets `ci_workflow_trigger: "none"`, and the fence then treats an empty run list as a real `NO_RUN`. If `apply` blocks on a timeout, wait for the run to appear (or fix the declared trigger) — never bypass it.
+
+**Assert the outcome — do not trust exit 0 by omission.** `apply` is fail-loud: it exits NON-ZERO on every non-progress outcome (`RESOLVER_BLOCKED`, `NO_OPEN_PR`, `GH_ERROR`, or an unconfigured `ci_workflow`), and exits 0 ONLY for `APPLIED` or the idempotent `ALREADY_PRESENT`. Treat ANY non-zero exit as "the label was not applied — pause finalisation and resolve", AND additionally confirm the printed `OUTCOME:` line is `APPLIED` or `ALREADY_PRESENT` before proceeding to Step 11. Do not proceed on a `RESOLVER_BLOCKED` (a real or registering run gates the add — wait and retry once the branch is quiet).
 
 This is the moment CI fires. Because the Phase 3 commit is already on the remote, CI runs exactly once against the final post-Phase-3 HEAD — no wasted re-fire.
 
-If the label add fails (label doesn't exist, permissions, network): surface the exact error and pause. Do not attempt force-merge or any other workaround. Operator resolves. The Phase 3 commit is already on the remote, so the operator can apply the label manually after fixing the underlying issue and the contract is preserved.
+If the label add fails (label doesn't exist, permissions, network, or `ci_workflow` unconfigured): surface the exact error and pause. Do not attempt force-merge or any other workaround. Operator resolves. The Phase 3 commit is already on the remote, so the operator can apply the label manually after fixing the underlying issue and the contract is preserved.
+
+Prior incident this prevents: KNOWLEDGE.md `[2026-08-09]` — a label toggled mid-run produced a cancellation wall indistinguishable from mass failure, two CI cycles lost; the same mechanism produced this build's phantom. The registration fence stops CREATING a phantom; the Step 11 rules below stop READING one as a failure.
 
 **Write order invariant:** `tasks/builds/{slug}/handoff.md` MUST be written to disk before `tasks/current-focus.md` is updated to MERGE_READY. Step 9 only composes the new `current-focus.md` content in memory; Step 10.1 writes handoff.md first, then current-focus.md, then 10.2 commits both atomically. If the process is interrupted after handoff.md is written but before current-focus.md is updated, the operator sees a Phase 3 section in handoff.md with `tasks/current-focus.md` still at `REVIEWING` — a recoverable state where finalisation-coordinator can be re-run from Step 9. The reverse mid-state (current-focus.md at MERGE_READY without a Phase 3 handoff section) is ruled out by this ordering, which would otherwise leave the pipeline stuck (finalisation-coordinator's entry guard requires REVIEWING; spec-coordinator refuses MERGE_READY).
 
@@ -779,7 +834,22 @@ After the watch returns (signalled by the task-notification with exit code), ver
 gh pr view {N} --json mergeStateStatus -q '.mergeStateStatus'
 ```
 
-If mergeState is CLEAN → Step 12. If BEHIND → run S2 sync (Step 2 contract) then re-watch. If BLOCKED / DIRTY → diagnose and escalate.
+If mergeState is CLEAN → Step 12. If BEHIND → run S2 sync (Step 2 contract) then re-watch. If DIRTY → diagnose and escalate.
+
+**`BLOCKED` → bounded phantom recovery (W4), never straight to escalate-or-override.** `mergeStateStatus: BLOCKED` can read from a superseded cancelled run publishing `CANCELLED` under the SAME required-context names as the authoritative green run (the D4 phantom). Correctly identifying a phantom does NOT make GitHub's merge API accept the merge, so:
+
+1. Run the authoritative-check resolver against the head SHA and the configured workflow:
+
+   ```bash
+   node scripts/ci/resolve-authoritative-checks.mjs --pr {N} --commit {HEAD_SHA} --configured
+   ```
+
+   `--configured` makes the resolver read `ci_workflow` and `ci_workflow_trigger` from `.claude/project-registries.json` itself. **Never pass `--workflow`/`--trigger-class` by hand here:** reconstructing event identity per caller is the exact defect class that produced the last three review rounds — a recovery command hardcoding `push` silently ignores a `pull_request`-triggered repo's real CI and reports `NO_RUN` instead of the true verdict.
+
+   `OUTCOME: FAILURE` (exit 21) on the authoritative run → this is a real red; enter the fix sub-loop. `OUTCOME: PASS` (exit 0) with `superseded=<cancelled run ids>` → the block is a phantom: proceed to step 2. `OUTCOME: WAIT` (exit 20) → checks are still reconciling; re-watch.
+2. Wait briefly for check reconciliation, then re-read required checks + merge state. If still `BLOCKED` solely by stale cancelled contexts (resolver still `PASS`), trigger ONE clean re-run once the branch is quiet (re-apply the label via `label.sh apply`, which fences against creating a second phantom). Never enter the code-fix loop for a phantom; never bypass branch protection.
+
+The PR-level rollup (`gh pr view … statusCheckRollup`) may enumerate required context NAMES but NEVER decides their conclusions — it mixes identically-named contexts from every run of the head SHA. Conclusions come from the resolver, which judges each check against its own producer.
 
 **Why watch over poll.** `gh pr checks --watch` blocks until the terminal state is reached, so we don't burn prompt-cache windows on periodic wake-ups, don't risk missing the green moment between polls, and don't pay for repeated context reads. The 30-second `--interval` is the streaming refresh cadence of the watch itself; it's cheap because no model invocation happens between refreshes.
 
@@ -806,17 +876,47 @@ gh pr view {N} --json mergeStateStatus,statusCheckRollup -q '{mergeState: .merge
 
 **Fix sub-loop (red state).** Bounded at **5 iterations per Phase 3 session**.
 
-### Label-pull discipline (FIRST action on red — before any diagnosis)
+### Label-pull discipline (resolver-check, THEN pull on a real red — before any diagnosis)
 
-The moment the watch reports a failure, remove the ready-to-merge label:
+**Step 0 — is this a real red? (the ONLY action permitted before the pull, W4).** A `FAILURE`/`CANCELLED` from a NON-authoritative run is not a red signal — it is the D4 phantom (a superseded cancelled run, or a rollup row for a matrix job that never expanded, telltale: an unexpanded `${{ matrix.* }}` in the job name). Run the resolver on any red the watch reports:
 
 ```bash
-gh pr edit {N} --remove-label "ready-to-merge"
+node scripts/ci/resolve-authoritative-checks.mjs --pr {N} --commit {HEAD_SHA} --configured
 ```
 
-Removing the label does not trigger CI (`unlabeled` is not a workflow trigger event), and it stops the fix-loop pushes below from re-firing the full label-gated suite on every push — the single biggest source of wasted Actions minutes. The label goes back on ONLY after the fix is verified locally (iteration step 7), and re-adding it is what re-fires the full suite — exactly once per iteration, against the fixed HEAD.
+- `OUTCOME: PASS` (exit 0), typically with `superseded=<cancelled run ids>` → NOT a red signal. Do NOT pull the label; a read-only resolver check does not push, and pulling on a phantom discards a full labelled run for nothing. Re-watch / go to the `BLOCKED` bounded-recovery above.
+- `OUTCOME: FAILURE` (exit 21) → a genuine authoritative failure. **Pull the label immediately (step 1 below), before any diagnosis** — the pull exists to stop label-gated re-fires on the next push, and diagnosis must not delay it.
+- `OUTCOME: WAIT` (exit 20) → still reconciling; re-watch, do not pull.
 
-If the label removal fails (permissions, network): pause and escalate BEFORE pushing anything. Pushing with the label still on burns a full CI run per push.
+The resolver call is READ-ONLY (it never pushes), which is why it is the one action allowed ahead of the pull. Once it confirms a real red, the numbered sequence below runs and **its Command #1 is the label pull** — nothing else happens first.
+
+1. **Pull the label with the audited helper** (ships with the framework at `scripts/ci/label.sh`; journals every transition to the untracked `$(git rev-parse --git-dir)/ci-label/journal.jsonl`):
+
+   ```bash
+   bash scripts/ci/label.sh pull --pr {N} --reason failed-check --run-id {RUN_ID} --check "{CHECK_NAME}" --class {integration|static}
+   ```
+
+   `{RUN_ID}`/`{CHECK_NAME}` are the run and check the watch is already reporting. **You (the caller) map check → class via the KNOWN-CHECK table in the consuming repo's `agent-context.md § finalisation-coordinator`** (the repo's integration-lane job name → `integration`; every other currently-required check name → `static`, listed by name). **An unrecognised check name FAILS CLOSED:** record the typed outcome `CLASS_UNRESOLVED`, do not guess a class — no restore is possible from any evidence class until the table is extended (a one-line agent-context edit) or the operator classifies it (HITL). If the helper is absent from this checkout (pre-adoption), fall back to `gh pr edit {N} --remove-label "ready-to-merge"` and note the fallback in progress.md.
+
+2. Diagnose and fix locally (guardrails AF1–AF4 below), commit.
+3. **One `git push`** carrying the committed fix — and any pending docs batch rides this push for free (batching rule: while `ready-to-merge` is present no push happens; there is NO exception for in-flight fix pushes — pull first, always).
+4. **Produce parity evidence for the new head** and record it in the journal: for an `integration`-class failure run the consuming repo's declared integration-parity command *when one exists* (per its agent-context) — otherwise the failing check's parity command from the G5 mapping; for a `static`-class failure run the scoped static selection. Then:
+
+   ```bash
+   bash scripts/ci/label.sh parity --pr {N} --class {integration|static} --status green --cmd "<the command that proved it>"
+   ```
+
+5. **Restore the label through the helper** — it fails closed on three-way SHA agreement (local HEAD == PR head == the journal parity record's SHA) and on class match (integration evidence for an integration pull; a `pre-push` pull needs `pre-push`-class evidence), with the HITL override as the only bypass:
+
+   ```bash
+   bash scripts/ci/label.sh restore --pr {N}
+   ```
+
+6. Re-enter the watch (iteration step 7 below).
+
+Removing the label does not trigger CI (`unlabeled` is not a workflow trigger event), and it stops the fix-loop pushes below from re-firing the full label-gated suite on every push — the single biggest source of wasted Actions minutes. The label goes back on ONLY after the fix is verified locally, and re-adding it is what re-fires the full suite — exactly once per iteration, against the fixed HEAD. The journal (not any tracked file) carries the audit + parity records, so the loop closes with a porcelain-clean tree; the human-readable pulls/restores summary is flushed to `progress.md` later and is **never a prerequisite for completing the PR**.
+
+If the label pull fails (permissions, network): pause and escalate BEFORE pushing anything. Pushing with the label still on burns a full CI run per push.
 
 ### Guardrails (mandatory — applied BEFORE every iteration)
 
@@ -929,7 +1029,7 @@ Set TodoWrite item to `pending` and stop. Do not attempt iteration 6 unless the 
 
 ## Step 11.5 — Merge-gate refusal table (pre-merge enforcement of record)
 
-**This step is the enforcement of record for spec §13's 8-row refusal table (CSR-001) — it runs immediately before Step 12's squash-merge, every time, regardless of rollout state.** Step 11's CI watch already drove the labeled run to green; this step re-verifies against the CURRENT head SHA, independently, so the merge command is never issued against stale or degraded evidence.
+**This step is the enforcement of record for spec §13's refusal table (CSR-001; 8 base rows + UAT rows 9-10 from the fresh-context-uat-gate work) — it runs immediately before Step 12's squash-merge, every time, regardless of rollout state.** Step 11's CI watch already drove the labeled run to green; this step re-verifies against the CURRENT head SHA, independently, so the merge command is never issued against stale or degraded evidence.
 
 **Commit identity is the PR head SHA end-to-end (spec §13, Codex #5).** Every row below queries by the current head SHA, re-read fresh at the top of this step, never a cached value from earlier in the session:
 
@@ -962,14 +1062,21 @@ Read `runner_live` from `.claude/project-registries.json` (default/absent = `fal
 | 7 | The green run found (if any) is FOR `${HEAD_SHA}`, not an earlier SHA (compare against the workflow's own provenance echo, `merge-gate.yml`'s "Provenance:" line) | `MERGE-REFUSAL-ROW-7: merge-gate run is stale for the head SHA` | Refuse; treat identically to row 6 (no-run) — a stale-SHA run is not evidence for this head. |
 | 8 | `runner_live: true` AND at least one PAST green `merge-gate.yml` run exists in this repo's run history (any head SHA, any time) | `MERGE-REFUSAL-ROW-8: runner_live is set but no green merge-gate run history exists` | Refuse the flag path entirely — do NOT evaluate rows 5-7 for this merge attempt. Fall back to pre-runner mode: run Step 8c (G5) retroactively for the current head, then re-evaluate this table using row 4 in place of rows 5-7 (spec §16 pre-mortem risk 1 — the flag alone must never retire G5 with zero live evidence backing it). |
 
-**On ANY refusal (rows 1-8), except row 8's fallback path:**
+**Rows 9-10 (fresh-context UAT acceptance — both rollout states). Both are INERT when Step 8c.5 was skipped (`uat_rollout_mode: disabled`/absent → no `gates.uat`).** They read the validated merge-control projection in `gate_evidence.uat` (`{evidence_sha256, code_candidate_sha, enforcement}`); the coordinator NEVER accepts an independently authored `enforcement` — it derives from evidence (fresh-context-uat-gate plan A7/A8, R2.2). `enforcement` — not `uat_rollout_mode` — decides blocking-ness (round-4 finding 3):
+
+| # | Check | Refusal (grep-able literal) | Coordinator action on refusal |
+|---|---|---|---|
+| 9 | **Enforcement + verdict together.** Under `enforcement: blocking`, `gates.uat` MUST be `pass` or a valid non-applicable `proceed` (`fail`, `incomplete`, `null`, unknown, or unjustified `proceed` refuse). Under `enforcement: advisory`, any schema-valid current verdict passes this row (a `fail`/`incomplete` is surfaced via `uat_advisories`, never blocked here). In ALL cases, the presence of any `uat_enforcement_override` field anywhere in the evidence is a hard refusal — no override ships; the validator rejects it, and this row asserts its absence (never a dormant accept). | `MERGE-REFUSAL-ROW-9: uat gate not satisfied for the derived enforcement` | Under blocking: refuse; back-edge with blocker (below). Under advisory: this row does not fire on verdict — a non-`pass` is recorded, not refused. |
+| 10 | **Head identity + evidence binding + staleness + base freshness.** (a) `gate_evidence.uat.evidence_sha256` matches the recomputed digest of the on-disk `uat-evidence.json`, and `code_candidate_sha` is a full 40-hex SHA — applies REGARDLESS of enforcement. (b) Staleness: `git diff <gate_evidence.uat.code_candidate_sha>..${HEAD_SHA}` touches ONLY permitted certification-tail paths, validated against the pre-generated `certification-commit-manifest.json`; any `application-impacting`/`acceptance-harness-impacting` change (A5 classes) refuses — applies REGARDLESS of enforcement. (c) Base freshness — **only when `enforcement: blocking`**: verify the four strict-protection facts (strict up-to-date branch protection is ON for the target branch; it cannot be bypassed by the finalisation actor; the mechanism is re-validated immediately before merge; the expected remote head still matches). Merge queues are NOT equivalent and are unsupported in R1/R2. Under `enforcement: advisory`, absent/bypassable strict protection is recorded as capability telemetry only and NEVER refuses (round-7 finding 1). | `MERGE-REFUSAL-ROW-10: uat evidence stale, unbound, or base not fresh under blocking` | Refuse. Evidence-binding/staleness failures route back through verify + fresh acceptance (Step 8c.5); a blocking base-freshness failure holds until strict protection is present and the head matches. |
+
+**On ANY refusal (rows 1-10), except row 8's fallback path:**
 
 1. If the `ready-to-merge` label is currently applied, remove it — same mechanism as Step 11's label-pull discipline (`gh pr edit {N} --remove-label "ready-to-merge"`).
-2. Upsert `status.json`: `status: REVIEWING` (back-edge from `MERGE_READY`), append a `blockers[]` entry `{ "id": <generated>, "text": "<the row's grep-able refusal literal>", "raised_by": "finalisation-coordinator", "raised_at": "<ISO8601>", "cleared_at": null }`, in the SAME write. Run the generator + board-sync (per § Status contract above). This is the one back-edge this coordinator exercises (§ Status contract).
+2. Upsert `status.json`: `status: REVIEWING` (back-edge from `MERGE_READY`), append a `blockers[]` entry `{ "id": <generated>, "text": "<the row's grep-able refusal literal>", "raised_by": "finalisation-coordinator", "raised_at": "<ISO8601>", "cleared_at": null }`, in the SAME write. Run `node scripts/status/sync-status.mjs --slug {slug} --expect-status REVIEWING` (per § Status contract above). This is the one back-edge this coordinator exercises (§ Status contract).
 3. Route to the row's Coordinator action above.
 4. Once fixed, clear the blocker (`cleared_at` set) and return to Step 9 to recompose `MERGE_READY`, re-running Step 10 (write + label) and Step 11 (CI watch) before re-entering this step.
 
-**All 8 rows PASS → proceed to Step 12.** No further status write happens here — Step 12 owns the post-merge terminal write.
+**All applicable rows (1-10) PASS → proceed to Step 12.** No further status write happens here — Step 12 owns the post-merge terminal write.
 
 **Admin-bypass posture (spec §13).** The historical admin-squash escape hatch — merging despite an unresolved row above — stays technically possible on a personal repo, but under this contract it becomes an **explicit operator override**, recorded in `status.json.blockers` (`raised_by: "operator"`, the override reason as `text`) **and** in `progress.md`, **before** the merge command runs. **The coordinator never initiates this path** — it only ever reaches Step 12 by every row above passing, or by the operator explicitly instructing an override after reading a refusal. This is distinct from Step 12.3's existing `--admin` flag usage below, which is a separate, already-evidenced mechanism (the DG-5 three-line check) for skipping GitHub's required-check wait on a provably redundant docs-only prep commit — that mechanism is unchanged by this table. Until branch-protection required checks are configured (operator setup decision, §17 Ask-first, unchanged), **this refusal table IS the gate of record.**
 
@@ -1037,21 +1144,23 @@ This is the LAST commit on the feature branch before merge. The squash-commit wi
 2. `CI-green:` CI ran green on the labelled HEAD during Step 11 (cite the check-run conclusion).
 3. `prep-only:` the ONLY commit after that green CI run is the 12.2 docs-only post-merge-prep commit (`git log <green-sha>..HEAD --oneline` shows exactly the prep commit).
 
+**Expected-remote-head precondition (always, fresh-context-uat-gate plan A7).** Every merge command below carries `--match-head-commit "${HEAD_SHA}"` — the GitHub merge API `sha` precondition, which guards the HEAD so the merge is refused if the remote head moved since Step 11.5 re-read it. This is unconditional and complements Row 10's `enforcement: blocking`-only base-freshness check (the head precondition guards the head; strict up-to-date protection guards the base — the two are distinct, and the head precondition alone cannot catch a base that advanced).
+
 **All three PASS →** `--admin` is justified (it skips a provably-redundant full-suite re-run on the prep commit — that is its entire justification):
 
 ```bash
-gh pr merge {N} --admin --squash --delete-branch
+gh pr merge {N} --admin --squash --delete-branch --match-head-commit "${HEAD_SHA}"
 ```
 
 **ANY line FAIL (or unverifiable) →** do NOT use `--admin`. Merge through required checks:
 
 ```bash
-gh pr merge {N} --squash --delete-branch
+gh pr merge {N} --squash --delete-branch --match-head-commit "${HEAD_SHA}"
 ```
 
 and wait for required checks to pass; if they fail or the PR is not mergeable, return to Step 11. A missing evidence line is a FAIL — never select the `--admin` branch on assumption.
 
-`--squash` is the project convention; do not use `--rebase` or `--merge`. The `--delete-branch` flag deletes the feature branch from origin after merge.
+`--squash` is the project convention; do not use `--rebase` or `--merge`. The `--delete-branch` flag deletes the feature branch from origin after merge. If the merge is rejected because the head no longer matches `${HEAD_SHA}`, re-enter Step 11.5 against the new head — never strip the precondition to force the merge.
 
 If the merge command fails (branch protection, mergeability regression because main moved between Step 11 polling and now, label-required-but-not-applied, etc.):
 
@@ -1076,33 +1185,81 @@ git pull origin main
 
 Edit `tasks/current-focus.md` on main: replace `last_merged_commit: pending-squash` with `last_merged_commit: {SQUASH_SHA}`, and in the prose, replace `squash-commit \`pending-squash\`` with `squash-commit \`{SQUASH_SHA}\``.
 
-**Terminal status write (§ Status contract above; spec §13 terminal-fact write location).** Also edit `tasks/builds/{slug}/status.json` on main in this same patch: `status: MERGED` (terminal — no further transition follows). When `runner_live: true`, also set `gates.merge_gate: pass` with `gate_evidence.merge_gate: { "sha": "{SQUASH_SHA}", "run_ids": [<merge-gate run id captured at Step 11.5>], "url": <run url>, "completed_at": "<ISO8601 now>" }`. When pre-runner, leave `gates.merge_gate` at its existing value (`null`) — no merge-gate workflow ran for this build. This is a documentation write on `main`, not a second entry of build code — "main entered exactly once" refers to the build's code, and this write preserves that. Then run:
+**Terminal write + archive, as ONE ordered sequence (§ Status contract above; spec §13 terminal-fact write location; W3a).** The former text committed and pushed and *then* said "archive in this same commit", which is impossible as written — a push cannot contain a move made after it. Do these steps in this exact order; the sync's target outcome decides whether the archive move happens at all:
 
-```bash
-node scripts/status/generate-current-focus.mjs
-node scripts/status/board-sync.mjs
-```
+1. **Write `status: MERGED`** to `tasks/builds/{slug}/status.json` on main (terminal — no further transition follows). When `runner_live: true`, also set `gates.merge_gate: pass` with:
 
-(The generator only rewrites the marked `STATUS:GENERATED` region — this build now reports `MERGED` and drops out of the generated non-terminal-build list. It does not touch the operator pointer block this step just hand-edited.)
+   ```json
+   "gate_evidence": { "merge_gate": { "sha": "{SQUASH_SHA}", "run_ids": ["{merge-gate run id captured at Step 11.5}"], "url": "{run url}", "completed_at": "{ISO8601 now}" } }
+   ```
+
+   **`run_ids` items are STRINGS — quote the id.** GitHub Actions returns run ids as numbers; writing the raw number is the D2 defect that stranded a card in the PR #828 finalisation, and step 3 exits 2 on it. When pre-runner, leave `gates.merge_gate` at its existing value (`null`) — no merge-gate workflow ran for this build. This is a documentation write on `main`, not a second entry of build code — "main entered exactly once" refers to the build's code, and this write preserves it.
+
+2. **Write the W6 post-merge handover** into `tasks/builds/{slug}/handoff.md` (fixed contract below) — BEFORE the sync and the archive move, so it travels into `_archive/` in the same commit and is greppable forever at a fixed path and heading.
+
+3. **Sync:** `node scripts/status/sync-status.mjs --slug {slug} --expect-status MERGED --require-handover`. Exit 1 → STOP (generator hard error). Exit 2 → STOP and fix (the record is schema-invalid — e.g. an unquoted run id — or the handover is incomplete; the marker names the reason). Exit 0 or 3 → proceed to the archive decision; the printed target outcome is the key.
+
+   (The generator only rewrites the marked `STATUS:GENERATED` region — this build now reports `MERGED` and drops out of the generated non-terminal-build list. It does not touch the operator pointer block this step just hand-edited.)
+
+4. **Decide archive eligibility from the TARGET outcome** (printed by sync-status), never the global exit alone:
+
+   | target outcome | archive move |
+   |---|---|
+   | generator failure (exit 1) or target invalid (exit 2) | blocked — do not move |
+   | `stale_conflict`, `refused`, or `partial` | **deferred** — record `archive_deferred: <target outcome> — <reason>` in `progress.md`, leave the dir active |
+   | board unreachable / no config (exit 3, target `absent` for infra reasons) | **proceeds** — report only; a missed sync self-heals from `_archive/` when the board returns (W3b) |
+   | `applied` / `equivalent` / `created` (exit 0) | proceeds |
+
+   The deferral survives the session boundary and is NOT permission to archive later: any later sweep (including `/cleanfiles` target 4) that finds the marker MUST re-run `sync-status.mjs --slug {slug}` and may move the dir only after THAT run's target outcome satisfies this table. The invariant is "target truth satisfied immediately before the move", never "a sync was intended at some point".
 
 **Overwrite, don't append (control C2).** Any edit to the operator pointer block OVERWRITES it — never append a running history. Per-build history lives in `tasks/builds/<slug>/handoff.md`. The operator pointer block is hard-capped at ≤ 50 lines / ≤ 4KB (the `verify-doc-size.mjs` C1 budget measures exactly this region — see `references/doc-size-budgets.md`).
 
-Commit on main:
+5. **Move or retain (control C4).** If step 4 says the move proceeds, `git mv tasks/builds/{slug} tasks/builds/_archive/{slug}` — this is the prevention half of the accumulation the scheduled cleanfiles audit (I3) otherwise sweeps in bulk. If it says deferred or blocked, leave the dir active (the `archive_deferred:` marker in `progress.md` is the obligation the next sweep re-checks). Board-sync reads `_archive/` too, so archiving never hides the card.
 
-```bash
-git add tasks/current-focus.md tasks/builds/{slug}/status.json
-git commit -m "chore({slug}): finalize — squash sha {SQUASH_SHA}
+6. **Stage the correct path** — the archived path (`tasks/builds/_archive/{slug}/…`) if you moved it, the active path (`tasks/builds/{slug}/…`) if you retained it — plus `tasks/current-focus.md`. The handover (step 2) is under whichever path you staged.
 
-Co-Authored-By: Claude <noreply@anthropic.com>"
-git push origin main
-```
+7. **Commit once; push once:**
+
+   ```bash
+   git add tasks/current-focus.md <the status.json + handoff.md at their final path>
+   git commit -m "chore({slug}): finalize — squash sha {SQUASH_SHA}
+
+   Co-Authored-By: Claude <noreply@anthropic.com>"
+   git push origin main
+   ```
 
 If branch protection on `main` requires PRs (no direct push allowed):
 
 - Skip 12.4 and surface the placeholder to the operator: "Squash sha is `{SQUASH_SHA}`. `tasks/current-focus.md` on main still says `pending-squash` and `status.json` still reads `MERGE_READY` — open a small follow-up PR to patch, OR amend in the next merge's pre-merge prep."
 - Do not force-push to main. Do not bypass branch protection.
 
-**Archive the merged build dir (control C4).** Once `MERGED` is written and pushed (or the branch-protection follow-up is queued), the build is terminal — its `tasks/builds/{slug}/` directory is retention, not working state. Archive it in this same post-merge commit (or the follow-up patch): `git mv tasks/builds/{slug} tasks/builds/_archive/{slug}`. This is the prevention half of the accumulation the scheduled cleanfiles audit (I3) otherwise sweeps in bulk — archiving at merge stops the active `tasks/builds/` dir from growing one stale directory per merge. If the repo pins the merged dir for an immediate follow-up (rare), record why in `progress.md` and leave it for the next cleanfiles sweep.
+**W6 — post-merge handover contract (fixed, machine-findable).** Written at step 2 into `tasks/builds/{slug}/handoff.md`; Step 13.1 renders it to chat (single source — the chat copy is a render, not a second authoring). Three subheads, each with a mandated empty-state literal so absence is always distinguishable from omission. `sync-status --require-handover` (step 3) refuses (exit 2) unless the heading, the `**Shipped:**` provenance line (PR # · slug · squash sha · date, with the slug matching the target build), all three subheads, the `### Follow-on triage` ledger, and per-section content-or-literal are all present — so a merged build cannot silently lack a handover (the tell-vs-prove gap that stranded the board). **Scope of the check:** it proves STRUCTURE + provenance, not coverage — that EVERY todo / deferred / `REVIEW_GAP` item added during the build received an `urgent-now`/`routine` verdict is coordinator discipline the ledger PERSISTS; the wrapper cannot re-derive the item set from markdown alone, so completeness of the triage is on the coordinator, and the ledger is the durable evidence an auditor reads.
+
+```markdown
+## Post-merge handover
+**Shipped:** PR #{N} · {slug} · squash {SHA} · {ISO date}
+
+**What was built**
+- {3-5 dot points, plain English, drawn from handoff §Phase 2 + intent/spec Goal}
+
+**To enable / configure**
+- {every step required before the feature is live for users: flags, org/tenant
+   settings, env vars, provider setup, data backfill, each naming WHERE it is done}
+- OR the literal: "None: live on deploy."
+
+**Urgent follow-on engineering**
+- {each item classified urgent-now, one line: why now + consequence of deferring;
+   sourced from a MANDATORY triage of (a) the squash diff of tasks/todo.md,
+   (b) progress.md deferred/open items, (c) REVIEW_GAP remediations carried to merge}
+- OR the literal: "None urgent: {N} routine item(s) in the backlog."
+
+### Follow-on triage
+- {item ref} | urgent-now | {one-line why + consequence of deferring}
+- {item ref} | routine | {one-line reason}
+- OR, for a build that added nothing, the literal: "None: no follow-on items."
+```
+
+Every todo/backlog item ADDED during the build gets an explicit `urgent-now` / `routine` verdict in the `### Follow-on triage` ledger, and every verdict is PERSISTED, not just counted — an AI manager auditing later can prove each item received one. Deferred items "that are actually important to do now" must not hide undifferentiated in a 10,000-line todo file.
 
 ## Step 12.5 — Release-note block (advisory, non-blocking)
 
@@ -1119,6 +1276,15 @@ Persistence — first match wins:
 2. **No `CHANGELOG.md`** → append the block to `tasks/builds/{slug}/progress.md` under `## Release notes`.
 
 This step is **advisory and never blocks**: if the write or push fails (branch protection, missing file permissions), print the block in the Step 13 output with a one-line note that it was not persisted, and move on. Do not open a PR for it, do not retry-loop, do not escalate.
+
+## Step 12.6 — Post-merge / post-abort UAT scratch cleanup (conditional — only when Step 8c.5 ran)
+
+**Skip entirely when Step 8c.5 was skipped** (`uat_rollout_mode: disabled`/absent). When acceptance ran, the fresh-context UAT produced two tiers of evidence (fresh-context-uat-gate plan A10):
+
+- **Binding evidence** — the redacted logs/screenshots/traces the verdict cites, hash-bound in `uat-evidence.json`. This is DURABLE and follows the repo's audit-retention policy. NEVER delete it here.
+- **Scratch** — large temporary output under `.test-runs/<slug>-uat/<run_id>/` (namespaced per run: DB names, temp dirs, browser profiles, artifact names, allocated ports). This has a bounded TTL and is cleaned HERE — after a merge (Step 12) or after an abort/back-edge — by removing only the run-ID-namespaced scratch roots for this build's runs. This step is distinct from the Step 8a review-scratch sweep, which runs *before* acceptance in the same finalisation pass and structurally cannot clean evidence generated after it.
+
+Cleanup targets ONLY exact `.test-runs/<slug>-uat/<run_id>/` paths for this build — never a broad unresolved path, never the durable `tasks/builds/<slug>/uat-*.{json,md}` artifacts. A concurrency/re-entry invariant holds: run A's cleanup can only touch run A's `run_id`-namespaced resources, never run B's. Record one line in `progress.md`: `UAT scratch cleaned — <N> run(s), evidence-tier retained.`
 
 ## Step 13 — End-of-phase prompt (merged)
 
@@ -1143,6 +1309,7 @@ On finalisation, emit / refresh the `REVIEW_GAP` entries from the handoff as a t
 - `tasks/builds/{slug}/intent.md` (or `tasks/builds/{slug}/spec.md` § Goal/Motivation if no `intent.md` exists) — why this was built / user-facing benefit.
 - `tasks/builds/{slug}/progress.md` — § Deferred / § Open Questions / any "post-merge action" notes.
 - `git show {SQUASH_SHA} -- tasks/todo.md` — exact diff of what was added to the backlog by this build (do NOT paraphrase from memory; the diff is authoritative).
+- `tasks/builds/{slug}/handoff.md` § `## Post-merge handover` — the W6 handover written at Step 12.4 step 2. This chat summary is a RENDER of it, not a second authoring: "What we built" ← "**What was built**"; "Further action required" ← "**To enable / configure**" + "**Urgent follow-on engineering**" (surface any non-`None` line here); "Added to backlog" ← the `### Follow-on triage` ledger. If the handover and this summary would disagree, the handover is authoritative — fix it first, since it is the durable, greppable copy an AI manager reads later.
 
 **Format — print verbatim:**
 

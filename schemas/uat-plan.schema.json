@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "uat-plan.schema.json",
+  "title": "UatPlan",
+  "description": "Canonical carrier for the FINAL execution plan (plan A6): the complete frozen blind scenario set unchanged, plus optional additions marked origin=augmentation. Produced after the blind plan is frozen and augmentation inputs (operator decisions, prior risk records) are read. The coordinator computes expected_plan_sha256 over this document (excluding document_sha256) and hands it to the executor; the executor recomputes executed_plan_sha256 before its first scenario; the evidence validator requires expected == executed == this document's recomputed digest (two-sided plan-digest handoff, round-4 finding 6). Augmentation may ADD coverage, never remove, mutate, or downgrade a blind scenario.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "slug", "code_candidate_sha", "base_sha", "blind_plan_sha256", "augmentation_started_at", "scenarios", "document_sha256"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "uat-plan.v1" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "code_candidate_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "blind_plan_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Digest of the frozen uat-plan-blind.json this plan extends." },
+    "augmentation_started_at": { "type": "string", "format": "date-time", "description": "MUST be strictly after the blind plan's frozen_at." },
+    "risk_inventory_at_execution_start": {
+      "$ref": "#/definitions/risk_inventory",
+      "description": "Frozen at execution start alongside this plan; immutable and hash-bound."
+    },
+    "scenarios": { "type": "array", "minItems": 0, "items": { "$ref": "#/definitions/plan_scenario" } },
+    "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "definitions": {
+    "risk_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risks", "sha256"],
+      "properties": {
+        "risks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "source"],
+            "properties": {
+              "tag": { "type": "string", "minLength": 1 },
+              "source": { "type": "string", "enum": ["classifier", "behavior-spec", "coordinator", "tester", "augmentation", "late"] }
+            }
+          }
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "plan_scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "origin", "required", "risk_tags", "families", "oracle", "anti_vacuity_contract", "digest"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "origin": { "type": "string", "enum": ["blind", "augmentation"] },
+        "required": { "type": "boolean" },
+        "risk_tags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "families": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fixtures": { "type": "array", "items": { "type": "string" } },
+        "oracle": { "type": "string", "minLength": 1 },
+        "anti_vacuity_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requires_observed_records": { "type": "boolean" },
+            "seeded_id": { "type": "string" },
+            "seeded_value": { "type": "string" },
+            "branch_marker": { "type": "string" },
+            "response_field": { "type": "string" }
+          }
+        },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

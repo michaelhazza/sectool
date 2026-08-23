@@ -28,29 +28,29 @@
  * `title`, `branch` and `pr`, all of which the card renderer dereferences.
  *
  * A hand-maintained mirror of a schema is the exact drift class this build
- * already wrote a guard for, so the floor now reads `required`, `properties`
- * and `items` straight out of the schema JSON and enforces them generically.
- * Parsing JSON needs no dependency; only ajv's richer keywords are lost. That
- * makes the schema file itself a hard runtime requirement, which it already
- * was in practice: readStatusEnum() cannot resolve the board's columns without
- * it either.
+ * already wrote a guard for, so the floor now reads the schema JSON and walks
+ * it generically. Parsing JSON needs no dependency; only ajv's richer keywords
+ * are lost. That makes the schema file itself a hard runtime requirement, which
+ * it already was in practice: readStatusEnum() cannot resolve the board's
+ * columns without it either.
  *
- * The floor implements: required, type (including the oneOf/anyOf nullable
- * shapes), enum, const, minLength, `format: date-time`, and one level of
- * recursion into arrays-of-objects (the `blockers[]` shape the card renderer
- * dereferences). It does NOT implement `additionalProperties: false`, which is
- * pinned as a known divergence in status-contract.test.mjs rather than left to
- * a reader's assumption; an unknown extra key cannot crash a renderer or
- * corrupt a write.
- *
- * `format` was ALSO pinned as an acceptable divergence for one round, on the
- * stated grounds that a malformed timestamp produced only a wrong-looking
- * card. That was wrong, and the pin encoded the error as intended behaviour
- * (external review round 6). See checkFormat below for the three board-sync
- * paths that read `updated_at` as load-bearing data. The lesson generalises:
- * a divergence pin asserts "this cannot hurt us", which is a claim about
- * every consumer of the field, and it needs the same verification as any
- * other such claim.
+ * THE FLOOR IS NOW GENUINELY RECURSIVE (framework-status-sync-hardening, W2.1).
+ * The prior version recursed exactly one level, into arrays-of-objects (the
+ * `blockers[]` shape), and never descended into a schema-valued
+ * `additionalProperties` — which is precisely how `gate_evidence` entries are
+ * typed. Consequence: in bare-consumer mode
+ * `gate_evidence.merge_gate.run_ids: [32310798762]` (a number where the schema
+ * demands string items) PASSED the floor, and a schema-invalid load-bearing
+ * record advanced silently — the exact D2 defect that stranded a card during
+ * the PR #828 finalisation. The floor now implements, at any depth: `required`,
+ * `type` (including the `oneOf`/`anyOf` nullable shapes), `enum`, `const`,
+ * `format: date-time`, `minLength`, `maxLength`, `pattern`, `minItems`,
+ * `maxItems`, nested-object `properties`, schema-valued `additionalProperties`,
+ * and `additionalProperties: false`. It does NOT implement the keywords this
+ * schema never uses (`allOf`, `if/then`, `$ref`, numeric bounds); introducing
+ * one of those to the schema without teaching the floor would be caught by the
+ * Ajv-vs-floor agreement test in status-contract.test.mjs, which is the guard
+ * that keeps the two paths from silently diverging.
  *
  * enum and const are not optional niceties here (external review round 5).
  * board-sync has no status check of its own, unlike the generator, so a
@@ -136,60 +136,17 @@ function permittedTypes(propSchema) {
   return [];
 }
 
-/** `const` and `enum` for one property. Returns an error string, or null.
- *
- *  These are VOCABULARY constraints, and leaving them out reopened the exact
- *  split-brain defect the board contract check was written to close (external
- *  review round 5). `status: "TESTNG"` is a string, so a types-only floor
- *  accepted it; board-sync has no status check of its own — unlike the
- *  generator, which tests membership of STATUS_PRIORITY — so the typo reached
- *  the board, the card body was written saying TESTNG, setFieldValues found no
- *  such option, warned, skipped the field, and the card disagreed with its own
- *  column. The same omission accepted `contract_version: "build-status.v1"`
- *  against a `const` of v2, i.e. a record written under a superseded contract.
- */
 // RFC 3339 date-time. Deliberately stricter than Date.parse, which accepts a
 // much broader set (bare '2026', '29 Jul 2026', and other Date-constructor
-// forms) than JSON Schema's `date-time` permits. The trailing Date.parse check
-// then rejects well-shaped but impossible values such as 2026-02-31.
-const RFC3339_DATE_TIME = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
-
-/** `format: date-time`, including inside the oneOf nullable shapes.
- *
- *  NOT presentation-only, which is what the round-5 write-up wrongly claimed
- *  when it pinned this as an acceptable divergence (external review round 6).
- *  `updated_at` is load-bearing in three places, all verified in board-sync:
- *
- *   - shouldSkipStale compares timestamps as PLAIN STRINGS. A malformed value
- *     sorting high defeats stale-write protection: '2026-07-29T10:00:00Z' >
- *     'zzzz' is false, so an older record overwrites a newer card. A value
- *     sorting low does the reverse and suppresses legitimate updates.
- *   - chooseSurvivor orders duplicates by the same string comparison, so the
- *     malformed card wins survivor selection and the real one is archived.
- *   - shouldArchive computes `now - new Date(updated_at)`, which is NaN for a
- *     malformed value, and `NaN >= threshold` is false — so terminal cards
- *     never age out.
- *
- *  And the damage compounds: the bad value is written back into the card body,
- *  poisoning every subsequent comparison.
- */
-function checkFormat(value, propSchema, at, key) {
-  if (typeof value !== 'string') return null; // null branch of a nullable field
-
-  // The keyword may sit on the property, or inside a oneOf/anyOf branch that
-  // accepts strings — which is how every nullable timestamp in this schema is
-  // declared (`cleared_at`, and any future sibling).
-  const branches = [propSchema, ...(propSchema.oneOf ?? propSchema.anyOf ?? [])];
-  const wantsDateTime = branches.some(
-    (b) => b?.format === 'date-time' && (b.type === undefined || b.type === 'string')
-  );
-  if (!wantsDateTime) return null;
-
-  if (!RFC3339_DATE_TIME.test(value) || !isRealCalendarDate(value)) {
-    return `${at}${key} must be an RFC 3339 date-time`;
-  }
-  return null;
-}
+// forms) than JSON Schema's `date-time` permits. The time-of-day and offset
+// ranges are bounded (hour 00-23, minute 00-59, second 00-60 for a leap
+// second, offset hour 00-23) so the floor rejects the same out-of-range values
+// ajv-formats does — an unbounded `\d{2}` accepted `T00:75:00Z`, which Ajv
+// rejects, reopening the floor-vs-Ajv divergence W2.1 exists to close. The
+// trailing calendar check then rejects well-shaped but impossible DATES such as
+// 2026-02-31.
+const RFC3339_DATE_TIME =
+  /^\d{4}-\d{2}-\d{2}[Tt]([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?([Zz]|[+-]([01]\d|2[0-3]):[0-5]\d)$/;
 
 /** True when the Y-M-D of an RFC 3339 string is a date that actually exists.
  *  Date.parse alone is not enough: it silently ROLLS OVER, so '2026-02-31'
@@ -206,74 +163,126 @@ function isRealCalendarDate(value) {
   );
 }
 
-function checkVocabulary(value, propSchema, at, key) {
-  const formatError = checkFormat(value, propSchema, at, key);
-  if (formatError) return formatError;
-
-  if (Object.prototype.hasOwnProperty.call(propSchema, 'const') && value !== propSchema.const) {
-    return `${at}${key} must equal ${JSON.stringify(propSchema.const)}`;
-  }
-  // Object.is, not includes: NaN never equals itself under ===, and -0/+0
-  // compare equal when they are distinct JSON-schema values.
-  if (Array.isArray(propSchema.enum) && !propSchema.enum.some((c) => Object.is(c, value))) {
-    return `${at}${key} must be one of ${propSchema.enum.join(', ')}`;
-  }
-  // minLength was the last divergence the Ajv-vs-floor agreement test found.
-  // An empty blocker text is not a crash, but it renders as a blank bullet on
-  // the card, and any gap between the two paths makes "which validator loaded"
-  // a correctness variable.
-  if (typeof propSchema.minLength === 'number' && typeof value === 'string'
-      && value.length < propSchema.minLength) {
-    return `${at}${key} must be at least ${propSchema.minLength} character(s)`;
-  }
-  return null;
+/** A human-readable label for a JSON path. Root is '' so a root-level message
+ *  reads " missing required field(s): …" exactly as the prior floor did. */
+function label(jsonPath) {
+  return jsonPath;
 }
 
-/** Generic required-keys + declared-types + vocabulary check against a schema
- *  fragment. Returns an error string, or null. `at` prefixes the path. */
-function checkAgainstFragment(value, fragment, at) {
-  const missing = (fragment.required ?? []).filter(
-    (key) => !Object.prototype.hasOwnProperty.call(value, key)
-  );
-  if (missing.length > 0) return `${at} missing required field(s): ${missing.join(', ')}`;
+function joinPath(jsonPath, key) {
+  return jsonPath === '' ? key : `${jsonPath}.${key}`;
+}
 
-  for (const [key, propSchema] of Object.entries(fragment.properties ?? {})) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue; // absent and not required
-    const types = permittedTypes(propSchema);
-    if (types.length > 0 && !types.some((t) => matchesJsonType(value[key], t))) {
-      return `${at}${key} must be ${types.join(' or ')}`;
+/**
+ * Generic recursive validator for the JSON Schema keyword subset this schema
+ * uses. Returns the FIRST error string found (paths dotted, array indices
+ * bracketed), or null when the value satisfies the fragment.
+ *
+ * WHY date-time / minLength / etc. live here and not in a per-property helper:
+ * a nullable field declares `format: date-time` inside a `oneOf` branch
+ * (`cleared_at`), and a schema-valued `additionalProperties` (`gate_evidence`
+ * entries) declares `run_ids.items.type` two levels down — both are only
+ * reachable by walking the schema recursively, so every keyword is evaluated on
+ * the node it sits on, wherever that node is.
+ */
+function validateAgainstSchema(value, schema, jsonPath) {
+  if (!schema || typeof schema !== 'object') return null;
+
+  // oneOf / anyOf — the value is valid when it satisfies at least one branch.
+  // This is how every nullable field in the schema is declared, and it must be
+  // evaluated fully (including each branch's `format`) rather than reduced to a
+  // union of permitted types, or a malformed timestamp in a nullable field
+  // would slip through.
+  const branches = schema.oneOf ?? schema.anyOf;
+  if (Array.isArray(branches)) {
+    for (const branch of branches) {
+      if (validateAgainstSchema(value, branch, jsonPath) === null) return null;
     }
+    const allowed = permittedTypes(schema);
+    return `${label(jsonPath)} must be ${allowed.length ? allowed.join(' or ') : 'a permitted shape'}`;
+  }
 
-    const vocabularyError = checkVocabulary(value[key], propSchema, at, key);
-    if (vocabularyError) return vocabularyError;
+  // type
+  const types = permittedTypes(schema);
+  if (types.length > 0 && !types.some((t) => matchesJsonType(value, t))) {
+    return `${label(jsonPath)} must be ${types.join(' or ')}`;
+  }
 
-    // One level into arrays-of-objects. This is not general recursion: it is
-    // exactly the `blockers[]` shape, whose elements the card renderer
-    // dereferences and whose malformed elements were the reported crash.
-    if (propSchema.type === 'array' && propSchema.items && Array.isArray(value[key])) {
-      for (const [i, element] of value[key].entries()) {
-        const itemTypes = permittedTypes(propSchema.items);
-        if (itemTypes.length > 0 && !itemTypes.some((t) => matchesJsonType(element, t))) {
-          return `${at}${key}[${i}] must be ${itemTypes.join(' or ')}`;
-        }
-        // An items fragment can carry enum/const directly (array-of-scalars),
-        // as well as nested inside its own properties via the recursion below.
-        const itemVocabularyError = checkVocabulary(element, propSchema.items, `${at}${key}`, `[${i}]`);
-        if (itemVocabularyError) return itemVocabularyError;
-        if (element !== null && typeof element === 'object') {
-          const nested = checkAgainstFragment(element, propSchema.items, `${at}${key}[${i}].`);
-          if (nested) return nested;
-        }
+  // const / enum — VOCABULARY constraints. Object.is, not ===/includes: NaN
+  // never equals itself under ===, and -0/+0 compare equal when they are
+  // distinct JSON-schema values.
+  if (Object.prototype.hasOwnProperty.call(schema, 'const') && !Object.is(value, schema.const)) {
+    return `${label(jsonPath)} must equal ${JSON.stringify(schema.const)}`;
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((c) => Object.is(c, value))) {
+    return `${label(jsonPath)} must be one of ${schema.enum.join(', ')}`;
+  }
+
+  // string keywords
+  if (typeof value === 'string') {
+    if (schema.format === 'date-time'
+        && (!RFC3339_DATE_TIME.test(value) || !isRealCalendarDate(value))) {
+      return `${label(jsonPath)} must be an RFC 3339 date-time`;
+    }
+    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
+      return `${label(jsonPath)} must be at least ${schema.minLength} character(s)`;
+    }
+    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
+      return `${label(jsonPath)} must be at most ${schema.maxLength} character(s)`;
+    }
+    if (typeof schema.pattern === 'string' && !new RegExp(schema.pattern).test(value)) {
+      return `${label(jsonPath)} must match pattern ${schema.pattern}`;
+    }
+  }
+
+  // array keywords + element recursion
+  if (Array.isArray(value)) {
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
+      return `${label(jsonPath)} must have at least ${schema.minItems} item(s)`;
+    }
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
+      return `${label(jsonPath)} must have at most ${schema.maxItems} item(s)`;
+    }
+    if (schema.items) {
+      for (const [i, element] of value.entries()) {
+        const err = validateAgainstSchema(element, schema.items, `${jsonPath}[${i}]`);
+        if (err) return err;
       }
     }
   }
+
+  // object keywords: required, properties, additionalProperties
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    const missing = (schema.required ?? []).filter(
+      (key) => !Object.prototype.hasOwnProperty.call(value, key)
+    );
+    if (missing.length > 0) {
+      return `${label(jsonPath)} missing required field(s): ${missing.join(', ')}`;
+    }
+
+    const properties = schema.properties ?? {};
+    const additional = schema.additionalProperties;
+    for (const [key, child] of Object.entries(value)) {
+      if (Object.prototype.hasOwnProperty.call(properties, key)) {
+        const err = validateAgainstSchema(child, properties[key], joinPath(jsonPath, key));
+        if (err) return err;
+      } else if (additional === false) {
+        return `${joinPath(jsonPath, key)} is not a permitted field`;
+      } else if (additional && typeof additional === 'object') {
+        const err = validateAgainstSchema(child, additional, joinPath(jsonPath, key));
+        if (err) return err;
+      }
+      // additionalProperties true / undefined → the extra key is allowed.
+    }
+  }
+
   return null;
 }
 
 /**
  * Returns an error string for a malformed record, or null.
  *
- * Ajv when available; otherwise the schema-derived structural floor above.
+ * Ajv when available; otherwise the schema-derived recursive floor above.
  * A missing or unparseable schema is an ERROR, not a pass: without it neither
  * path can say what a valid record is, and returning null there would mean
  * "valid" — silently disabling the check this module exists to perform.
@@ -295,5 +304,5 @@ export async function validateRecordShape(data) {
     return `cannot read ${path.basename(SCHEMA_PATH)} — unable to validate this record. `
       + 'The schema ships with the framework; a missing or unparseable copy means a broken sync, not an optional file.';
   }
-  return checkAgainstFragment(data, schema, '');
+  return validateAgainstSchema(data, schema, '');
 }

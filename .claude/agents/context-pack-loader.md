@@ -42,7 +42,7 @@ For each entry in the pack's `## Sources`:
   - The anchor line marks the START of a section.
   - The next `<a id="..."></a>` (or end of file) marks the start of the NEXT section.
   - Read everything between (inclusive of the heading immediately after the anchor, exclusive of the next anchor).
-  - Use `grep -n '<a id=' architecture.md` to map anchor → line number, then `Read` with `offset` and `limit` to slice precisely.
+  - Map anchors to line numbers with `npx tsx scripts/architecture-search.ts --toc` when `scripts/architecture-search.ts` exists (each row is `start-end #anchor title`, so the line range is read directly off the row); otherwise `grep -n '<a id=' architecture.md`. Then `Read` with `offset` and `limit` to slice precisely.
 
 - **`<file> § <heading>`** — read the file, then narrow to that heading's section. Use `grep -n '^## <heading>' <file>` to find the line, then read until the next `^## ` (or end of file).
 

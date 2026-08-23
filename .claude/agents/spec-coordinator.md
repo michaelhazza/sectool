@@ -61,20 +61,33 @@ If status is BUILDING, REVIEWING, or MERGE_READY:
 
 The SPECIFYING prose update (item 6 above) MUST happen BEFORE the TodoWrite list is emitted. It is the concurrency gate.
 
-**Early board presence (brief-file invocations).** The lock flip above is a phase transition and carries the § Status contract obligation. When the invocation argument already names an artefact under an existing `tasks/builds/<slug>/` directory, the slug is known now: upsert `tasks/builds/{slug}/status.json` in this same step — the build's first write (`status: SPECIFYING`, `phase: spec`, plus the `log[]` `kind: "start"` entry for `Spec`) — then run the generator and `board-sync.mjs`, so the card appears under SPECIFYING when the phase begins rather than after intent authoring (Step 3 is the longest pre-spec stretch and must be board-visible). Topic invocations have no slug yet; their first write happens at Step 4.
+**Early board presence (brief-file invocations).** The lock flip above is a phase transition and carries the § Status contract obligation. When the invocation argument already names an artefact under an existing `tasks/builds/<slug>/` directory, the slug is known now: upsert `tasks/builds/{slug}/status.json` in this same step — the build's first write (`status: SPECIFYING`, `phase: spec`, plus the `log[]` `kind: "start"` entry for `Spec`) — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status SPECIFYING`, so the card appears under SPECIFYING when the phase begins rather than after intent authoring (Step 3 is the longest pre-spec stretch and must be board-visible). Topic invocations have no slug yet; their first write happens at Step 4.
 
 After Step 4 derives the actual slug, update the prose body of `tasks/current-focus.md` so the active build slug reads `{slug}`.
 
-## Status contract (status.json)
-
-At every phase transition — the same moments this coordinator writes `.phase` or a phase-transition progress/current-focus entry — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run:
+**Review-tier preflight (forecast).** Before the review steps commit to a path, check that the transports they need are reachable, so a missing Codex binary or a capped OpenAI org surfaces HERE rather than mid-pipeline:
 
 ```bash
-node scripts/status/generate-current-focus.mjs
-node scripts/status/board-sync.mjs
+bash scripts/review-preflight.sh --require <tiers>
 ```
 
-The generator and `board-sync.mjs` run together at every such write.
+Build `<tiers>` AFTER the task class and the review mode are resolved — the capability set is not knowable from class alone:
+- `codex` — required for Standard+ (Step 7 runs `spec-reviewer`).
+- `openai-api` — required ONLY when `chatgpt-spec-review` resolves to `automated` or `parallel`. In manual mode the review runs through the ChatGPT web UI and never touches the Responses API, so requiring it would manufacture a gap; it reports `SKIPPED`.
+
+Statuses are `PASS | FAIL | UNAVAILABLE | SKIPPED`. At Step 0 the check is a FORECAST: a required tier reporting `FAIL`/`UNAVAILABLE` is recorded in `progress.md` AND surfaced to the operator in the session-start summary with the printed remediation — the pipeline continues, but the warning is never silent. Treat a non-zero exit or an unparseable block exactly like `UNAVAILABLE` for every required tier. If the script is absent (pre-adoption), record one line and continue.
+
+## Status contract (status.json)
+
+At every phase transition — the same moments this coordinator writes `.phase` or a phase-transition progress/current-focus entry — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run the ONE status-sync command:
+
+```bash
+node scripts/status/sync-status.mjs --slug {slug} --expect-status <STATUS>
+```
+
+This single command is the only status-sync mechanism you cite — it replaces the former generator + board-sync pair (now implementation details it calls, and unciteable: a CI grep-gate fails the build on any direct reference to either script in an agent file). It runs the generator, validates THIS build's `status.json` record before projecting it, then syncs the card.
+
+**Exit contract (defined once here):** `0` synced (continue); `1` generator hard error (STOP the transition); `2` this build's record is invalid or unresolvable — marker `[sync-status] INVALID_TARGET slug=<slug> reason=<reason>` (STOP; fix and re-run); `3` board not synced or this build's card not projected — `[sync-status] board reason=<reason> — remediation: <…>` (record in `progress.md`, tell the operator in-session, continue — board is a view, not a gate). `--expect-status <STATUS>` asserts the record's status equals this transition's target.
 
 **Precedence.** `status.json` is **authoritative** for build state. `.phase` is a **derived projection** — its content equals `status.phase` — written in the **same coordinator step** as the `status.json` write. On disagreement, `status.json` wins and the coordinator **rewrites `.phase`** to match.
 
@@ -85,9 +98,9 @@ The generator and `board-sync.mjs` run together at every such write.
 - This coordinator's appends: a `kind: "start"` entry for `Spec` at the build's first status write (`SPECIFYING`), a `kind: "info"` entry at notable mid-stage moments that already carry a status write (mockups approved, spec accepted after review rounds, abort), and at the Step 10 handoff TWO entries in the same write: `kind: "done"` closing `Spec`, then `kind: "start"` opening `Plan`.
 - Entry shape (`log[]` in `schemas/build-status.schema.json`): `{ "at": "<ISO 8601 UTC now>", "stage": "<Spec|Plan|Build|Review|Testing|Finalisation|Merge>", "kind": "start|done|info", "note": ["<dot point>", ...] }`.
 - **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was decided, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"Spec accepted after 3 review rounds, 9 findings applied"`. Bad: `"chatgpt-spec-review returned auto_apply_eligible findings on §7"`.
-- `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
+- The board card renders `log[]` newest-first as its `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
 
-**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next `generate-current-focus.mjs` run overwrites it by design. The operator pointer block (outside the markers) remains this coordinator's to edit (Step 10).
+**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next status-sync run (`sync-status.mjs`) regenerates it by design. The operator pointer block (outside the markers) remains this coordinator's to edit (Step 10).
 
 **Overwrite, don't append (control C2).** When you edit the operator pointer block, OVERWRITE it — do not append a running history. Per-build history lives in `tasks/builds/<slug>/handoff.md`. The operator pointer block is hard-capped at ≤ 50 lines / ≤ 4KB (the `verify-doc-size.mjs` C1 budget measures exactly this region — see `references/doc-size-budgets.md`).
 
@@ -102,7 +115,7 @@ gh project view <number> --owner <owner> --format json >/dev/null 2>&1 || echo "
 
 If either check fails, tell the operator once, up front, with the exact remediation — record `projects_board: { owner, number }` in `.claude/project-registries.json` (travels with the repo, fixes every clone), or run `gh auth refresh -s project` (per-machine, the token lives in the OS keyring). Then continue; this is not a gate. Reporting it once at the start beats reporting it at every transition, and beats not reporting it at all.
 
-**Board-sync is non-blocking, but never silent.** A `board-sync.mjs` failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `board-sync.mjs` emits `[board-sync] NOT_SYNCED reason=<reason>` and exits `3` on any run that did not reach the board. When you see that marker you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
+**Status sync is non-blocking on the board, but never silent.** A board sync failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `sync-status.mjs` exits `3` and prints `[sync-status] board reason=<reason> — remediation: <…>` on any run that did not reach the board, surfacing the underlying `[board-sync] NOT_SYNCED reason=<reason>` signal with its remediation attached. When you see exit 3 you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
 
 **Error handling.**
 - Board-sync failure (`NOT_SYNCED` marker / exit 3) → record in `progress.md`, report to the operator in-session, continue. Never a build stop.
@@ -420,7 +433,7 @@ Derive a kebab-case slug from the brief title (e.g. "Add live agent execution lo
 
 Create `tasks/builds/{slug}/` if it does not exist. Create `tasks/builds/{slug}/progress.md` with an initial header and the phase-1 status table.
 
-Upsert `tasks/builds/{slug}/status.json` now (`status: SPECIFYING`, `phase: spec`) — per § Status contract — then run the generator and `board-sync.mjs`. For topic invocations this is the build's first write and carries the `log[]` `kind: "start"` entry for `Spec`; for brief-file invocations Step 0 already wrote both — re-upsert idempotently and do NOT append a duplicate `Spec` start entry.
+Upsert `tasks/builds/{slug}/status.json` now (`status: SPECIFYING`, `phase: spec`) — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status SPECIFYING`. For topic invocations this is the build's first write and carries the `log[]` `kind: "start"` entry for `Spec`; for brief-file invocations Step 0 already wrote both — re-upsert idempotently and do NOT append a duplicate `Spec` start entry.
 
 Write the derived slug back to `tasks/current-focus.md`: update `build_slug: none` → `build_slug: {slug}`.
 
@@ -688,7 +701,7 @@ Update the prose body of `tasks/current-focus.md` to reflect:
 
 Status enum transitions `SPECIFYING → PLANNING` (v2: Phase 2 owns plan authoring, so Phase 1 hands over at PLANNING rather than BUILDING).
 
-Also upsert `status.json` in this same step (`status: PLANNING`; `phase` unchanged) — per § Status contract — then run the generator and `board-sync.mjs`.
+Also upsert `status.json` in this same step (`status: PLANNING`; `phase` unchanged) — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status PLANNING`.
 
 If status was already `BUILDING` or `REVIEWING` for a different slug, refuse and prompt the operator (concurrent-feature collision). Do not overwrite a different slug's state.
 
@@ -751,5 +764,5 @@ Push to current branch. Never `--no-verify`, never `--amend`, never force-push.
    **Partial-write behaviour.** Rows are processed and written one-by-one; successful `ACCEPTED_DEFERRED` writes are not rolled back if a later row's guard fails. The operator prompt in step 4 lists which rows were updated and which were skipped (updated / skipped-status / skipped-slug-mismatch), so the operator can resolve any partial state manually.
 
 3. Reset `tasks/current-focus.md` to `NONE`.
-3a. Also set `status.json.status = ABANDONED` (with a blocker entry citing the rejection rationale from step 1) in this same step — per § Status contract — then run the generator and `board-sync.mjs`.
+3a. Also set `status.json.status = ABANDONED` (with a blocker entry citing the rejection rationale from step 1) in this same step — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status ABANDONED`.
 4. Inform operator: "Build rejected. BUG-IDs [<list>] set to ACCEPTED_DEFERRED. Slug <slug> abandoned." Include the per-row outcome (updated / skipped-status / skipped-slug-mismatch) so the operator can resolve any rows that were not updated.

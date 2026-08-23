@@ -14,6 +14,7 @@ The one canonical mapping of pipeline role → approved execution runtime (spec 
 | Reviewer (`spec-conformance`, `pr-reviewer`, `adversarial-reviewer`, `dual-reviewer`, `chatgpt-*-review`) | Claude Code | Review judgment is not delegated to OpenClaw under this pilot. |
 | Test Author | Claude Code | Test authoring (the TESTING status) stays on Claude Code. |
 | Finaliser | Claude Code | Finalisation (Phase 3, `finalisation-coordinator`) stays on Claude Code. |
+| Acceptance tester (fresh-context UAT executor) | Codex (fresh CLI process or Desktop task); Claude Code headless as advisory-only fallback | The BINDING acceptance verdict comes from a fresh Codex context — cross-vendor AND cross-context independence. A fresh `claude -p` headless run may execute only when `enforcement: advisory` and is recorded as lower-assurance evidence (`executor_class: claude-headless`); Codex unavailable while `enforcement: blocking` yields `incomplete`. The executor never edits production code. `acceptance-phase` (Claude Code) orchestrates; it is not the tester. |
 
 ## OpenClaw: Builder only, stops at MERGE_READY
 

@@ -45,7 +45,7 @@ Read these as your defaults. Do not re-derive them from the spec every run. They
 
 Before starting, read:
 1. `CLAUDE.md` — project conventions and architecture rules
-2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one.
+2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one. Prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (ranked sections with `architecture.md:LINE` anchors; `--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or the doc's anchors are absent, or the task genuinely spans most sections.
 3. The spec file under review (provided by the caller, or detected from the task)
 4. The spec-context file (default: `docs/spec-context.md`, unless caller provides a different path)
 5. `docs/spec-authoring-checklist.md` — the pre-authoring checklist authors are expected to have worked through. Use it as a secondary rubric: any section of the checklist the spec fails to satisfy is a rubric finding.
@@ -525,7 +525,7 @@ If the final report write did not produce any new changes (e.g. the run aborted 
 
 ## Rules
 
-- Never skip the `CLAUDE.md` or `architecture.md` reads. Your adjudication depends on knowing the project's conventions and primitives.
+- Never skip the `CLAUDE.md` read, and never skip architecture context entirely. Your adjudication depends on knowing the project's conventions and primitives. The `architecture.md` obligation may be satisfied by a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (`--toc` for the section map) and Read the matching sections; fall back to the whole file when the tool or anchors are absent or the task spans most sections.
 - Never skip the `spec-context.md` read. Your directional classification depends on knowing the baked-in framing assumptions.
 - Auto-decide every directional finding using the framing assumptions and conventions in Step 7. Most Codex directional suggestions are covered by the pre-production / rapid-evolution / no-feature-flags / prefer-existing-primitives assumptions — reject them with the matching assumption as the reason. Only escalate to AUTO-DECIDED (tasks/todo.md) when no framing assumption or convention applies.
 - Never reject a finding with "this seems minor" — either it's mechanical and you apply it, or it's directional and the human decides. "Minor" is a Codex-severity label, not an adjudication criterion.

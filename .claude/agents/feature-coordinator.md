@@ -41,16 +41,29 @@ Read in this order before doing anything else:
 
 **Time-source invariant:** every timestamp written by this coordinator (snapshots, logs, commit summaries, progress writes) must be UTC ISO 8601 generated from `date -u` at execution time. Never substitute git commit time, DB time, or client-side time. Never mix sources within a run.
 
-## Status contract (status.json)
-
-At every phase transition — the same moments this coordinator writes `.phase` or a phase-transition progress/current-focus entry — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run:
+**Review-tier preflight (forecast).** Check the review transports are reachable before the plan-review and branch-review steps depend on them:
 
 ```bash
-node scripts/status/generate-current-focus.mjs
-node scripts/status/board-sync.mjs
+bash scripts/review-preflight.sh --require <tiers>
 ```
 
-The generator and `board-sync.mjs` run together at every such write.
+Build `<tiers>` AFTER task class and review mode are resolved:
+- `codex` — required for Standard+ . Step 3c runs `plan-reviewer` UNCONDITIONALLY, so this is not a Significant/Major-only requirement; `dual-reviewer` later adds no new requirement.
+- `openai-api` — required ONLY when `chatgpt-plan-review` resolves to `automated` or `parallel`; manual mode reports `SKIPPED` and needs no key.
+
+Statuses are `PASS | FAIL | UNAVAILABLE | SKIPPED`. At Step 0 this is a FORECAST: a required tier reporting `FAIL`/`UNAVAILABLE` is recorded in `progress.md` AND surfaced to the operator with the printed remediation; the pipeline continues but the warning is never silent. A non-zero exit or an unparseable block is treated exactly like `UNAVAILABLE` for every required tier. At the review boundary itself, re-check: still red → one bounded retry → then the coordinator's EXISTING per-tier fallback. **A completed fallback is NOT a gap** — an automated/parallel probe staying red followed by the review completing in manual mode records `transport fallback: automated→manual`, not a `REVIEW_GAP`; the canonical `REVIEW_GAP` is written only when a required review is genuinely SKIPPED. If the script is absent (pre-adoption), record one line and continue.
+
+## Status contract (status.json)
+
+At every phase transition — the same moments this coordinator writes `.phase` or a phase-transition progress/current-focus entry — upsert `tasks/builds/{slug}/status.json` (contract: `schemas/build-status.schema.json`, shape in spec §8.1), then run the ONE status-sync command:
+
+```bash
+node scripts/status/sync-status.mjs --slug {slug} --expect-status <STATUS>
+```
+
+This single command is the only status-sync mechanism you cite — it replaces the former generator + board-sync pair (now implementation details it calls, and unciteable: a CI grep-gate fails the build on any direct reference to either script in an agent file). It runs the generator, validates THIS build's `status.json` record before projecting it, then syncs the card.
+
+**Exit contract (defined once here):** `0` synced (continue); `1` generator hard error (STOP the transition); `2` this build's record is invalid or unresolvable — marker `[sync-status] INVALID_TARGET slug=<slug> reason=<reason>` (STOP; fix and re-run); `3` board not synced or this build's card not projected — `[sync-status] board reason=<reason> — remediation: <…>` (record in `progress.md`, tell the operator in-session, continue — board is a view, not a gate). `--expect-status <STATUS>` asserts the record's status equals this transition's target.
 
 **Precedence.** `status.json` is **authoritative** for build state. `.phase` is a **derived projection** — its content equals `status.phase` — written in the **same coordinator step** as the `status.json` write. On disagreement, `status.json` wins and the coordinator **rewrites `.phase`** to match.
 
@@ -86,9 +99,9 @@ Back-edges, each **REQUIRING a blocker entry recorded in the same write**: `MERG
 - Notable mid-stage moment that already carries a status write (first chunk built, review findings in, fix loop opened or closed, gate result, abort) → one `kind: "info"` entry.
 - Entry shape (`log[]` in `schemas/build-status.schema.json`): `{ "at": "<ISO 8601 UTC now>", "stage": "<Spec|Plan|Build|Review|Testing|Finalisation|Merge>", "kind": "start|done|info", "note": ["<dot point>", ...] }`.
 - **`note` is operator language — the operator reads it on the card.** 1–4 short plain-English dot points (schema hard cap 6 × 200 chars): what was built, what was found, how many issues were fixed, what happens next. Counts over detail. No file paths, no agent names, no internal jargon, no transcripts. Good: `"Review found 6 issues, all fixed"` · `"Build done: 12 of 12 chunks, checks green"`. Bad: `"pr-reviewer NON_CONFORMANT on server/services/x.ts"`.
-- `board-sync.mjs` renders `log[]` newest-first as the card's `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
+- The board card renders `log[]` newest-first as its `## Activity` section — the card IS the operator's progress feed for an unattended session, and doubles as the compact build history later reviewers read. A missed append is a missed status write: same severity.
 
-**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next `generate-current-focus.mjs` run overwrites it by design. The operator pointer block (outside the markers) remains this coordinator's to edit (Step 11).
+**Hand-editing the generated current-focus block is a policy violation.** Never hand-edit the region between `<!-- STATUS:GENERATED:BEGIN -->` and `<!-- STATUS:GENERATED:END -->` in `tasks/current-focus.md` — the next status-sync run (`sync-status.mjs`) regenerates it by design. The operator pointer block (outside the markers) remains this coordinator's to edit (Step 11).
 
 **Overwrite, don't append (control C2).** When you edit the operator pointer block, OVERWRITE it — do not append a running history. Per-build history lives in `tasks/builds/<slug>/handoff.md`, not in `current-focus.md`. The operator pointer block is hard-capped at ≤ 50 lines / ≤ 4KB (the `verify-doc-size.mjs` C1 budget measures exactly this region — the whole file minus the generated markers — see `references/doc-size-budgets.md`). If a note is worth keeping, it goes in the slug's handoff.md; the pointer only ever names the current state.
 
@@ -103,7 +116,7 @@ gh project view <number> --owner <owner> --format json >/dev/null 2>&1 || echo "
 
 If either check fails, tell the operator once, up front, with the exact remediation — record `projects_board: { owner, number }` in `.claude/project-registries.json` (travels with the repo, fixes every clone), or run `gh auth refresh -s project` (per-machine, the token lives in the OS keyring). Then continue; this is not a gate. Reporting it once at the start beats reporting it at every transition, and beats not reporting it at all.
 
-**Board-sync is non-blocking, but never silent.** A `board-sync.mjs` failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `board-sync.mjs` emits `[board-sync] NOT_SYNCED reason=<reason>` and exits `3` on any run that did not reach the board. When you see that marker you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
+**Status sync is non-blocking on the board, but never silent.** A board sync failure never blocks a build — the board is a view, not a gate. It is NOT swallowed, though: `sync-status.mjs` exits `3` and prints `[sync-status] board reason=<reason> — remediation: <…>` on any run that did not reach the board, surfacing the underlying `[board-sync] NOT_SYNCED reason=<reason>` signal with its remediation attached. When you see exit 3 you MUST (a) record it in `progress.md` AND (b) **tell the operator in-session, in the same message as the phase transition**, naming the reason and its remediation. Do not stop the build; do not bury it in a file. A line in a file the operator does not read is exactly how a missing `projects_board` config made every push a no-op across an unknown number of builds — the only thing that eventually surfaced it was an operator opening the board and finding an empty column.
 
 **Error handling.**
 - Board-sync failure (`NOT_SYNCED` marker / exit 3) → record in `progress.md`, report to the operator in-session, continue. Never a build stop.
@@ -163,7 +176,7 @@ Do not proceed until operator types `continue`.
 
 Invoke `architect` as a sub-agent with the spec path from the handoff:
 
-> "Read `CLAUDE.md`, `architecture.md`, and `DEVELOPMENT_GUIDELINES.md`. Then read the spec at {spec path}. Produce an architecture notes section and a stepwise implementation plan broken into chunks. Write the plan to `tasks/builds/{slug}/plan.md`. Each chunk must include a `spec_sections:` field mapping it to the spec sections it implements, clear file-level contracts, and an error-handling strategy."
+> "Read `CLAUDE.md` and `DEVELOPMENT_GUIDELINES.md`. For `architecture.md`, prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (`--toc` for the section map) and Read only the matching sections, falling back to the whole file when the tool or anchors are absent or the task spans most sections. Then read the spec at {spec path}. Produce an architecture notes section and a stepwise implementation plan broken into chunks. Write the plan to `tasks/builds/{slug}/plan.md`. Each chunk must include a `spec_sections:` field mapping it to the spec sections it implements, clear file-level contracts, and an error-handling strategy."
 
 After architect returns, review the plan for:
 
@@ -310,8 +323,8 @@ so the transition is recorded even if the operator replies `abort`.
 
 Also upsert `status.json` in this same step (`phase: plan`; `status`
 unchanged, still `PLANNING` — `BUILDING` is written only on operator
-approval below) — per § Status contract — then run the generator and
-`board-sync.mjs`.
+approval below) — per § Status contract — then run
+`node scripts/status/sync-status.mjs --slug {slug} --expect-status PLANNING`.
 
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does
 not benefit from its own enforcement — the hook is not yet deployed during this
@@ -328,7 +341,7 @@ Present the finalised plan to the operator verbatim:
 
 **Operator reply handling:**
 
-- `proceed` / `execute` / `go` → mark plan-gate complete, then **write the `PLANNING → BUILDING` transition this step owns** (transition table above): update the `**Status:**` line in the `tasks/current-focus.md` prose body to `BUILDING`, upsert `status.json` (`status: BUILDING`; `phase` stays `plan` until the first chunk writes `build`) with the forward-transition `log[]` pair (`kind: "done"` closing `Plan`, `kind: "start"` opening `Build`) — per § Status contract — then run the generator and `board-sync.mjs`. Continue to Step 6 (per-chunk loop). Without this write the board sits on `PLANNING` through the entire construction phase and the `BUILDING` column never shows a live build.
+- `proceed` / `execute` / `go` → mark plan-gate complete, then **write the `PLANNING → BUILDING` transition this step owns** (transition table above): update the `**Status:**` line in the `tasks/current-focus.md` prose body to `BUILDING`, upsert `status.json` (`status: BUILDING`; `phase` stays `plan` until the first chunk writes `build`) with the forward-transition `log[]` pair (`kind: "done"` closing `Plan`, `kind: "start"` opening `Build`) — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status BUILDING`. Continue to Step 6 (per-chunk loop). Without this write the board sits on `PLANNING` through the entire construction phase and the `BUILDING` column never shows a live build.
 - `revise` + feedback → send feedback back to architect (counts against the 3-round cap), then re-run chatgpt-plan-review (Step 4) and plan-gate (Step 5)
 - `abort` → write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`, set `tasks/current-focus.md` status to `NONE`, mark all remaining TodoWrite items as completed, and exit. See abort write order in the Failure paths section.
 - Anything else → ask the operator to clarify; do not infer intent. Do not proceed without an explicit reply.
@@ -392,7 +405,7 @@ mkdir -p tasks/builds/{slug} && echo -n "build" > tasks/builds/{slug}/.phase
 
 This signals to the phase-lock hook (`.claude/hooks/phase-lock.js`) that the coordinator is now in the `build` phase. Subsequent chunks do not overwrite — the file is already `build`.
 
-Also upsert `status.json` in this same step, first-chunk-only (`phase: build`; `status` unchanged) — per § Status contract — then run the generator and `board-sync.mjs`. Subsequent chunks do not re-trigger this write — same first-chunk-only guard as the `.phase` marker.
+Also upsert `status.json` in this same step, first-chunk-only (`phase: build`; `status` unchanged) — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status BUILDING`. Subsequent chunks do not re-trigger this write — same first-chunk-only guard as the `.phase` marker.
 
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does not benefit from its own enforcement — the hook is not yet deployed during this build. New builds post-v2.13.0 adoption get the markers automatically.
 
@@ -617,6 +630,8 @@ For each chunk C in ascending sorted order:
 
    The output MUST be empty. If anything remains (residue from staging, an undeclared artefact), the transaction did not close cleanly: run `git reset --hard HEAD && git clean -fd` and re-run this chunk via the inner routine rather than letting the next chunk discover the dirtiness. Only on a clean porcelain output: push, update `progress.md`, mark TodoWrite complete. The clean commit closes the transaction — it is the only point at which C's work becomes durable feature-branch state.
 
+   **Label batching rule (applies to EVERY push this coordinator makes):** while the PR carries `ready-to-merge`, no push happens — for a fix push, pull the label first (`bash scripts/ci/label.sh pull --pr {N} --reason failed-check ...` if responding to a failure, `--reason pre-push` otherwise; fall back to `gh pr edit --remove-label` pre-adoption), push, restore when locally green. There is no exception for in-flight fix pushes. Docs-only commits ride with the next functional push instead of pushing alone.
+
 6. Remove the worktree.
 
 **Wave failure handling.** One builder's `G1_FAILED` re-dispatches only that chunk (siblings unaffected, file-isolated). `PLAN_GAP` pauses the wave and routes to architect; siblings already integrated (earlier sorted ids) stay committed. Per-chunk escalation ladders (plan-gap at most 2 rounds, G1 at most 3 attempts) apply within the wave, unchanged.
@@ -675,7 +690,7 @@ cross-cutting and a path restriction would block legitimate fix patches.
 
 Also upsert `status.json` in this same step (`phase: review`; `status`
 unchanged, still `BUILDING` until Step 11) — per § Status contract — then
-run the generator and `board-sync.mjs`.
+run `node scripts/status/sync-status.mjs --slug {slug} --expect-status BUILDING`.
 
 **Bootstrap note:** the v2.13.0 build that introduces these phase markers does
 not benefit from its own enforcement — the hook is not yet deployed during this
@@ -856,7 +871,7 @@ Update the prose body of `tasks/current-focus.md`:
 
 Leave **Active spec**, **Active plan**, **Active build slug**, and **Branch** unchanged. Status enum transitions `BUILDING → REVIEWING`.
 
-Also upsert `status.json` in this same step (`status: REVIEWING`; `phase: review` — now consistent with the phase written at Step 7) — per § Status contract — then run the generator and `board-sync.mjs`.
+Also upsert `status.json` in this same step (`status: REVIEWING`; `phase: review` — now consistent with the phase written at Step 7) — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status REVIEWING`.
 
 ## Step 12 — End-of-phase prompt
 
@@ -907,7 +922,7 @@ Write `phase_status: PHASE_2_PAUSED_PLAN` to `tasks/builds/{slug}/handoff.md`. E
 
 ### 2. plan-gate "abort"
 
-Write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`. **Clear the phase lock** by writing `build` (an unrestricted phase) to `tasks/builds/{slug}/.phase` — this prevents the phase-lock hook from leaving the repo in a stuck plan-phase edit lock if `tasks/current-focus.md` still references the slug for any reason. Set `tasks/current-focus.md` status to `NONE`. Also set `status.json.status = ABANDONED` (with a blocker entry recording the abort) in this same step — per § Status contract — then run the generator and `board-sync.mjs`. See abort write order below. Mark all remaining TodoWrite items completed. Exit.
+Write `phase_status: PHASE_2_ABORTED` to `tasks/builds/{slug}/handoff.md`. **Clear the phase lock** by writing `build` (an unrestricted phase) to `tasks/builds/{slug}/.phase` — this prevents the phase-lock hook from leaving the repo in a stuck plan-phase edit lock if `tasks/current-focus.md` still references the slug for any reason. Set `tasks/current-focus.md` status to `NONE`. Also set `status.json.status = ABANDONED` (with a blocker entry recording the abort) in this same step — per § Status contract — then run `node scripts/status/sync-status.mjs --slug {slug} --expect-status ABANDONED`. See abort write order below. Mark all remaining TodoWrite items completed. Exit.
 
 ```bash
 # Required pre-exit sequence for plan-gate abort:

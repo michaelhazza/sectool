@@ -27,7 +27,7 @@ The PR-ready bar without dual-reviewer is: `pr-reviewer` has passed and any bloc
 
 Before starting, read:
 1. `CLAUDE.md` — project conventions and architecture rules (your adjudication criteria)
-2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one.
+2. `architecture.md` — patterns and constraints specific to this codebase. Read if present; skip when the repo has not authored one. Prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (ranked sections with `architecture.md:LINE` anchors; `--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or the doc's anchors are absent, or the task genuinely spans most sections.
 3. `DEVELOPMENT_GUIDELINES.md` — locked build-discipline rules (tenant isolation, service-tier, gates, migrations, development-discipline §). Read if present and the diff has any code; skip when absent OR when the diff is pure docs / pure copy changes.
 
 Locate the Codex binary (a repo may pin a machine-specific fallback path in its `.claude/context/agent-context.md` section for this agent):

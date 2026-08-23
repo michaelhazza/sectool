@@ -28,8 +28,8 @@ const SCHEMA_PATH = path.join(REPO_ROOT, 'schemas', 'build-status.schema.json');
 // one-line addition here is the cheap outcome. The expensive outcome is the
 // prose quietly naming a status that no longer exists.
 const NON_STATUS_TOKENS = new Set([
-  'FORMAT', 'INVALID', 'JSON', 'NEVER', 'ONLY', 'OPEN', 'OPTIONAL', 'READER',
-  'SPEC', 'VALID_PHASES',
+  'DERIVED', 'FORMAT', 'HEAD', 'INVALID', 'JSON', 'NEVER', 'ONLY', 'OPEN',
+  'OPTIONAL', 'READER', 'SPEC', 'THIS', 'VALID_PHASES',
 ]);
 
 // Pointer-only value: it lives in tasks/current-focus.md when no build is

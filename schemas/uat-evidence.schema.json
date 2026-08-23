@@ -1,0 +1,340 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "uat-evidence.schema.json",
+  "title": "UatEvidence",
+  "description": "Contract for tasks/builds/<slug>/uat-evidence.json — the machine-readable verdict a fresh-context acceptance run produces (codex-brief §8.6, plan A6/A7/A8). Producer: the fresh executor (Codex CLI/Desktop, or Claude-headless under advisory enforcement). Consumer: scripts/uat/validate-uat-evidence.mjs, which populates status.json ONLY from validated evidence, never the reverse. STRUCTURAL FAIL-CLOSED NOTE: every object here is additionalProperties:false, so a break-glass field such as `uat_enforcement_override` is rejected by shape alone — the validator ALSO deep-scans for that exact key (plan A2/A3: no override ships; attempted override fields are rejected, not carried dormant). JSON Schema validates one document's shape; the cross-document invariants (blind ⊆ final-required ⊆ executed, risk-baseline superset, artifact hash recomputation, plan-digest identity, realpath containment, secret scan) are enforced by the validator, which is the system of record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "slug",
+    "run_id",
+    "verdict",
+    "applicability",
+    "enforcement",
+    "candidate",
+    "harness",
+    "planner",
+    "execution",
+    "plan_digests",
+    "blind_scenario_ids",
+    "risk_baseline",
+    "risk_inventory_at_execution_start",
+    "risk_inventory_final",
+    "environment",
+    "capabilities",
+    "scenarios",
+    "timestamps",
+    "secrets_redacted"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "uat-evidence.v1" },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Namespaces every resource this run touched (scratch dir, DB name, temp dirs, browser profile, artifact names) — plan A10. Two concurrent runs never share a run_id."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "incomplete", "proceed"],
+      "description": "Exactly the four brief verdicts. No 'pass with caveats'. Fail-closed: the validator never translates incomplete/fail into pass/proceed."
+    },
+    "applicability": {
+      "type": "string",
+      "enum": ["applicable", "non-applicable"],
+      "description": "Recorded distinctly from verdict and enforcement (plan round-3 finding 5). non-applicable REQUIRES verdict=proceed and an applicability_reason; proceed appears for genuine non-applicability ONLY."
+    },
+    "applicability_reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required when applicability=non-applicable. Free-text justification, SHA-bound by the surrounding candidate identity."
+    },
+    "enforcement": {
+      "type": "string",
+      "enum": ["advisory", "blocking"],
+      "description": "The SINGLE downstream control (plan round-4 finding 3). Derived from the final risk inventory + rollout mode by the acceptance phase and recorded here; refusal rows and label transitions consume this, never the raw rollout mode. Monotonic advisory->blocking; never de-escalates."
+    },
+    "late_discovered_risk": {
+      "type": "array",
+      "description": "Present when a risk discovered DURING execution escalated enforcement and the frozen plan could not cover its mandatory families (plan §10 late-risk rule). Each entry names the tag and the missing families; its presence with verdict=incomplete is the honest outcome.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tag", "missing_families"],
+        "properties": {
+          "tag": { "type": "string", "minLength": 1 },
+          "missing_families": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The APPLICATION candidate under test (plan A7). Distinct from `harness` — the thing that judged it.",
+      "required": ["head_sha", "base_sha", "runtime_tree_clean", "submodule_shas", "allowed_dirty_paths"],
+      "properties": {
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Full 40-hex candidate SHA. An abbreviated SHA is a rejection for verdict=pass." },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "runtime_tree_clean": { "type": "boolean", "description": "false with any non-allowed dirty path is a rejection for pass." },
+        "submodule_shas": {
+          "type": "object",
+          "description": "path -> 40-hex SHA for every materialised submodule. An intentionally excluded submodule is recorded as an input limitation elsewhere, never silently omitted.",
+          "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        },
+        "allowed_dirty_paths": {
+          "type": "array",
+          "description": "Dirty paths permitted without invalidating cleanliness — limited to UAT evidence/scratch roots.",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The UAT harness that produced the verdict (plan A7). Records every semantic input's identity so a pass under an unrecorded overlay is impossible; `harness_manifest_sha256` is the completeness boundary (round-3 finding 7).",
+      "required": [
+        "framework_sha",
+        "codex_skill_sha256",
+        "validator_sha256",
+        "classifier_sha256",
+        "evidence_schema_version",
+        "harness_manifest_sha256",
+        "executor_class",
+        "executor_version"
+      ],
+      "properties": {
+        "framework_sha": { "type": "string", "minLength": 7 },
+        "codex_skill_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "validator_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "classifier_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evidence_schema_version": { "type": "string", "const": "uat-evidence.v1" },
+        "harness_manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "executor_class": { "$ref": "#/definitions/executor_class" },
+        "executor_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "planner": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The blind-planning identity, separate from execution (plan round-3 finding 9). The blind runtime config is hash-bound here; a fresh thread is asserted (round-4 finding 1).",
+      "required": ["context_id", "executor_class", "version", "model", "fresh_thread", "blind_runtime_config_sha256"],
+      "properties": {
+        "context_id": { "type": "string", "minLength": 1 },
+        "executor_class": { "$ref": "#/definitions/executor_class" },
+        "version": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "fresh_thread": { "type": "boolean", "description": "Asserts the planner thread/context id was newly created — no resume, no prior thread." },
+        "blind_runtime_config_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Hash of the effective hermetic runtime configuration (isolated CODEX_HOME, web_search off, memories off, env allowlist policy). Bound into evidence per A6." },
+        "sanitised_env_var_names": {
+          "type": "array",
+          "description": "NAMES/policy only of the environment variables the clean allowlist removed or retained — never values (plan A6, credential non-readability).",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The scenario-execution identity, separate from the planner. Desktop may execute a CLI-produced frozen plan (blindness already spent in planning).",
+      "required": ["context_id", "executor_class", "version", "model"],
+      "properties": {
+        "context_id": { "type": "string", "minLength": 1 },
+        "executor_class": { "$ref": "#/definitions/executor_class" },
+        "version": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "tester_context_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "plan_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The two-sided plan-digest handoff (plan round-4 finding 6). The validator requires expected == executed (and == recomputed from the plan file when supplied) — a frozen plan cannot be swapped between validation and execution.",
+      "required": ["blind_plan_sha256", "input_manifest_sha256", "expected_plan_sha256", "executed_plan_sha256"],
+      "properties": {
+        "blind_plan_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "input_manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "expected_plan_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Computed by the coordinator over the final uat-plan.json before dispatch." },
+        "executed_plan_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Recomputed by the executor over the plan file before its first scenario." }
+      }
+    },
+    "blind_scenario_ids": {
+      "type": "array",
+      "minItems": 0,
+      "description": "The frozen blind scenario id set (bound by plan_digests.blind_plan_sha256). The set invariant is checked against this: every id here must appear in scenarios[] as required=true and be executed — deletion, downgrade, or non-execution of a blind scenario is a rejection (plan A6).",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "risk_baseline": {
+      "$ref": "#/definitions/risk_inventory",
+      "description": "The independently-derived minimum risk set produced BEFORE blind execution (plan A8) and hash-bound into the blind input manifest. The tester may add risks but never remove a baseline one; the validator enforces final ⊇ start ⊇ baseline."
+    },
+    "risk_inventory_at_execution_start": {
+      "$ref": "#/definitions/risk_inventory",
+      "description": "Immutable snapshot frozen at execution start, hash-bound to the executed plan (plan round-6 finding 3). Plan completeness at execution start is checked against THIS."
+    },
+    "risk_inventory_final": {
+      "$ref": "#/definitions/risk_inventory",
+      "description": "Monotonic superset carrying late-discovered risks. Enforcement and audit metrics derive from this."
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "database", "migration_head", "browser", "timezone"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "description": "e.g. local-disposable, integration, isolated-staging." },
+        "database": { "type": "string", "minLength": 1 },
+        "migration_head": { "type": "string", "minLength": 1 },
+        "browser": { "type": "string", "minLength": 1 },
+        "timezone": { "type": "string", "minLength": 1 }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "description": "Capability inventory with availability evidence (brief §8.2). pass with a required-but-unavailable capability is a rejection; 'browser unavailable' is never a browser pass.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "available", "required"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "available": { "type": "boolean" },
+          "required": { "type": "boolean" },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 0,
+      "items": { "$ref": "#/definitions/scenario" }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blind_plan_frozen_at", "augmentation_started_at", "execution_started_at", "completed_at"],
+      "properties": {
+        "blind_plan_frozen_at": { "type": "string", "format": "date-time" },
+        "augmentation_started_at": { "type": "string", "format": "date-time", "description": "MUST be strictly after blind_plan_frozen_at (validator rejects <=) — augmentation cannot precede the freeze." },
+        "execution_started_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "secrets_redacted": {
+      "type": "boolean",
+      "description": "A claim, not proof — the validator independently secret-scans textual evidence. secrets_redacted:true with a seeded credential in a captured artifact is a rejection (plan A8)."
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string", "enum": ["completed", "escalated", "not-required"] },
+        "detail": { "type": "string" },
+        "resources_left": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "uat_advisories": {
+      "type": "array",
+      "description": "Shadow/advisory surfacing channel (plan round-3 finding 8). A fail/incomplete under enforcement=advisory writes here — NEVER the framework's machine-blocking field in status.json.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "notes": { "type": "array", "items": { "type": "string" } }
+  },
+  "definitions": {
+    "executor_class": {
+      "type": "string",
+      "enum": ["codex-desktop", "codex-cli", "claude-headless"],
+      "description": "plan A2. claude-headless is lower-assurance evidence and can never satisfy enforcement=blocking."
+    },
+    "risk_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risks", "sha256"],
+      "properties": {
+        "risks": {
+          "type": "array",
+          "description": "The set of risk tags. Order-independent; the validator compares as sets.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tag", "source"],
+            "properties": {
+              "tag": { "type": "string", "minLength": 1 },
+              "source": {
+                "type": "string",
+                "enum": ["classifier", "behavior-spec", "coordinator", "tester", "augmentation", "late"]
+              }
+            }
+          }
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Canonical (RFC 8785) digest of the `risks` set — integrity binding." }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "origin", "required", "risk_tags", "families", "status", "oracle", "anti_vacuity", "digest"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "origin": {
+          "type": "string",
+          "enum": ["blind", "augmentation"],
+          "description": "blind scenarios came from the sealed first pass and can never be removed or downgraded; augmentation may only ADD coverage."
+        },
+        "required": { "type": "boolean" },
+        "risk_tags": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "families": {
+          "type": "array",
+          "description": "The scenario-family keys (from risk-to-scenario-policy.json) this scenario covers. Drives the coverage cross-check.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "status": { "type": "string", "enum": ["pass", "fail", "incomplete", "skipped"] },
+        "fixture_ids": { "type": "array", "items": { "type": "string" } },
+        "oracle": { "type": "string", "minLength": 1, "description": "The pass/fail decision rule for this scenario." },
+        "anti_vacuity": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "STRUCTURED proof the intended branch ran (plan A8) — not free text. At least one field must be present and meaningful for an applicable scenario; a 200/empty/zero is not evidence for a path that requires stored data.",
+          "properties": {
+            "observed_record_count": { "type": "integer", "minimum": 0 },
+            "seeded_id": { "type": "string" },
+            "seeded_value": { "type": "string" },
+            "branch_marker": { "type": "string" },
+            "response_field": { "type": "string" }
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Evidence artifacts as {path, sha256, bytes, media_type, redaction_status} (plan A8). The validator recomputes sha256 + bytes against the real file and secret-scans textual media.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "bytes", "media_type", "redaction_status"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "bytes": { "type": "integer", "minimum": 0 },
+              "media_type": { "type": "string", "minLength": 1 },
+              "redaction_status": { "type": "string", "enum": ["redacted", "not-required", "n-a"] }
+            }
+          }
+        },
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": { "type": "string", "enum": ["completed", "escalated", "not-required"] },
+            "detail": { "type": "string" }
+          }
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "RFC 8785 canonical digest of THIS scenario object with its own `digest` field excluded."
+        }
+      }
+    }
+  }
+}

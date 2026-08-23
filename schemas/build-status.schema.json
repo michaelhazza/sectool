@@ -102,7 +102,7 @@
     },
     "gate_evidence": {
       "type": "object",
-      "$comment": "Sibling open map to gates, same keys.",
+      "$comment": "Sibling open map to gates, same keys. The three OPTIONAL fields evidence_sha256/code_candidate_sha/enforcement are the fresh-context UAT gate's minimal merge-control projection (fresh-context-uat-gate plan A7/R2.2), populated only on the `uat` entry from validated uat-evidence.json; other gates omit them and stay valid (additive, backward-compatible with pre-2.71.0 records).",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
@@ -121,6 +121,7 @@
             "items": {
               "type": "string"
             },
+            "$comment": "GitHub Actions returns run ids as numbers — stringify before writing; sync-status exits 2 otherwise. A number here is the D2 defect (PR #828 finalisation): the one-level Ajv-unavailable floor accepted it and the card stranded. The recursive floor (status-contract.mjs) and every producer example now enforce string items.",
             "description": "One entry per uploaded run — e.g. the verify gate records one release-control testRunId per uploaded lane (JUnit, Playwright); the merge gate records the one workflow run id. Empty array allowed."
           },
           "url": {
@@ -136,6 +137,20 @@
           "completed_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "evidence_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "UAT gate only: the digest of the validated uat-evidence.json, cryptographically binding status.json to the exact validated document (plan A7). Recomputed and checked by refusal Row 10."
+          },
+          "code_candidate_sha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "UAT gate only: the tested SHA X (may equal `sha`). Refusal Row 10 diffs code_candidate_sha..HEAD for the operation-aware certification tail; certification_head_sha is DERIVED from git at merge time, never stored in a committed file."
+          },
+          "enforcement": {
+            "enum": ["advisory", "blocking"],
+            "description": "UAT gate only: the single downstream control (plan round-4 finding 3). Derived from the final risk inventory + rollout mode by acceptance-phase; refusal rows 9-10 read THIS, never the raw rollout mode, and finalisation never accepts an independently authored value."
           }
         }
       }

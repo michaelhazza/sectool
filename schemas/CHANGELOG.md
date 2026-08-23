@@ -1,5 +1,23 @@
 # Schema CHANGELOG
 
+## build-status.v2 — producer guidance on run_ids (2026-08-20, framework 2.73.0)
+
+**`build-status.schema.json` — a `$comment` added to `gate_evidence.*.run_ids`. No shape change: `items.type` stays `string`, `contract_version` stays `build-status.v2`, nothing to migrate.**
+
+The comment records why the type is `string` and not `number`: GitHub Actions returns run ids as numbers, so a producer that writes the raw value emits a schema-invalid record. During the PR #828 finalisation this was the D2 defect — `run_ids: [32310798762]` passed the one-level Ajv-unavailable floor, board-sync refused the record downstream, and the card stranded silently. The recursive floor (`scripts/status/status-contract.mjs`, W2.1) now rejects it in bare-consumer mode, `scripts/status/sync-status.mjs --slug` exits 2 on it at write time, and every producer example in the coordinator playbooks was corrected to show quoted ids in the same change.
+
+**Consumers must:** nothing. The contract is unchanged; the comment and the surrounding validation make the existing `string` requirement enforced rather than advisory.
+
+## build-status.v2 — additive UAT gate_evidence projection (2026-08-11, framework 2.71.0)
+
+**`build-status.schema.json` — three new OPTIONAL properties on the `gate_evidence` entry shape: `evidence_sha256` (64-hex), `code_candidate_sha` (40-hex), `enforcement` (`advisory | blocking`). `contract_version` unchanged at `build-status.v2`; nothing to migrate.**
+
+The fresh-context UAT acceptance gate writes its minimal merge-control projection into `gate_evidence.uat` so refusal rows 9-10 can enforce fail-closed against the exact validated evidence: `evidence_sha256` cryptographically binds `status.json` to the validated `uat-evidence.json`, `code_candidate_sha` is the tested SHA the certification-tail diff is measured from, and `enforcement` is the single downstream control the rows read (never the raw `uat_rollout_mode`). Populated only on the `uat` entry by `acceptance-phase` from validated evidence; every other gate omits all three and stays valid.
+
+**Why additive rather than a version bump:** identical reasoning to the entries below — a required field or `contract_version` bump invalidates every stored `status.json` in every consuming repo the moment the schema syncs, before any coordinator emits the new shape. All three fields are optional; absence means "not a UAT gate", never a default.
+
+**Consumers must:** nothing. Coordinators that do not run the UAT gate never write these fields; the gate ships disabled by default (`uat_rollout_mode` absent = disabled).
+
 ## review-result.v2 — additive finding evidence fields (2026-08-03, framework 2.63.0)
 
 **`review-finding.schema.json` — new OPTIONAL `confidence`, `evidence_kind` and `verification_state` properties. `contract_version` unchanged at `review-result.v2`; no changes to existing enums; nothing to migrate.**

@@ -4,7 +4,7 @@ description: "Three-way merge of pending .framework-new conflicts in a consuming
 
 # /claudemerge
 
-Resolve the `.framework-new` conflicts that pause `/claudeupdate`. Runs `scripts/framework-merge.js`, which reconstructs the BASE (the framework version the repo last applied, from `.framework-state.json`'s `lastAppliedFrameworkCommit` + the submodule's git history) and runs `git merge-file` per conflict: LOCAL (the customised file) vs BASE vs INCOMING (the `.framework-new` content). Clean merges are written to the target and the `.framework-new` sibling deleted; anything with overlapping edits is left completely untouched and reported for manual resolution.
+Resolve the `.framework-new` conflicts that pause `/claudeupdate`. Runs `scripts/framework-merge.cjs`, which reconstructs the BASE (the framework version the repo last applied, from `.framework-state.json`'s `lastAppliedFrameworkCommit` + the submodule's git history) and runs `git merge-file` per conflict: LOCAL (the customised file) vs BASE vs INCOMING (the `.framework-new` content). Clean merges are written to the target and the `.framework-new` sibling deleted; anything with overlapping edits is left completely untouched and reported for manual resolution.
 
 ## What to do
 
@@ -13,10 +13,10 @@ Resolve the `.framework-new` conflicts that pause `/claudeupdate`. Runs `scripts
 2. **Run the helper** from the submodule — it ships with the framework, so it needs no sync into the consumer:
 
    ```bash
-   node .claude-framework/scripts/framework-merge.js "$PWD"
+   node .claude-framework/scripts/framework-merge.cjs "$PWD"
    ```
 
-   (If the consumer has a manifest-managed copy at `scripts/framework-merge.js`, that works identically — the submodule path is primary because it exists in every consumer regardless of sync state.)
+   (If the consumer has a manifest-managed copy at `scripts/framework-merge.cjs`, that works identically — the submodule path is primary because it exists in every consumer regardless of sync state.)
 
 3. **Report per-file results** to the operator from the helper's summary table:
    - `merged` — local customisations and framework changes combined cleanly; target updated, `.framework-new` deleted.

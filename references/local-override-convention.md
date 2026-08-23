@@ -77,4 +77,4 @@ Before removing a slot in the framework, consider whether to:
 - `injectOverrides(framework, consumerOverrides)` — returns `{ result, frameworkBlockNames, orphanedConsumerNames, errors }`
 - `injectConsumerOverrides(framework, consumerPath)` — convenience: reads consumer from disk
 
-Unit smoke tests live in `scripts/__tests__/local-override-smoke.js`. End-to-end smoke tests in `scripts/__tests__/local-override-e2e.js`. Both run standalone via `node <path>`.
+Unit smoke tests live in `scripts/__tests__/local-override-smoke.cjs`. End-to-end smoke tests in `scripts/__tests__/local-override-e2e.cjs`. Both run standalone via `node <path>`.

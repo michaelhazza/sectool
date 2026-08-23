@@ -65,6 +65,11 @@ const TOOLCHAIN_DIR = (() => {
   return grepPath ? path.posix.dirname(toPosixPath(grepPath)) : '/usr/bin';
 })();
 
+// `/usr/bin/env bash` in the fake binaries must also be able to find bash.
+// On macOS grep/env live in /usr/bin while bash lives in /bin, so a PATH made
+// only from TOOLCHAIN_DIR makes otherwise-valid fakes look unversioned.
+const BASH_DIR = BASH ? path.posix.dirname(toPosixPath(BASH)) : null;
+
 const tempDirs = [];
 
 function makeTempDir() {
@@ -91,7 +96,7 @@ function runResolver({ pathDir = null, fallback = null, npmPrefix = null } = {})
   // the separator is ':' (not Windows' ';', which path.delimiter would give)
   // and entries must be POSIX-form, so C:\x becomes /c/x. Getting either wrong
   // makes bash unable to find its own grep/head and the spawn fails outright.
-  const pathParts = [pathDir, TOOLCHAIN_DIR].filter(Boolean).map(toPosixPath);
+  const pathParts = [pathDir, TOOLCHAIN_DIR, BASH_DIR].filter(Boolean).map(toPosixPath);
   const env = { PATH: pathParts.join(':') };
   if (fallback) env.CODEX_FALLBACK_PATH = fallback;
 

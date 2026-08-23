@@ -181,7 +181,17 @@ if (process.platform === 'win32') {
   check('win32 .cmd shim: skipped (POSIX host — cannot execute the win32 path)', true);
 }
 
-rmSync(root, { recursive: true, force: true });
+// Best-effort cleanup: on Windows the force-killed Scenario 3 process tree
+// (cwd was under root) can hold a handle on the dir for a beat after SIGKILL,
+// so an immediate rmdir throws EBUSY. maxRetries/retryDelay lets Node retry
+// on EBUSY/EPERM/EACCES/ENOTEMPTY; if the OS still has not released the handle
+// we leave the temp dir for the OS to reap rather than failing an otherwise
+// green run — no behavioural assertion depends on this cleanup.
+try {
+  rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+} catch (err) {
+  console.log(`(cleanup: could not remove ${root} — ${err.code || err.message}; left for OS reaping)`);
+}
 
 console.log(`Cases: ${pass + fails.length}, passed: ${pass}, failed: ${fails.length}`);
 if (fails.length) {

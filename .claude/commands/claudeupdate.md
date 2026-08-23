@@ -71,7 +71,7 @@ This is the one-shot, fully-automated flow as of framework v2.9.0. Earlier versi
    #     post-bump submodule (framework canonical) and the consumer working tree.
    #     v2.8.0's job: auto-adopt pre-existing local files whose content matches
    #     framework, seed .claude/project-registries.json from the template.
-   node .claude-framework/scripts/run-migrations.js "$PWD" "$FROM_VERSION" "$TARGET_VERSION" || {
+   node .claude-framework/scripts/run-migrations.cjs "$PWD" "$FROM_VERSION" "$TARGET_VERSION" || {
      echo "FAILED: migration runner threw — fix root cause and re-run /claudeupdate"
      exit 1
    }

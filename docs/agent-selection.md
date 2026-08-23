@@ -31,8 +31,9 @@ If you're unsure between Standard and Significant, classify up — the review ov
 | Codex second opinion with adjudication | `dual-reviewer: <brief description>` (local Codex CLI required) |
 | Spec / plan review | `spec-reviewer: <spec path>`, `claude-spec-review: <spec path>`, `claude-plan-review: <plan path>` |
 | ChatGPT-tier review (PR / spec / plan) | `chatgpt-pr-review` / `chatgpt-spec-review` / `chatgpt-plan-review` — mode `manual` / `automated` / `parallel` |
+| Fresh-context UAT acceptance of a candidate | `acceptance-phase: <slug>` — `finalisation-coordinator` auto-invokes it at Step 8c.5 (after G5, before merge readiness); invoke directly only for a one-off. Dispatches a fresh Codex `run-final-uat` executor; never edits production code |
 
-The coordinators auto-invoke the right reviewers per task class — you only invoke these manually outside the pipeline.
+The coordinators auto-invoke the right reviewers per task class — you only invoke these manually outside the pipeline. `acceptance-phase` runs inside Phase 3 finalisation (Step 8c.5); it is listed here for completeness.
 
 ## Maintenance
 
@@ -56,5 +57,5 @@ The coordinators auto-invoke the right reviewers per task class — you only inv
 - **Coordinators run INLINE.** `spec-coordinator`, `feature-coordinator`, `finalisation-coordinator`, `mockup-coordinator`, `incident-commander`, and `audit-runner` are playbooks the main session adopts — never dispatch them via the Agent tool. The runtime blocks sub-agents from dispatching further sub-agents, so a dispatched coordinator breaks at its first delegation.
 - **Review-mode resolution.** ChatGPT review mode resolves: explicit operator phrase → `.claude/session-state/review-mode` → `CHATGPT_REVIEW_DEFAULT_MODE` env var → hard default `manual`. Full rules: `references/review-mode-resolution.md`. "Missing OPENAI_API_KEY" usually means `.env` wasn't sourced, not that the key is absent.
 - **Where specs live.** `tasks/builds/{slug}/spec.md` is the canonical path the whole pipeline keys on (plan: `plan.md`, progress: `progress.md`, handoff: `handoff.md` in the same directory). Stubs in `tasks/builds/_example/` show the expected shapes.
-- **Test gates are CI-only.** Full suites do not run locally; local verification is lint / typecheck / build / targeted test files. Single source of truth: `references/test-gate-policy.md`. The one exception is finalisation's G5 CI-parity gate.
+- **Test gates are CI-only.** Full suites do not run locally; local verification is lint / typecheck / build / targeted test files. Single source of truth: `references/test-gate-policy.md`. There are THREE carve-outs, all inside finalisation/verify: the G5 CI-parity gate, the verify-phase stage-6 checkpoint, and the fresh-context UAT acceptance gate (`acceptance-phase`, residual real-workflow lanes only).
 - **Iteration caps are real.** Review loops have lifetime caps per artifact (see `references/iteration-caps.md`) — when a cap is hit, the loop ends and remaining findings route to the backlog, not to another round.

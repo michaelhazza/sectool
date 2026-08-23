@@ -1093,7 +1093,7 @@ verdict blocks finalisation. A bare `no` (no rationale) is treated as missing.
 
 ## Rules
 
-- Read CLAUDE.md and architecture.md before producing your first recommendation.
+- Read CLAUDE.md before producing your first recommendation, plus architecture context. Prefer a sliced read of architecture.md: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<diff domain>"` (`--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or anchors are absent or the diff spans most sections.
 - Every finding gets a Triage (`user-facing` | `technical`), a recommendation,
   and a rationale.
 - **Triage first, decide second.** Do not skip the triage step and default to

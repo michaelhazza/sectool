@@ -40,6 +40,20 @@ import { fileURLToPath } from 'node:url';
 
 const HOOK = join(dirname(fileURLToPath(import.meta.url)), 'code-graph-freshness-check.js');
 
+/**
+ * Windows-safe recursive remove for test teardown. Several scenarios spawn
+ * processes (scenario 2 detaches a background rebuild), and on Windows a just-
+ * exited process's handle on its cwd/temp dir can linger for a beat, so an
+ * immediate rmdir throws EBUSY. maxRetries/retryDelay lets Node retry on
+ * EBUSY/EPERM/EACCES/ENOTEMPTY; a final miss is swallowed (the temp dir is left
+ * for OS reaping) because no assertion depends on teardown.
+ */
+function rmrf(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch { /* leave for OS reaping; teardown is not an assertion */ }
+}
+
 // ── Fake npx shim ──────────────────────────────────────────────────────────
 // The hook calls spawnSync('npx', ['tsx', <script>], ...). Putting a stub
 // first on PATH intercepts that call; the stub appends its args to STUB_LOG
@@ -113,7 +127,7 @@ function check(label, actual, expected, extra) {
   check('generator absent: exit 0', r.status, 0, r.stderr);
   check('generator absent: no "refreshed" line', /refreshed/.test(r.stdout || ''), false, r.stdout);
   check('generator absent: npx never spawned', stubCalls(log).trim(), '');
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 2. Generator present, no watcher → spawns detached rebuild, claims lock ─
@@ -127,7 +141,7 @@ function check(label, actual, expected, extra) {
   check('generator present: stdout reports background rebuild', /rebuilding in the background/.test(r.stdout || ''), true, `stdout=${r.stdout} stderr=${r.stderr}`);
   check('generator present: rebuild lock claimed', existsSync(lock), true, r.stdout);
   check('generator present: no "refreshed" claim (no longer synchronous)', /refreshed/.test(r.stdout || ''), false, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 3. Watcher alive → fast path, build NOT spawned ────────────────────────
@@ -138,7 +152,7 @@ function check(label, actual, expected, extra) {
   check('watcher alive: exit 0', r.status, 0, r.stderr);
   check('watcher alive: build NOT spawned', /build-code-graph\.ts/.test(stubCalls(log)), false, stubCalls(log));
   check('watcher alive: no "refreshed" line', /refreshed/.test(r.stdout || ''), false, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 4. Watcher pid dead or garbage → falls through to detached rebuild ──────
@@ -149,7 +163,7 @@ function check(label, actual, expected, extra) {
   const lock = join(proj, '.claude', 'session-state', '.code-graph-rebuild.lock.d');
   check('dead watcher pid: exit 0', r.status, 0, r.stderr);
   check('dead watcher pid: rebuild lock claimed', existsSync(lock), true, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 {
   const { proj, run } = makeProject({ withGenerator: true, watcherPid: 'not-a-pid' });
@@ -157,7 +171,7 @@ function check(label, actual, expected, extra) {
   const lock = join(proj, '.claude', 'session-state', '.code-graph-rebuild.lock.d');
   check('garbage watcher pid: exit 0', r.status, 0, r.stderr);
   check('garbage watcher pid: rebuild lock claimed', existsSync(lock), true, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 5. Detached rebuild is non-blocking: a failing build never surfaces at ──
@@ -168,7 +182,7 @@ function check(label, actual, expected, extra) {
   check('detached rebuild: hook exits 0 regardless of build outcome', r.status, 0, r.stderr);
   check('detached rebuild: no synchronous "build exited" block', /build exited/.test(r.stderr || ''), false, r.stderr);
   check('detached rebuild: no "refreshed" claim', /refreshed/.test(r.stdout || ''), false, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 6. Rebuild lock already held (fresh) → reports in-progress, no takeover ─
@@ -180,7 +194,7 @@ function check(label, actual, expected, extra) {
   const r = run();
   check('busy lock: exit 0', r.status, 0, r.stderr);
   check('busy lock: reports rebuild already running', /already running/.test(r.stdout || ''), true, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 7. Stale lock (>10 min) → taken over, rebuild proceeds ──────────────────
@@ -192,7 +206,7 @@ function check(label, actual, expected, extra) {
   const r = run();
   check('stale lock: exit 0', r.status, 0, r.stderr);
   check('stale lock: taken over, background rebuild proceeds', /rebuilding in the background/.test(r.stdout || ''), true, r.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 8. Hook run leaves git status --porcelain clean (session-state ignored) ─
@@ -214,7 +228,7 @@ function check(label, actual, expected, extra) {
     // git unavailable in this environment — skip without failing the suite.
     check('git-clean: skipped (git unavailable)', true, true);
   }
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 9. H1: spawn('npx') ENOENT (npx not on PATH) → async 'error' is handled,
@@ -232,8 +246,8 @@ function check(label, actual, expected, extra) {
   // later session can retry.
   check('M3 spawn-ENOENT: fail-open warning emitted', /background rebuild failed to start/.test(r.stderr || ''), true, r.stderr);
   check('M3 spawn-ENOENT: rebuild lock cleared after failure', existsSync(lock), false, `lock still present: ${lock}`);
-  rmSync(proj, { recursive: true, force: true });
-  rmSync(emptyBin, { recursive: true, force: true });
+  rmrf(proj);
+  rmrf(emptyBin);
 }
 
 // ── 10. H2: after a stale-lock takeover, the takeover re-creates the lock with
@@ -250,7 +264,7 @@ function check(label, actual, expected, extra) {
   check('H2 takeover: first run takes over the stale lock', /rebuilding in the background/.test(r1.stdout || ''), true, r1.stdout);
   const r2 = run(); // lock is now fresh (held by the takeover) → busy, not a 2nd takeover
   check('H2 takeover: immediate second contender is busy (exclusive lock held)', /already running/.test(r2.stdout || ''), true, r2.stdout);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 11. M2: the audit stamp is a membership fingerprint, not a max-mtime, so a
@@ -292,7 +306,7 @@ function check(label, actual, expected, extra) {
   check('M2: audit RE-RUNS after a context-pack deletion', n3 > n2, true, `n2=${n2} n3=${n3}`);
   check('M2: audit RE-RUNS after a content change with preserved mtime (size)', n4 > n3, true, `n3=${n3} n4=${n4}`);
   check('M2: audit RE-RUNS after a SAME-SIZE pack edit with preserved mtime (hash)', n5 > n4, true, `n4=${n4} n5=${n5}`);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 12. CONCURRENT stale-lock takeover — exactly ONE contender wins. Prior
@@ -325,7 +339,7 @@ function check(label, actual, expected, extra) {
   );
   const takeovers = outs.filter((o) => /rebuilding in the background/.test(o)).length;
   check('H1-round4 concurrent takeover: exactly ONE contender takes over', takeovers, 1, `takeovers=${takeovers} of ${N}`);
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── 13. High(round5): stale-lock takeover KILLS the hung previous rebuild. A
@@ -361,12 +375,12 @@ function check(label, actual, expected, extra) {
   });
   check('kill-on-reap: hung previous rebuild is DEAD after takeover', dead, true, `pid=${hung.pid}`);
   try { process.kill(-hung.pid, 'SIGKILL'); } catch { /* already dead — expected */ }
-  rmSync(proj, { recursive: true, force: true });
+  rmrf(proj);
 }
 
 // ── Cleanup + report ───────────────────────────────────────────────────────
 
-rmSync(STUB_BIN, { recursive: true, force: true });
+rmrf(STUB_BIN);
 
 const totalCases = pass + fails.length;
 console.log(`Cases: ${totalCases}, passed: ${pass}, failed: ${fails.length}`);

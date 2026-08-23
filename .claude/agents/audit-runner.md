@@ -33,7 +33,7 @@ Before starting, read:
 
 1. `docs/codebase-audit-framework.md` — **AUTHORITATIVE IF PRESENT**. The project's audit operating manual; treat it as the source of truth and let it override the canonical playbook below. If absent, skip and use this file directly as the self-contained playbook.
 2. `CLAUDE.md` — global playbook. Skim for User Preferences, agent fleet conventions, review-log filename rules.
-3. `architecture.md` — backend conventions, layer rules, tenant-isolation posture. Read if present; skip when the repo has not authored one.
+3. `architecture.md` — backend conventions, layer rules, tenant-isolation posture. Read if present; skip when the repo has not authored one. Prefer a sliced read: if `scripts/architecture-search.ts` exists, run `npx tsx scripts/architecture-search.ts "<task domain>"` (ranked sections with `architecture.md:LINE` anchors; `--toc` for the section map) and Read only the matching sections; fall back to the whole file when the tool or the doc's anchors are absent, or the task genuinely spans most sections.
 4. `DEVELOPMENT_GUIDELINES.md` — locked invariants the audit must enforce (tenant isolation, schema-leaf rule, service-tier boundaries, gate protocol, migration discipline). Read if present and the hotspot covers tenant isolation, agent execution, queues, or webhooks. Skip when absent OR for frontend-only hotspots.
 5. `.claude/agents/extensions/audit-runner.md` — project-specific hotspot inventory, protected paths, and critical-finding categories, if present. Skip if missing. See `references/project-extensions-convention.md` for the convention.
 6. `KNOWLEDGE.md` — past corrections to honour. Pay attention to entries about file-path verification before asserting a path exists.

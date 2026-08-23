@@ -56,7 +56,15 @@
 //     cryptotrackr pilot, where the wrong id made every UPDATE a silent
 //     no-op. See buildDraftContentEditArgs + normaliseItem's contentId.
 //   gh project item-list <number> --owner <login> --format json [-L <n>]
-//     -> list existing cards to resolve the {Build Repo, Slug} upsert key.
+//     -> NO LONGER the read path (W3c). item-list caps the page and DISCARDS
+//     totalCount, and its JSON exposes no `isArchived` while the items
+//     connection defaults to non-archived only — so a card past the cap is
+//     invisible (the scanner would duplicate it) and archived cards cannot be
+//     seen at all. Replaced by one paginated `gh api graphql` query
+//     (readAllBoardItems) that asks for `archivedStates: [ARCHIVED,
+//     NOT_ARCHIVED]`, `isArchived`, `totalCount`, and a page cursor, and
+//     paginates until retrieved == totalCount with no next page. If completeness
+//     cannot be proven, ZERO mutations run (inventory_incomplete).
 //   gh project item-archive <number> --id <item-id> --owner <login>
 //     --format json [--undo] -> archive (or unarchive) one item. NOTE:
 //     unlike item-edit, item-archive DOES take the project <number> as a
@@ -112,6 +120,25 @@
 //   - Archive: MERGED/ABANDONED records auto-archive their card after
 //     ARCHIVE_AFTER_DAYS (default 14, substitutable via the
 //     BOARD_SYNC_ARCHIVE_AFTER_DAYS env var).
+//   - Source scan (W3b): records come from BOTH tasks/builds/* (active) and
+//     tasks/builds/_archive/* (archived history), so a build whose directory was
+//     moved into _archive/ before its sync landed is no longer stranded. Only
+//     TERMINAL statuses are accepted from _archive/ (a non-terminal record there
+//     is refused, reason non_terminal_archive); active wins over _archive on a
+//     slug collision; each record carries its origin so the card renderer never
+//     lies about where the source lives.
+//   - Backfill (W3d): a terminal _archive record with no card is created AND
+//     archived in one decision (CREATE_AND_ARCHIVE), bounded by a per-invocation
+//     RECORD budget (REPAIR_RECORD_BUDGET, default 20). The load-bearing target
+//     is processed FIRST and outside the budget; the sweep excludes it, so no
+//     record is reconciled twice and a build's own finalisation is never starved.
+//   - Archived-card handling (W5): an archived card that is fully equal to its
+//     terminal record is skipped (SKIP_EQUIVALENT, zero mutations); a drifted
+//     terminal card is unarchived → edited → re-archived; a card whose record
+//     came back to life (non-terminal) is unarchived and left visible. Every
+//     unarchive-for-edit ATTEMPTS its compensating re-archive/restore; when the
+//     compensation itself fails the record outcome is `unrecovered`, surfaced in
+//     full with both diagnostics.
 //
 // Error handling — deliberately asymmetric; this asymmetry IS the contract:
 //   - `gh` failure, network error, or missing `projects_board` config in
@@ -148,12 +175,19 @@
 // functions (no fs, no gh, no Date.now()) — canonicaliseRepo, buildCardKey,
 // validateSlugMatchesDir, extractUpdatedAtFromBody, buildCardBody,
 // mapRecordToCard, chooseSurvivor, shouldSkipStale, shouldArchive,
-// parseOwnerRepoFromGitUrl, buildDraftContentEditArgs. All `gh` invocation is
-// isolated below in the thin I/O layer (ghJson + its callers). Tests exercise
-// only the pure functions and never shell out to `gh` — which is why the
-// which-id-goes-where rule lives in a pure arg-builder: an argv choice made
-// inline inside the I/O layer is untestable, and that is exactly where the
-// silent-update defect hid.
+// cardProjectionEqual, decideArchivedCardAction, decideActionType,
+// planBoardActions, parseOwnerRepoFromGitUrl, buildDraftContentEditArgs.
+//
+// The MUTATION layer is testable too (W5): every mutation helper
+// (setFieldValues, createCard, updateCard, archiveItem, unarchiveItem) and the
+// executeCardAction executor take an INJECTED `gh` function. The real CLI passes
+// ghJson; tests pass a recording fake, so the true item-edit/item-archive
+// SEQUENCE and the archived-card failure-compensation branches are asserted
+// without a live board. No helper reaches execFileSync on a path the tests
+// exercise — a parallel abstraction that still did would leave the real path
+// untestable, and that is exactly where the silent-update defect hid. The read
+// side is one paginated GraphQL query (readAllBoardItems); the completeness rule
+// (isInventoryComplete) is pure and pinned.
 //
 // Usage:
 //   node scripts/status/board-sync.mjs [--root <dir>] [--repo <owner/name>]
@@ -276,7 +310,13 @@ export function neutraliseCardText(text) {
 /** Card body: hidden updated_at marker, then the human-readable
  *  branch/PR/blockers/updated_at/summary fields the contract assigns to
  *  the body rather than to custom fields, then the Activity section
- *  (schema `log[]`, optional) rendered newest-first. */
+ *  (schema `log[]`, optional) rendered newest-first.
+ *
+ *  The "full log in …" pointer at the foot of a truncated Activity section
+ *  honours the record's ORIGIN (`record.source`): a record scanned from
+ *  `tasks/builds/_archive/<slug>/` points there, not at the active path it no
+ *  longer occupies (W3b — the renderer must not lie about where the source
+ *  lives). Absent/`active` source keeps the original active path. */
 export function buildCardBody(record, key = null) {
   const lines = [];
   // The key rides in the marker so identity survives even when the field-value
@@ -317,8 +357,9 @@ export function buildCardBody(record, key = null) {
     }
     const hidden = log.length - shown.length;
     if (hidden > 0) {
+      const archiveSeg = record.source === '_archive' ? '_archive/' : '';
       lines.push('');
-      lines.push(`_${hidden} earlier ${hidden === 1 ? 'entry' : 'entries'} not shown — full log in tasks/builds/${record.slug}/status.json_`);
+      lines.push(`_${hidden} earlier ${hidden === 1 ? 'entry' : 'entries'} not shown — full log in tasks/builds/${archiveSeg}${record.slug}/status.json_`);
     }
   }
   return lines.join('\n');
@@ -391,9 +432,154 @@ export function decideCardAction(survivor, record, now) {
 }
 
 export function shouldArchive(record, now) {
-  if (record.status !== 'MERGED' && record.status !== 'ABANDONED') return false;
+  if (!isTerminalStatus(record.status)) return false;
   const ageMs = now.getTime() - new Date(record.updated_at).getTime();
   return ageMs >= ARCHIVE_AFTER_MS;
+}
+
+/**
+ * FULL-projection equality between an existing normalised card and the card the
+ * record WOULD produce. This is the prerequisite for every "skip" claim (W5):
+ * `normaliseItem` used to retain only id/contentId/repo/slug/updated_at/body,
+ * so it structurally could not prove "all fields already match" and
+ * decideCardAction updated on timestamp EQUALITY. Comparing updated_at + body
+ * alone is insufficient — a partial field-write failure leaves the body current
+ * while the Status column is stale, and only a field-level compare catches it.
+ *
+ * The desired projection is built with mapRecordToCard(record, existingItem.repo)
+ * so the comparison is against EXACTLY the bytes a write would produce (title,
+ * body, Status, Phase). Repo and Slug are the match key and are equal by
+ * construction, so they are not re-compared. Pure — no fs, no gh, no clock.
+ */
+export function cardProjectionEqual(existingItem, record) {
+  if (!existingItem) return false;
+  const desired = mapRecordToCard(record, existingItem.repo);
+  return existingItem.title === desired.title
+    && existingItem.body === desired.body
+    && existingItem.status === desired.fields.Status
+    && existingItem.phase === desired.fields.Phase;
+}
+
+/**
+ * The archived-card state machine (W5), pure. Given an ARCHIVED existing card
+ * and the incoming record, returns exactly one CARD_ACTIONS value:
+ *
+ *   terminal record, fully equal   -> SKIP_EQUIVALENT (the steady state of
+ *                                     archived history — zero mutations).
+ *   terminal record, drifted       -> UNARCHIVE_UPDATE_REARCHIVE (unarchive,
+ *                                     edit every field + title/body, re-archive).
+ *   non-terminal record            -> UNARCHIVE_UPDATE (the build came back to
+ *                                     life; the board should show it again, so
+ *                                     no re-archive).
+ *
+ * A non-terminal record whose card is archived is a resurrection, not a
+ * mis-archive: the record is authoritative, so the card is unarchived to match.
+ */
+export function decideArchivedCardAction(card, record) {
+  if (!isTerminalStatus(record.status)) {
+    return { type: CARD_ACTIONS.UNARCHIVE_UPDATE };
+  }
+  if (cardProjectionEqual(card, record)) {
+    return { type: CARD_ACTIONS.SKIP_EQUIVALENT };
+  }
+  return { type: CARD_ACTIONS.UNARCHIVE_UPDATE_REARCHIVE };
+}
+
+/**
+ * The single per-record decision (pure), resolving survivor + record + clock to
+ * one CARD_ACTIONS value. Routes archived survivors to the archived state
+ * machine and non-archived survivors through the existing accept-then-archive
+ * predicate, then layers full-projection equality so an already-synced card is
+ * SKIP_EQUIVALENT rather than a redundant rewrite (the "mutations only on
+ * drift" invariant W3d depends on).
+ *
+ * CREATE_AND_ARCHIVE fires only for a missing card whose TERMINAL record lives
+ * in `_archive/` — the deliberate lazy backfill. A missing card for an ACTIVE
+ * record stays a plain CREATE (visible), aging into archival the normal way, so
+ * a freshly merged build still shows in its column.
+ */
+export function decideActionType(survivor, record, now) {
+  if (survivor && survivor.isArchived) {
+    return decideArchivedCardAction(survivor, record);
+  }
+  const base = decideCardAction(survivor, record, now);
+  if (base.create) {
+    if (!survivor && record.source === '_archive' && isTerminalStatus(record.status)) {
+      return { type: CARD_ACTIONS.CREATE_AND_ARCHIVE };
+    }
+    return { type: CARD_ACTIONS.CREATE };
+  }
+  if (base.skipped) {
+    return { type: CARD_ACTIONS.STALE_CONFLICT };
+  }
+  // base.update — accepted, not stale. Equality decides whether the write is
+  // needed at all; the accept-then-archive flag decides whether it also archives.
+  const equal = cardProjectionEqual(survivor, record);
+  if (base.archive) {
+    return { type: equal ? CARD_ACTIONS.ARCHIVE_ONLY : CARD_ACTIONS.UPDATE_AND_ARCHIVE };
+  }
+  return { type: equal ? CARD_ACTIONS.SKIP_EQUIVALENT : CARD_ACTIONS.UPDATE };
+}
+
+/**
+ * Pure per-invocation planner (W3c/W3d). Given every record, the COMPLETE board
+ * inventory, and the repair budget, returns an ordered execution plan without
+ * touching gh:
+ *
+ *   { actions: [{ record, type, survivor, dups }], deferred: [record] }
+ *
+ * Three invariants live here, all testable without a board:
+ *   1. Duplicate safety — the survivor is chosen from the FULL inventory, so a
+ *      matching card past the old `-L 200` window is found and updated, never
+ *      duplicated (the ≥201-item regression).
+ *   2. Target-first, budget-exempt — the load-bearing targetSlug is planned
+ *      FIRST and never counts against the backfill budget, so a build's own
+ *      finalisation is never starved by history; the global sweep then EXCLUDES
+ *      the target, so no record is reconciled twice.
+ *   3. Bounded backfill — CREATE_AND_ARCHIVE records beyond `budget` (in the
+ *      global sweep) are deferred to the next run, not executed.
+ */
+export function planBoardActions({ records, existingItems, repository, now, targetSlug = null, budget = REPAIR_RECORD_BUDGET }) {
+  const byKey = new Map();
+  for (const item of existingItems) {
+    if (!item.repo || !item.slug) continue; // not one of ours
+    const key = buildCardKey(item.repo, item.slug);
+    const bucket = byKey.get(key) ?? [];
+    bucket.push(item);
+    byKey.set(key, bucket);
+  }
+
+  const planOne = (record) => {
+    const card = mapRecordToCard(record, repository);
+    const bucket = byKey.get(card.key) ?? [];
+    const { survivor, toArchive } = chooseSurvivor(bucket);
+    const { type } = decideActionType(survivor, record, now);
+    return { record, type, card, survivor, dups: toArchive };
+  };
+
+  const actions = [];
+  const deferred = [];
+
+  const target = targetSlug ? records.find((r) => r.slug === targetSlug) : null;
+  // Target FIRST and outside the budget — its truth is pinned before any
+  // history is touched.
+  if (target) actions.push(planOne(target));
+
+  let backfillUsed = 0;
+  for (const record of records) {
+    if (record === target) continue; // excluded from the global sweep — never reconciled twice
+    const planned = planOne(record);
+    if (planned.type === CARD_ACTIONS.CREATE_AND_ARCHIVE) {
+      if (backfillUsed >= budget) {
+        deferred.push(record);
+        continue;
+      }
+      backfillUsed += 1;
+    }
+    actions.push(planned);
+  }
+
+  return { actions, deferred };
 }
 
 /** Classifies a `gh` failure as a named permission diagnostic when its
@@ -417,14 +603,27 @@ export const EXIT_NOT_SYNCED = 3;
 
 /** Closed set of reasons a run did not reach the board. Kept closed so a
  *  caller can branch on the value; a new failure mode adds a member here
- *  rather than inventing free text at the call site. */
+ *  rather than inventing free text at the call site.
+ *
+ *  C2 adds two:
+ *  - INVENTORY_INCOMPLETE — the paginated GraphQL reader could not prove it
+ *    retrieved every card (retrieved !== totalCount, or a page still had
+ *    hasNextPage). An unprovable inventory means an unseen duplicate or unseen
+ *    newer matching card is possible, so board-sync performs ZERO mutations and
+ *    reports this rather than risk a duplicate or a false-convergence update
+ *    (W3c, r4 finding 4).
+ *  - UNRECOVERED — an archived-card mutation left the board in a state this
+ *    process could not restore (the compensating re-archive/unarchive itself
+ *    failed). Surfaced in full, never bounded away (W5). */
 export const NOT_SYNCED_REASONS = Object.freeze({
   NO_CONFIG: 'no_config',
   NO_REPO_IDENTITY: 'no_repo_identity',
   MISSING_PROJECT_SCOPE: 'missing_project_scope',
   MISSING_BOARD_ACCESS: 'missing_board_access',
   BOARD_CONTRACT_MISMATCH: 'board_contract_mismatch',
+  INVENTORY_INCOMPLETE: 'inventory_incomplete',
   GH_FAILURE: 'gh_failure',
+  UNRECOVERED: 'unrecovered',
   UNEXPECTED_ERROR: 'unexpected_error',
 });
 
@@ -443,12 +642,83 @@ export function notSyncedReasonFromDiagnostic(diagnostic) {
   return NOT_SYNCED_REASONS.GH_FAILURE;
 }
 
-/** Impure companion to the two pure helpers above: emits the marker and sets
- *  the exit code. Deliberately NOT a throw — the sync path stays fail-open. */
-function markNotSynced(reason) {
-  console.warn(buildNotSyncedMarker(reason));
-  process.exitCode = EXIT_NOT_SYNCED;
+/** The closed set of per-record board outcomes runBoardSync reports. A caller
+ *  (sync-status) branches on the TARGET's outcome to decide success, archive
+ *  eligibility and remediation, so this is a contract, not free text.
+ *
+ *  C1 populates a behaviour-preserving subset: created / applied /
+ *  stale_conflict / refused / gh_failure / absent. C2 activates equivalent
+ *  (full-projection SKIP_EQUIVALENT) and partial, and adds UNRECOVERED — an
+ *  archived-card mutation whose compensating restore also failed, so this
+ *  process could not return the board to a consistent state (W5). */
+export const BOARD_OUTCOMES = Object.freeze({
+  APPLIED: 'applied',
+  EQUIVALENT: 'equivalent',
+  CREATED: 'created',
+  STALE_CONFLICT: 'stale_conflict',
+  REFUSED: 'refused',
+  GH_FAILURE: 'gh_failure',
+  PARTIAL: 'partial',
+  UNRECOVERED: 'unrecovered',
+  ABSENT: 'absent',
+});
+
+/** The closed decision vocabulary the per-record planner emits and
+ *  executeCardAction consumes (W3d/W5). Each value names exactly one gh
+ *  mutation sequence, so a card's fate is always one of a known set rather than
+ *  a bag of create/update/archive booleans that can combine into states the
+ *  tests never pin ("create now, maybe archive next time" was one such).
+ *
+ *    SKIP_EQUIVALENT            zero mutations — the card already equals the
+ *                               record on the FULL projection.
+ *    CREATE                     new card, left visible.
+ *    CREATE_AND_ARCHIVE         backfill: a terminal record whose dir already
+ *                               lives in _archive/ gets its card created AND
+ *                               archived in one decision — never left visible
+ *                               for a run before being archived next time.
+ *    UPDATE                     rewrite an active card in place.
+ *    UPDATE_AND_ARCHIVE         rewrite, then auto-archive (aged terminal).
+ *    ARCHIVE_ONLY               already-equal aged terminal — archive without a
+ *                               redundant rewrite.
+ *    UNARCHIVE_UPDATE           an archived card whose record came back to life
+ *                               (non-terminal): unarchive and update, stay
+ *                               visible, no re-archive.
+ *    UNARCHIVE_UPDATE_REARCHIVE an archived terminal card that drifted:
+ *                               unarchive → field edits → title/body → re-archive.
+ *    STALE_CONFLICT             the existing card is strictly newer than the
+ *                               record — no write, no archive. */
+export const CARD_ACTIONS = Object.freeze({
+  SKIP_EQUIVALENT: 'SKIP_EQUIVALENT',
+  CREATE: 'CREATE',
+  CREATE_AND_ARCHIVE: 'CREATE_AND_ARCHIVE',
+  UPDATE: 'UPDATE',
+  UPDATE_AND_ARCHIVE: 'UPDATE_AND_ARCHIVE',
+  ARCHIVE_ONLY: 'ARCHIVE_ONLY',
+  UNARCHIVE_UPDATE: 'UNARCHIVE_UPDATE',
+  UNARCHIVE_UPDATE_REARCHIVE: 'UNARCHIVE_UPDATE_REARCHIVE',
+  STALE_CONFLICT: 'STALE_CONFLICT',
+});
+
+/** The two statuses that make a record terminal (mergeable history). Shared by
+ *  shouldArchive, the _archive acceptance gate, and the archived-card state
+ *  machine so "terminal" means one thing. */
+export const TERMINAL_STATUSES = Object.freeze(['MERGED', 'ABANDONED']);
+
+/** True when a record's status is terminal (MERGED/ABANDONED). */
+export function isTerminalStatus(status) {
+  return TERMINAL_STATUSES.includes(status);
 }
+
+/** Per-invocation cap on how many BACKFILL records (CREATE_AND_ARCHIVE) the
+ *  global sweep reconciles. Full _archive scanning is a lazy board backfill: a
+ *  first sync against years of merged history would otherwise fire an unbounded
+ *  create+archive burst. A RECORD budget (not a raw-mutation budget) is chosen
+ *  because one CREATE_AND_ARCHIVE record can cost item-create + per-field edits
+ *  + title/body + archive (100+ GraphQL mutations across 20 records), yet a
+ *  record count is deterministic and easy to reason about (W3d, r4 finding 5).
+ *  The load-bearing TARGET is processed FIRST and OUTSIDE this budget; work
+ *  beyond it is reported and picked up on the next run. */
+export const REPAIR_RECORD_BUDGET = Number(process.env.BOARD_SYNC_REPAIR_RECORD_BUDGET ?? 20);
 
 export function classifyBoardPermissionError(err) {
   const message = typeof err?.message === 'string' ? err.message : String(err ?? '');
@@ -510,64 +780,116 @@ function detectRepoFromGitRemote(root) {
   }
 }
 
+/** List immediate build sub-directory names under `dir` that hold a
+ *  status.json, sorted. Missing dir -> []. `skip` drops one reserved name
+ *  (used to keep the `_archive` container out of the active scan). */
+async function listBuildDirs(dir, skip = null) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  return entries
+    .filter((e) => e.isDirectory() && e.name !== skip)
+    .map((e) => e.name)
+    .sort();
+}
+
+/** Reads + validates one build's status.json, tagging its ORIGIN. Returns
+ *  `{ record }` on success or `{ refused }` on any read/parse/shape/identity
+ *  failure — each refusal carries a coarse `reason` so the caller can print a
+ *  bounded summary grouped by cause rather than one line per record (W3e). */
+async function scanOneBuild(baseDir, dirName, source) {
+  const statusPath = path.join(baseDir, dirName, 'status.json');
+  if (!existsSync(statusPath)) return null; // pre-migration build dir — not part of this contract
+
+  let raw;
+  try {
+    raw = await readFile(statusPath, 'utf8');
+  } catch (err) {
+    return { refused: { dir: dirName, source, reason: 'unreadable', error: `cannot read status.json: ${err.message}` } };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (err) {
+    return { refused: { dir: dirName, source, reason: 'invalid_json', error: `invalid JSON: ${err.message}` } };
+  }
+
+  const slugError = validateSlugMatchesDir(data.slug, dirName);
+  if (slugError) {
+    return { refused: { dir: dirName, source, reason: 'slug_mismatch', error: slugError } };
+  }
+
+  // Full schema validation, shared with generate-current-focus via
+  // status-contract.mjs, so the two consumers of the same file cannot disagree
+  // about what "valid" means. Refuse BEFORE any gh mutation. (External review
+  // round 3.)
+  const shapeError = await validateRecordShape(data);
+  if (shapeError) {
+    return { refused: { dir: dirName, source, reason: 'schema_invalid', error: shapeError } };
+  }
+
+  // Only TERMINAL history belongs in _archive. A non-terminal record found
+  // there is a mis-archive — surfacing it beats guessing its intent, and it
+  // must never be published as if it were live (W3b).
+  if (source === '_archive' && !isTerminalStatus(data.status)) {
+    return {
+      refused: {
+        dir: dirName,
+        source,
+        reason: 'non_terminal_archive',
+        error: `non_terminal_archive: ${dirName} is in _archive/ with non-terminal status ${data.status}`,
+      },
+    };
+  }
+
+  // Origin travels with the record so the card renderer points at the real
+  // location and the planner can tell active work from history backfill.
+  return { record: { ...data, source } };
+}
+
+/**
+ * Collects every build's status.json from BOTH `tasks/builds/*` (active) and
+ * `tasks/builds/_archive/*` (archived history), so a record whose directory was
+ * moved into `_archive/` before its board sync succeeded is no longer stranded
+ * (D3/W3b). Precedence: an ACTIVE record wins over an `_archive` record of the
+ * same slug (should not happen — warn), because live state beats history.
+ */
 async function collectStatusRecords(root) {
   const buildsDir = path.join(root, 'tasks', 'builds');
+  const archiveDir = path.join(buildsDir, '_archive');
   const records = [];
   const refused = [];
 
-  let entries;
-  try {
-    entries = await readdir(buildsDir, { withFileTypes: true });
-  } catch (err) {
-    if (err.code === 'ENOENT') return { records, refused };
-    throw err;
+  const activeDirs = await listBuildDirs(buildsDir, '_archive');
+  const activeSlugs = new Set(activeDirs);
+
+  for (const dirName of activeDirs) {
+    const result = await scanOneBuild(buildsDir, dirName, 'active');
+    if (!result) continue;
+    if (result.refused) refused.push(result.refused);
+    else records.push(result.record);
   }
 
-  const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
-
-  for (const dirName of dirNames) {
-    const statusPath = path.join(buildsDir, dirName, 'status.json');
-    if (!existsSync(statusPath)) continue; // pre-migration build dir — not yet part of this contract
-
-    let raw;
-    try {
-      raw = await readFile(statusPath, 'utf8');
-    } catch (err) {
-      refused.push({ dir: dirName, error: `cannot read status.json: ${err.message}` });
+  for (const dirName of await listBuildDirs(archiveDir)) {
+    // Active wins: never publish an archived copy of a build that is also live.
+    if (activeSlugs.has(dirName)) {
+      console.warn(
+        `[board-sync] ${dirName} exists in BOTH tasks/builds and tasks/builds/_archive — using the active copy, ignoring the archived one`
+      );
       continue;
     }
-
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (err) {
-      refused.push({ dir: dirName, error: `invalid JSON: ${err.message}` });
-      continue;
-    }
-
-    const slugError = validateSlugMatchesDir(data.slug, dirName);
-    if (slugError) {
-      refused.push({ dir: dirName, error: slugError });
-      continue;
-    }
-
-    // Full schema validation, shared with generate-current-focus via
-    // status-contract.mjs. This reader previously checked only "JSON parses"
-    // and "slug matches directory", so the two consumers of the same file could
-    // disagree — the generator classifying a record INVALID while board-sync
-    // published it anyway. Worse, a malformed record reaching mapRecordToCard
-    // threw inside the sync loop and was reported as a "gh failure", pointing
-    // the operator at GitHub for a defect in local data. Refuse BEFORE any gh
-    // mutation. (External review round 3.)
-    const shapeError = await validateRecordShape(data);
-    if (shapeError) {
-      refused.push({ dir: dirName, error: shapeError });
-      continue;
-    }
-
-    records.push(data);
+    const result = await scanOneBuild(archiveDir, dirName, '_archive');
+    if (!result) continue;
+    if (result.refused) refused.push(result.refused);
+    else records.push(result.record);
   }
 
+  records.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   return { records, refused };
 }
 
@@ -668,6 +990,16 @@ export function normaliseItem(item) {
     repo: canonicaliseRepo(readItemFieldValue(item, REPO_FIELD_NAME)) ?? bodyKey?.repo ?? null,
     slug: readItemFieldValue(item, 'Slug') ?? bodyKey?.slug ?? null,
     updated_at: extractUpdatedAtFromBody(body),
+    // The FULL projection (W5). title/Status/Phase were previously discarded,
+    // so cardProjectionEqual could not prove "all fields already match" and the
+    // archived-card state machine could not tell SKIP_EQUIVALENT from drift.
+    // `isArchived` comes from the GraphQL reader (archivedStates + isArchived);
+    // it is absent from the old `gh project item-list` JSON, which is exactly
+    // why archive-state discovery had to move to GraphQL (W3c).
+    title: item.title ?? item.content?.title ?? null,
+    status: readItemFieldValue(item, 'Status') ?? null,
+    phase: readItemFieldValue(item, 'Phase') ?? null,
+    isArchived: item.isArchived === true,
     body,
   };
 }
@@ -707,12 +1039,112 @@ export function buildDraftContentEditArgs(contentId, card) {
   ];
 }
 
-function fetchExistingItems(owner, number) {
-  const data = ghJson(['project', 'item-list', String(number), '--owner', owner, '--format', 'json', '-L', '200']);
-  return (data.items ?? []).map(normaliseItem);
+/** True when `retrieved === totalCount` AND the last page reported no next page
+ *  — the only proof that the GraphQL reader saw EVERY card. Anything short (a
+ *  missing totalCount, a short count, or a dangling `hasNextPage`) forbids all
+ *  mutation (W3c). Pure — exported so the completeness rule is pinned. */
+export function isInventoryComplete(retrieved, totalCount, hasNextPage) {
+  return typeof totalCount === 'number' && retrieved === totalCount && hasNextPage === false;
 }
 
-function setFieldValues(boardCtx, fields, itemId, values) {
+// The paginated GraphQL item read (W3c) replaces `gh project item-list -L 200`.
+// item-list has two disqualifying gaps for archive-aware syncing: it caps the
+// page and DISCARDS totalCount (so a card past the cap is invisible and the
+// scanner would create a duplicate), and the pinned gh CLI's item-list JSON
+// exposes no `isArchived` while the items connection returns only non-archived
+// items unless `archivedStates` is supplied. One query addresses both: it asks
+// for BOTH archive states, `isArchived`, `totalCount`, and a page cursor, and
+// paginates until retrieved == totalCount with no next page. Addressing the
+// project by its node id (from `gh project view`) sidesteps the user-vs-org
+// projectV2 lookup split.
+const ITEMS_QUERY = `query($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on ProjectV2 {
+      items(first: 100, after: $cursor, archivedStates: [ARCHIVED, NOT_ARCHIVED]) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isArchived
+          content { ... on DraftIssue { id title body } }
+          fieldValues(first: 50) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/** Flattens one GraphQL item node into the shape normaliseItem consumes: field
+ *  values keyed by their display name (so readItemFieldValue resolves them),
+ *  plus content/title/body/isArchived. Keeping normaliseItem's input contract
+ *  stable is why the conversion lives here rather than in normaliseItem. */
+function flattenGraphqlNode(node) {
+  const fieldValues = {};
+  for (const fv of node.fieldValues?.nodes ?? []) {
+    const name = fv.field?.name;
+    if (!name) continue;
+    const value = fv.text ?? fv.name;
+    if (value != null) fieldValues[name] = value;
+  }
+  return {
+    id: node.id,
+    isArchived: node.isArchived === true,
+    content: node.content ? { id: node.content.id, title: node.content.title, body: node.content.body } : null,
+    title: node.content?.title ?? null,
+    body: node.content?.body ?? '',
+    fieldValues,
+  };
+}
+
+/** Reads EVERY board item (archived and not) via one paginated GraphQL query,
+ *  returning `{ items, complete }`. `complete` is false unless the whole
+ *  inventory was provably retrieved; the caller then performs ZERO mutations. */
+function readAllBoardItems(gh, projectId) {
+  const items = [];
+  let cursor = null;
+  let totalCount = null;
+  let hasNextPage = false;
+  // Bounded so a malformed cursor loop cannot spin forever; 100 pages * 100
+  // items is an order of magnitude past any real board.
+  for (let page = 0; page < 100; page += 1) {
+    const args = ['api', 'graphql', '-f', `query=${ITEMS_QUERY}`, '-F', `id=${projectId}`];
+    if (cursor) args.push('-F', `cursor=${cursor}`);
+    const conn = gh(args)?.data?.node?.items;
+    if (!conn) break;
+    totalCount = conn.totalCount;
+    for (const node of conn.nodes ?? []) items.push(normaliseItem(flattenGraphqlNode(node)));
+    hasNextPage = conn.pageInfo?.hasNextPage === true;
+    cursor = conn.pageInfo?.endCursor ?? null;
+    if (!hasNextPage) break;
+  }
+  return { items, complete: isInventoryComplete(items.length, totalCount, hasNextPage) };
+}
+
+/** True when a gh error carries the GraphQL "item is archived" rejection. Such
+ *  an error on an item we read as NOT archived means the card was archived
+ *  between read and write — it routes to race-recovery (unarchive → update →
+ *  re-archive), NEVER the gh_failure classifier (W5). It is a fallback ONLY;
+ *  archive-state discovery is the GraphQL reader, never this message. */
+export function isArchivedRaceError(err) {
+  const message = typeof err?.message === 'string' ? err.message : String(err ?? '');
+  return /is archived/i.test(message);
+}
+
+// ---------------------------------------------------------------------------
+// Mutation helpers — every one takes the injected `gh` (W5). The real CLI
+// passes ghJson; tests pass a recording fake, so the true item-edit/
+// item-archive sequence is asserted without shelling out. No helper calls gh
+// on its own path — a parallel abstraction that still reached execFileSync
+// would leave the real path untestable.
+// ---------------------------------------------------------------------------
+
+function setFieldValues(gh, boardCtx, fields, itemId, values) {
   for (const [name, value] of Object.entries(values)) {
     const field = fields[name];
     if (!field) {
@@ -733,17 +1165,17 @@ function setFieldValues(boardCtx, fields, itemId, values) {
     } else {
       args.push('--text', String(value));
     }
-    execFileSync('gh', args, { encoding: 'utf8' });
+    gh(args);
   }
 }
 
-function createCard(boardCtx, fields, card) {
-  const created = ghJson([
+function createCard(gh, boardCtx, fields, card) {
+  const created = gh([
     'project', 'item-create', String(boardCtx.number), '--owner', boardCtx.owner,
     '--title', card.title, '--body', card.body, '--format', 'json',
   ]);
   try {
-    setFieldValues(boardCtx, fields, created.id, card.fields);
+    setFieldValues(gh, boardCtx, fields, created.id, card.fields);
   } catch (err) {
     // Compensate: a card whose field writes failed has no field identity, and
     // an unrecognisable card used to mean one fresh duplicate per sync under a
@@ -752,36 +1184,202 @@ function createCard(boardCtx, fields, card) {
     // archive also fails, the body key written atomically at item-create makes
     // the orphan adoptable on the next run instead of invisible.
     try {
-      archiveItem(boardCtx.owner, boardCtx.number, created.id);
+      archiveItem(gh, boardCtx, created.id);
       console.warn(`[board-sync] field writes failed after creating ${card.key} — archived the partial card (${created.id}) to prevent duplicates: ${err.message}`);
     } catch (archiveErr) {
       console.warn(`[board-sync] field writes AND compensating archive failed for ${card.key} (${created.id}) — the body key will let the next sync adopt it: ${archiveErr.message}`);
     }
     throw err;
   }
+  return created.id;
 }
 
-function updateCard(boardCtx, fields, item, card) {
-  // Field values go FIRST, deliberately. `Status` IS the board column — the
-  // single most load-bearing value on the card — so a later title/body failure
-  // must not be able to leave the column stale. (Before this ordering, a
-  // title-edit failure aborted the whole update and the column never moved.)
-  setFieldValues(boardCtx, fields, item.id, card.fields);
+/** Writes an existing card's fields, then its title/body. Returns `{ partial }`:
+ *  `partial` is true when the draft content id could not be resolved, so the
+ *  fields were written but the title/body were not — a real, named outcome, not
+ *  a success (W1 step 5 / W5). Field values go FIRST so a later title/body
+ *  failure can never leave the Status COLUMN stale. */
+function updateCard(gh, boardCtx, fields, item, card) {
+  setFieldValues(gh, boardCtx, fields, item.id, card.fields);
 
   const contentArgs = buildDraftContentEditArgs(item.contentId, card);
   if (!contentArgs) {
     console.warn(
       `[board-sync] no draft-issue content id for ${card.key} — field values updated, title/body left unchanged`
     );
-    return;
+    return { partial: true };
   }
-  execFileSync('gh', contentArgs, { encoding: 'utf8' });
+  gh(contentArgs);
+  return { partial: false };
 }
 
-function archiveItem(owner, number, itemId) {
-  execFileSync('gh', ['project', 'item-archive', String(number), '--id', itemId, '--owner', owner, '--format', 'json'], {
-    encoding: 'utf8',
-  });
+function archiveItem(gh, boardCtx, itemId) {
+  gh(['project', 'item-archive', String(boardCtx.number), '--id', itemId, '--owner', boardCtx.owner, '--format', 'json']);
+}
+
+function unarchiveItem(gh, boardCtx, itemId) {
+  gh(['project', 'item-archive', String(boardCtx.number), '--id', itemId, '--owner', boardCtx.owner, '--undo', '--format', 'json']);
+}
+
+/**
+ * Executes ONE planned CARD_ACTIONS decision against the injected `gh`,
+ * returning `{ outcome, diagnostics? }` — never throwing on an EXPECTED gh
+ * failure of an archived-card flow, because those own compensation (W5).
+ * Non-archived flows (CREATE/UPDATE/ARCHIVE_ONLY/…) let an unexpected gh error
+ * propagate to runBoardSync's per-record classifier, preserving the existing
+ * gh_failure handling.
+ *
+ * Compensation contract, stated honestly (r4 finding on closure question 5):
+ * `item-archive --undo` is a mutation, not a transaction, so a card that began
+ * archived has its re-archive ATTEMPTED — in a finally for terminal drift, as
+ * an explicit restore for a non-terminal resurrection. When the compensating
+ * call ITSELF fails, consistency cannot be restored by this process: the outcome
+ * is UNRECOVERED, carrying BOTH diagnostics, and the next run's reconciliation
+ * is the recovery path.
+ */
+export function executeCardAction(action, gh) {
+  const { type, item, card, fields, boardCtx } = action;
+
+  switch (type) {
+    case CARD_ACTIONS.SKIP_EQUIVALENT:
+      return { outcome: BOARD_OUTCOMES.EQUIVALENT };
+    case CARD_ACTIONS.STALE_CONFLICT:
+      return { outcome: BOARD_OUTCOMES.STALE_CONFLICT };
+
+    case CARD_ACTIONS.CREATE:
+      createCard(gh, boardCtx, fields, card);
+      return { outcome: BOARD_OUTCOMES.CREATED };
+
+    case CARD_ACTIONS.CREATE_AND_ARCHIVE: {
+      // Backfill: create the card AND archive it in one decision, so archived
+      // history never flickers into the live columns for a run.
+      const id = createCard(gh, boardCtx, fields, card);
+      archiveItem(gh, boardCtx, id);
+      return { outcome: BOARD_OUTCOMES.CREATED };
+    }
+
+    case CARD_ACTIONS.UPDATE:
+      return executeUpdate(action, gh);
+
+    case CARD_ACTIONS.UPDATE_AND_ARCHIVE: {
+      const result = updateCard(gh, boardCtx, fields, item, card);
+      archiveItem(gh, boardCtx, item.id);
+      return { outcome: result.partial ? BOARD_OUTCOMES.PARTIAL : BOARD_OUTCOMES.APPLIED };
+    }
+
+    case CARD_ACTIONS.ARCHIVE_ONLY:
+      // Already projection-equal — archive without a redundant rewrite.
+      archiveItem(gh, boardCtx, item.id);
+      return { outcome: BOARD_OUTCOMES.APPLIED };
+
+    case CARD_ACTIONS.UNARCHIVE_UPDATE:
+      return executeUnarchiveUpdate(action, gh);
+
+    case CARD_ACTIONS.UNARCHIVE_UPDATE_REARCHIVE:
+      return executeUnarchiveUpdateRearchive(action, gh);
+
+    default:
+      throw new Error(`[board-sync] unknown card action: ${type}`);
+  }
+}
+
+/** UPDATE of an active card. On the GraphQL "is archived" race, routes to the
+ *  archived state machine instead of the gh_failure classifier (W5, test d). */
+function executeUpdate(action, gh) {
+  const { item, card, fields, boardCtx, terminal } = action;
+  try {
+    const result = updateCard(gh, boardCtx, fields, item, card);
+    return { outcome: result.partial ? BOARD_OUTCOMES.PARTIAL : BOARD_OUTCOMES.APPLIED };
+  } catch (err) {
+    if (isArchivedRaceError(err)) {
+      const recovery = {
+        ...action,
+        item: { ...item, isArchived: true },
+        type: terminal ? CARD_ACTIONS.UNARCHIVE_UPDATE_REARCHIVE : CARD_ACTIONS.UNARCHIVE_UPDATE,
+      };
+      return executeCardAction(recovery, gh);
+    }
+    throw err; // unrelated gh failure — runBoardSync classifies it
+  }
+}
+
+/** Non-terminal resurrection: the build came back to life, so the archived card
+ *  is unarchived and updated and STAYS visible — but only if the COMPLETE update
+ *  succeeds. On update failure the archived state is restored; if that restore
+ *  also fails, the outcome is UNRECOVERED with both diagnostics (W5, tests c/e). */
+function executeUnarchiveUpdate(action, gh) {
+  const { item, card, fields, boardCtx } = action;
+  try {
+    unarchiveItem(gh, boardCtx, item.id);
+  } catch (err) {
+    return { outcome: BOARD_OUTCOMES.GH_FAILURE, diagnostics: [err] }; // still archived — consistent
+  }
+  try {
+    const result = updateCard(gh, boardCtx, fields, item, card);
+    return { outcome: result.partial ? BOARD_OUTCOMES.PARTIAL : BOARD_OUTCOMES.APPLIED };
+  } catch (err) {
+    try {
+      archiveItem(gh, boardCtx, item.id);
+    } catch (reErr) {
+      return { outcome: BOARD_OUTCOMES.UNRECOVERED, diagnostics: [err, reErr] };
+    }
+    return { outcome: BOARD_OUTCOMES.GH_FAILURE, diagnostics: [err] }; // restored — retry next run
+  }
+}
+
+/** Terminal drift: unarchive → edit every field → title/body → re-archive, in
+ *  that exact order (W5, test b). The re-archive is ATTEMPTED in a finally so an
+ *  unarchived-then-edit-failed card is never left visible and half-updated; if
+ *  the re-archive itself fails the outcome is UNRECOVERED (tests i/j). */
+function executeUnarchiveUpdateRearchive(action, gh) {
+  const { item, card, fields, boardCtx } = action;
+  try {
+    unarchiveItem(gh, boardCtx, item.id);
+  } catch (err) {
+    return { outcome: BOARD_OUTCOMES.GH_FAILURE, diagnostics: [err] }; // still archived — consistent
+  }
+
+  let updateErr = null;
+  let result = { partial: false };
+  try {
+    result = updateCard(gh, boardCtx, fields, item, card);
+  } catch (err) {
+    updateErr = err;
+  }
+
+  try {
+    archiveItem(gh, boardCtx, item.id);
+  } catch (reErr) {
+    // Compensation itself failed — this process cannot restore consistency.
+    return { outcome: BOARD_OUTCOMES.UNRECOVERED, diagnostics: [updateErr, reErr].filter(Boolean) };
+  }
+
+  if (updateErr) {
+    return { outcome: BOARD_OUTCOMES.GH_FAILURE, diagnostics: [updateErr] }; // re-archived cleanly — retry next run
+  }
+  return { outcome: result.partial ? BOARD_OUTCOMES.PARTIAL : BOARD_OUTCOMES.APPLIED };
+}
+
+/** Bounded refusal report (W3e). The TARGET's refusal is always shown in full;
+ *  everything else is counts-by-reason plus the first five, so a full archive
+ *  scan over years of history cannot recreate the one-warning-per-record alarm
+ *  fatigue this build exists to end. */
+function reportRefusals(refused, targetSlug) {
+  if (refused.length === 0) return;
+  const targetRefusal = targetSlug ? refused.find((r) => r.dir === targetSlug) : null;
+  if (targetRefusal) {
+    console.warn(`[board-sync] REFUSED (target) ${targetRefusal.dir}: ${targetRefusal.error}`);
+  }
+  const others = refused.filter((r) => r !== targetRefusal);
+  if (others.length === 0) return;
+  const byReason = new Map();
+  for (const r of others) byReason.set(r.reason, (byReason.get(r.reason) ?? 0) + 1);
+  const counts = [...byReason.entries()].map(([reason, n]) => `${reason}: ${n}`).join(', ');
+  console.warn(`[board-sync] ${others.length} record(s) refused — ${counts}`);
+  for (const r of others.slice(0, 5)) {
+    console.warn(`  - ${r.dir} (${r.reason}): ${r.error}`);
+  }
+  if (others.length > 5) console.warn(`  … and ${others.length - 5} more`);
 }
 
 async function runInit(owner, title) {
@@ -927,123 +1525,224 @@ function isSingleSelectField(field) {
   return (field.options?.length ?? 0) > 0;
 }
 
-async function syncBoard(root, repository, boardConfig) {
-  const { records, refused } = await collectStatusRecords(root);
-  for (const r of refused) {
-    console.warn(`[board-sync] REFUSED ${r.dir}: ${r.error}`);
-  }
-  if (records.length === 0) {
-    console.log('[board-sync] no builds to sync.');
-    return;
-  }
+/**
+ * runBoardSync — the importable board-sync core.
+ *
+ * TARGET-AWARE by contract (W1.4). It returns per-record outcomes and, when
+ * `targetSlug` is given, that record's outcome pinned separately, because the
+ * only question its caller (sync-status) asks is "did THIS slug's card reach
+ * the board?" — which a global `{exitCode, reasons}` cannot answer without
+ * failing in both directions (target refused while everything else synced →
+ * false success; target applied while an unrelated historical card failed →
+ * false failure).
+ *
+ *   { exitCode, reasons: string[],
+ *     target: { slug, outcome } | null,   // when targetSlug given
+ *     records: { <slug>: { outcome } } }  // per-record, closed BOARD_OUTCOMES set
+ *
+ * THE CORE NEVER TOUCHES process.exitCode (W1.4). The prior markNotSynced()
+ * set it inline, which was sticky across calls in one process: a failure then
+ * a success in the same process left the failure's exit state behind. Exit
+ * translation is the thin CLI's job — this function only returns the code.
+ * It also never throws: every failure degrades to a recorded outcome + reason,
+ * preserving the board's fail-open, view-not-a-gate contract.
+ */
+export async function runBoardSync({ root, repo = null, targetSlug = null } = {}) {
+  const state = {
+    exitCode: 0,
+    reasons: [],
+    target: targetSlug ? { slug: targetSlug, outcome: BOARD_OUTCOMES.ABSENT } : null,
+    records: {},
+  };
+  const notSynced = (reason) => {
+    console.warn(buildNotSyncedMarker(reason));
+    state.reasons.push(reason);
+    state.exitCode = EXIT_NOT_SYNCED;
+  };
+  const setOutcome = (slug, outcome) => {
+    state.records[slug] = { outcome };
+    if (targetSlug && slug === targetSlug) state.target = { slug, outcome };
+  };
 
-  let fields;
-  let projectId;
-  let existingItems;
   try {
-    fields = fetchFieldIds(boardConfig.owner, boardConfig.number);
-    projectId = fetchProjectId(boardConfig.owner, boardConfig.number);
-    existingItems = fetchExistingItems(boardConfig.owner, boardConfig.number);
-  } catch (err) {
-    const diagnostic = classifyBoardPermissionError(err);
-    console.warn(
-      `[board-sync] gh failure reading board state — recorded, non-blocking: ${err.message}`
-      + (diagnostic ? ` [diagnostic: ${diagnostic}]` : '')
-    );
-    markNotSynced(notSyncedReasonFromDiagnostic(diagnostic));
-    return;
-  }
+    const boardConfig = await loadBoardConfig(root);
+    if (!boardConfig) {
+      console.warn(
+        '[board-sync] projects_board not configured in .claude/project-registries.json — skipping sync (board is a view, not a gate)'
+      );
+      notSynced(NOT_SYNCED_REASONS.NO_CONFIG);
+      return state;
+    }
 
-  // Live-board contract check — BEFORE any mutation, and it refuses the whole
-  // run rather than degrading per card.
-  //
-  // Without it, a board still provisioned under build-status.v1 produced a
-  // SPLIT-BRAIN card: updateCard set the title and body (which say TESTING),
-  // setFieldValues could not find the TESTING option, warned, skipped the
-  // Status field, and the run exited successfully because board failures are
-  // deliberately non-blocking. The card body and the board column then
-  // disagreed, for exactly the three statuses the migration added — the states
-  // whose visibility was the entire point of the change. A per-card warning is
-  // the wrong granularity for a schema mismatch: it is a property of the board,
-  // so it is checked once and stops everything. (External review round 3.)
-  const contractError = await checkBoardContract(fields);
-  if (contractError) {
-    console.warn(
-      `[board-sync] BOARD CONTRACT MISMATCH — no cards were written.\n` +
-      `  ${contractError}\n` +
-      `  The board must be migrated before it can carry this build's status. The Status field's\n` +
-      `  single-select options cannot be edited from the CLI, so this is a web-UI step:\n` +
-      `  Project settings -> Status -> add the missing options, then delete any that are not listed.\n` +
-      `  Refusing all writes rather than updating card bodies whose Status column would then be stale.`
-    );
-    markNotSynced(NOT_SYNCED_REASONS.BOARD_CONTRACT_MISMATCH);
-    return;
-  }
+    const repository = repo ?? detectRepoFromGitRemote(root);
+    if (!repository) {
+      console.warn('[board-sync] could not determine repository identity (no --repo and no git remote) — skipping sync');
+      notSynced(NOT_SYNCED_REASONS.NO_REPO_IDENTITY);
+      return state;
+    }
 
-  for (const warning of await checkBoardHygiene(fields)) {
-    console.warn(`[board-sync] board hygiene: ${warning}`);
-  }
+    const { records, refused } = await collectStatusRecords(root);
+    for (const r of refused) setOutcome(r.dir, BOARD_OUTCOMES.REFUSED);
+    reportRefusals(refused, targetSlug);
+    if (records.length === 0) {
+      console.log('[board-sync] no builds to sync.');
+      return state;
+    }
 
-  const boardCtx = { owner: boardConfig.owner, number: boardConfig.number, projectId };
-
-  const byKey = new Map();
-  for (const item of existingItems) {
-    if (!item.repo || !item.slug) continue; // not one of ours
-    const key = buildCardKey(item.repo, item.slug);
-    const bucket = byKey.get(key) ?? [];
-    bucket.push(item);
-    byKey.set(key, bucket);
-  }
-
-  const now = new Date();
-
-  for (const record of records) {
+    const gh = ghJson;
+    let fields;
+    let projectId;
+    let inventory;
     try {
-      const card = mapRecordToCard(record, repository);
-      const bucket = byKey.get(card.key) ?? [];
-      const { survivor, toArchive } = chooseSurvivor(bucket);
-
-      for (const dup of toArchive) {
-        console.warn(`[board-sync] duplicate card for ${card.key} — archiving ${dup.id}, keeping ${survivor.id}`);
-        archiveItem(boardCtx.owner, boardCtx.number, dup.id);
-      }
-
-      // One decision, made in a pure function (decideCardAction) so the
-      // accept-then-archive invariant is testable. Previously the loop
-      // evaluated archival independently of the stale check, so a stale
-      // terminal record archived a NEWER active card: existing card updated
-      // 28 Jul, incoming MERGED record dated 1 Jul -> update correctly skipped,
-      // then the newer card archived on the strength of the record just
-      // rejected. Duplicate archival above is unaffected — it keys on card
-      // identity, not on the incoming record's freshness.
-      const action = decideCardAction(survivor, record, now);
-
-      if (action.create) {
-        createCard(boardCtx, fields, card);
-      } else if (action.skipped) {
-        console.warn(
-          `[board-sync] skip ${card.key} — existing card is newer than the incoming record ` +
-            `(no update, and no archival: a record too stale to apply is too stale to archive on)`
-        );
-      } else if (action.update) {
-        updateCard(boardCtx, fields, survivor, card);
-      }
-
-      if (action.archive && survivor) {
-        archiveItem(boardCtx.owner, boardCtx.number, survivor.id);
-      }
+      fields = fetchFieldIds(boardConfig.owner, boardConfig.number);
+      projectId = fetchProjectId(boardConfig.owner, boardConfig.number);
+      inventory = readAllBoardItems(gh, projectId);
     } catch (err) {
       const diagnostic = classifyBoardPermissionError(err);
       console.warn(
-        `[board-sync] gh failure syncing ${record.slug} — recorded, non-blocking: ${err.message}`
+        `[board-sync] gh failure reading board state — recorded, non-blocking: ${err.message}`
         + (diagnostic ? ` [diagnostic: ${diagnostic}]` : '')
       );
-      // Per-card failure still means a card the operator expects to see did
-      // not move. Same signal as a whole-run failure: a silently stale card is
-      // exactly the class of bug this marker exists to surface.
-      markNotSynced(notSyncedReasonFromDiagnostic(diagnostic));
+      notSynced(notSyncedReasonFromDiagnostic(diagnostic));
+      for (const record of records) setOutcome(record.slug, BOARD_OUTCOMES.ABSENT);
+      return state;
     }
+
+    // Completeness is a HARD precondition for every mutation (W3c, r4 finding 4).
+    // An unprovable inventory means an unseen duplicate or an unseen newer
+    // matching card is possible, so updating the visible one could duplicate a
+    // card or report false convergence. Incomplete inventory is exceptional, so
+    // a partially-safe mode is not worth its risk: refuse ALL mutation and say so.
+    if (!inventory.complete) {
+      console.warn(
+        '[board-sync] INVENTORY INCOMPLETE — could not prove every card was retrieved '
+        + '(retrieved count did not reach totalCount, or a page still reported hasNextPage). '
+        + 'Performing ZERO card mutations to avoid a duplicate or a false-convergence update.'
+      );
+      notSynced(NOT_SYNCED_REASONS.INVENTORY_INCOMPLETE);
+      for (const record of records) setOutcome(record.slug, BOARD_OUTCOMES.ABSENT);
+      return state;
+    }
+    const existingItems = inventory.items;
+
+    // Live-board contract check — BEFORE any mutation, and it refuses the whole
+    // run rather than degrading per card.
+    //
+    // Without it, a board still provisioned under build-status.v1 produced a
+    // SPLIT-BRAIN card: updateCard set the title and body (which say TESTING),
+    // setFieldValues could not find the TESTING option, warned, skipped the
+    // Status field, and the run exited successfully because board failures are
+    // deliberately non-blocking. The card body and the board column then
+    // disagreed, for exactly the three statuses the migration added — the states
+    // whose visibility was the entire point of the change. A per-card warning is
+    // the wrong granularity for a schema mismatch: it is a property of the board,
+    // so it is checked once and stops everything. (External review round 3.)
+    const contractError = await checkBoardContract(fields);
+    if (contractError) {
+      console.warn(
+        `[board-sync] BOARD CONTRACT MISMATCH — no cards were written.\n` +
+        `  ${contractError}\n` +
+        `  The board must be migrated before it can carry this build's status. The Status field's\n` +
+        `  single-select options cannot be edited from the CLI, so this is a web-UI step:\n` +
+        `  Project settings -> Status -> add the missing options, then delete any that are not listed.\n` +
+        `  Refusing all writes rather than updating card bodies whose Status column would then be stale.`
+      );
+      notSynced(NOT_SYNCED_REASONS.BOARD_CONTRACT_MISMATCH);
+      for (const record of records) setOutcome(record.slug, BOARD_OUTCOMES.ABSENT);
+      return state;
+    }
+
+    for (const warning of await checkBoardHygiene(fields)) {
+      console.warn(`[board-sync] board hygiene: ${warning}`);
+    }
+
+    const boardCtx = { owner: boardConfig.owner, number: boardConfig.number, projectId };
+    const now = new Date();
+
+    // The whole plan is decided PURELY first (target-first, budget-bounded
+    // backfill, duplicate-safe survivor selection over the COMPLETE inventory),
+    // then executed. Separating decision from mutation is what makes the ≥201
+    // and budget cases testable without a board.
+    const { actions, deferred } = planBoardActions({
+      records, existingItems, repository, now, targetSlug, budget: REPAIR_RECORD_BUDGET,
+    });
+
+    if (deferred.length > 0) {
+      const names = deferred.slice(0, 5).map((r) => r.slug).join(', ');
+      console.warn(
+        `[board-sync] backfill budget reached (${REPAIR_RECORD_BUDGET}) — `
+        + `${deferred.length} archived record(s) deferred to the next run: ${names}`
+        + (deferred.length > 5 ? `, … (+${deferred.length - 5})` : '')
+      );
+    }
+
+    for (const { record, type, card, survivor, dups } of actions) {
+      try {
+        for (const dup of dups) {
+          console.warn(`[board-sync] duplicate card for ${card.key} — archiving ${dup.id}, keeping ${survivor.id}`);
+          archiveItem(gh, boardCtx, dup.id);
+        }
+
+        if (type === CARD_ACTIONS.SKIP_EQUIVALENT) {
+          setOutcome(record.slug, BOARD_OUTCOMES.EQUIVALENT);
+          continue;
+        }
+        if (type === CARD_ACTIONS.STALE_CONFLICT) {
+          console.warn(
+            `[board-sync] skip ${card.key} — existing card is newer than the incoming record ` +
+              `(no update, and no archival: a record too stale to apply is too stale to archive on)`
+          );
+          setOutcome(record.slug, BOARD_OUTCOMES.STALE_CONFLICT);
+          continue;
+        }
+
+        const action = { type, terminal: isTerminalStatus(record.status), item: survivor, card, fields, boardCtx };
+        const result = executeCardAction(action, gh);
+        setOutcome(record.slug, result.outcome);
+
+        if (result.outcome === BOARD_OUTCOMES.GH_FAILURE) {
+          const diag = result.diagnostics?.[0];
+          const diagnostic = classifyBoardPermissionError(diag);
+          console.warn(
+            `[board-sync] gh failure syncing ${record.slug} — recorded, non-blocking: ${diag?.message ?? diag}`
+            + (diagnostic ? ` [diagnostic: ${diagnostic}]` : '')
+          );
+          notSynced(notSyncedReasonFromDiagnostic(diagnostic));
+        } else if (result.outcome === BOARD_OUTCOMES.UNRECOVERED) {
+          // Surfaced IN FULL, never bounded away (W5): an archived-card mutation
+          // whose compensating restore also failed. Both diagnostics travel so
+          // the operator sees the original failure and the failed compensation.
+          console.warn(
+            `[board-sync] UNRECOVERED ${record.slug} — an archived-card mutation left the board in a `
+            + 'state this run could not restore; the next invocation\'s reconciliation is the recovery path:'
+          );
+          for (const d of result.diagnostics ?? []) console.warn(`  - ${d?.message ?? d}`);
+          notSynced(NOT_SYNCED_REASONS.UNRECOVERED);
+        } else if (result.outcome === BOARD_OUTCOMES.PARTIAL) {
+          console.warn(
+            `[board-sync] partial sync for ${record.slug} — field values written but the title/body `
+            + 'could not be resolved; NOT counted as applied.'
+          );
+        }
+      } catch (err) {
+        const diagnostic = classifyBoardPermissionError(err);
+        console.warn(
+          `[board-sync] gh failure syncing ${record.slug} — recorded, non-blocking: ${err.message}`
+          + (diagnostic ? ` [diagnostic: ${diagnostic}]` : '')
+        );
+        // Per-card failure still means a card the operator expects to see did
+        // not move. Same signal as a whole-run failure: a silently stale card is
+        // exactly the class of bug this marker exists to surface.
+        notSynced(notSyncedReasonFromDiagnostic(diagnostic));
+        setOutcome(record.slug, BOARD_OUTCOMES.GH_FAILURE);
+      }
+    }
+  } catch (err) {
+    console.warn(`[board-sync] unexpected error — recorded, non-blocking: ${err.message}`);
+    notSynced(NOT_SYNCED_REASONS.UNEXPECTED_ERROR);
   }
+
+  return state;
 }
 
 async function main() {
@@ -1064,34 +1763,22 @@ async function main() {
     return;
   }
 
-  const boardConfig = await loadBoardConfig(root);
-  if (!boardConfig) {
-    console.warn(
-      '[board-sync] projects_board not configured in .claude/project-registries.json — skipping sync (board is a view, not a gate)'
-    );
-    markNotSynced(NOT_SYNCED_REASONS.NO_CONFIG);
-    return;
-  }
-
-  const repository = repoFlag ?? detectRepoFromGitRemote(root);
-  if (!repository) {
-    console.warn('[board-sync] could not determine repository identity (no --repo and no git remote) — skipping sync');
-    markNotSynced(NOT_SYNCED_REASONS.NO_REPO_IDENTITY);
-    return;
-  }
-
-  await syncBoard(root, repository, boardConfig);
+  // Thin CLI: translate the core's returned exit code to process.exitCode. The
+  // core owns the greppable NOT_SYNCED markers; the CLI owns process state.
+  const result = await runBoardSync({ root, repo: repoFlag });
+  if (result.exitCode) process.exitCode = result.exitCode;
 }
 
 // Entry-point guard: this module is imported directly by board-sync.test.mjs
-// to reach the pure functions above, so main() must NOT run as a side effect
-// of import — only when this file is executed as a script. Without this
-// guard, importing the module in a test process would unconditionally shell
-// out toward `gh` the moment `projects_board` is ever configured.
+// (and by sync-status.mjs) to reach the exported functions above, so main()
+// must NOT run as a side effect of import — only when this file is executed as
+// a script. Without this guard, importing the module in a test process would
+// unconditionally shell out toward `gh` the moment `projects_board` is ever
+// configured.
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   main().catch((err) => {
     console.warn(`[board-sync] unexpected error — recorded, non-blocking: ${err.message}`);
-    markNotSynced(NOT_SYNCED_REASONS.UNEXPECTED_ERROR);
+    process.exitCode = EXIT_NOT_SYNCED;
   });
 }

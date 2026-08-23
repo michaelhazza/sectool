@@ -23,6 +23,7 @@ Risk class: `low` (branch-scoped, checked, revertible) · `medium` (crosses a re
 | builder stop-authority: G1 cap exhaustion / PLAN_GAP → escalate, never improvise | `builder.md` verdicts | low | n/a | none | An authority to STOP is still an authority — registered |
 | Blocking hooks (append-guard non-tail block, phase-lock, config-protection, long-doc-guard, bash-config-guard) | `.claude/hooks/*` | low | operator can override per hook contract | none | Fail-open on hook bugs except documented fail-closed guards |
 | Wargame executor: on-map moves execute without escalation | `wargame` skill, executor contract | low | per-move verification | none | WS6 row: the artifact itself authorises nothing — advisory only |
+| Acceptance gate: `acceptance-phase` writes `status.json.gates.uat`/`gate_evidence.uat` ONLY from deterministically-validated fresh-executor evidence; dispatches a fresh Codex executor; routes `fail` to a fix loop | `acceptance-phase.md`, `scripts/uat/validate-uat-evidence.mjs` | low — fail-closed; never translates fail/incomplete to pass/proceed; no override field | git (gate re-derivable from re-run) | none | The agent never authorises continuation and never edits production code; the binding verdict is the fresh executor's. `enforcement` is the single downstream control; under `advisory` a fail/incomplete is surfaced, never machine-blocking |
 
 ## Operator gates
 

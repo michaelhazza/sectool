@@ -12,3 +12,6 @@ coverage/
 dist/
 node_modules/
 .claude/session-state/
+references/.arch-search-log.jsonl
+references/.arch-search-telemetry-incomplete
+references/.doc-read-audit-*.md
